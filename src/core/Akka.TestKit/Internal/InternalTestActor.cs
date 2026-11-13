@@ -1,118 +1,124 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="InternalTestActor.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Channels;
 using Akka.Actor;
 using Akka.Event;
 
-namespace Akka.TestKit.Internal
-{
-    /// <summary>
-    /// An actor that enqueues received messages to a <see cref="BlockingCollection{T}"/>.
-    /// <remarks>Note! Part of internal API. Breaking changes may occur without notice. Use at own risk.</remarks>
-    /// </summary>
-    public class InternalTestActor : ActorBase
-    {
-        private readonly ITestActorQueue<MessageEnvelope> _queue;
-        private TestKit.TestActor.Ignore _ignore;
-        private AutoPilot _autoPilot;
-        private DelegatingSupervisorStrategy _supervisorStrategy = new DelegatingSupervisorStrategy();
+#nullable enable
+namespace Akka.TestKit.Internal;
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="queue">TBD</param>
-        public InternalTestActor(ITestActorQueue<MessageEnvelope> queue)
+/// <summary>
+/// An actor that enqueues received messages to a <see cref="BlockingCollection{T}"/>.
+/// <remarks>Note! Part of internal API. Breaking changes may occur without notice. Use at own risk.</remarks>
+/// </summary>
+internal sealed class InternalTestActor : UntypedActor
+{
+    private readonly ChannelWriter<MessageEnvelope> _queue;
+    private readonly ManualResetEventSlim? _initComplete;
+    private TestActor.Ignore? _ignore;
+    private AutoPilot? _autoPilot;
+    private readonly DelegatingSupervisorStrategy _supervisorStrategy = new();
+
+    /// <summary>
+    /// Creates a new internal test actor.
+    /// </summary>
+    /// <param name="queue">The message queue to write received messages to.</param>
+    public InternalTestActor(ChannelWriter<MessageEnvelope> queue) : this(queue, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new internal test actor with initialization synchronization.
+    /// </summary>
+    /// <param name="queue">The message queue to write received messages to.</param>
+    /// <param name="initComplete">Event to signal when actor initialization is complete.</param>
+    public InternalTestActor(ChannelWriter<MessageEnvelope> queue, ManualResetEventSlim? initComplete)
+    {
+        _queue = queue;
+        _initComplete = initComplete;
+    }
+
+    protected override void PreStart()
+    {
+        base.PreStart();
+        // Signal that actor initialization is complete
+        _initComplete?.Set();
+    }
+
+    /// <summary>
+    /// Handles test-actor control messages and queues received application messages for TestKit assertions.
+    /// </summary>
+    /// <param name="message">The message received by the test actor.</param>
+    protected override void OnReceive(object message)
+    {
+        try
         {
-            _queue = queue;
+            System.Diagnostics.Debug.WriteLine("TestActor received " + message);
+        }
+        catch (FormatException)
+            when (message is LogEvent { Message: LogMessage msg })
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"TestActor received a malformed formatted message. Template:[{msg.Format}], args:[{string.Join(",", msg.Unformatted())}]");
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
-        protected override bool Receive(object message)
+        switch (message)
         {
-            try
-            {
-                global::System.Diagnostics.Debug.WriteLine("TestActor received " + message);
-            }
-            catch (FormatException)
-            {
-                if (message is LogEvent evt && evt.Message is LogMessage msg)
-                    global::System.Diagnostics.Debug.WriteLine(
-                        $"TestActor received a malformed formatted message. Template:[{msg.Format}], args:[{string.Join(",", msg.Args)}]");
-                else
-                    throw;
-            }
-
-            var setIgnore = message as TestKit.TestActor.SetIgnore;
-            if(setIgnore != null)
-            {
+            case TestActor.SetIgnore setIgnore:
                 _ignore = setIgnore.Ignore;
-                return true;
-            }
-            var watch = message as TestKit.TestActor.Watch;
-            if(watch != null)
-            {
+                return;
+            case TestActor.Watch watch:
                 Context.Watch(watch.Actor);
-                return true;
-            }
-            var unwatch = message as TestKit.TestActor.Unwatch;
-            if(unwatch != null)
-            {
+                Sender.Tell(TestActor.WatchAck.Instance);
+                return;
+            case TestActor.Unwatch unwatch:
                 Context.Unwatch(unwatch.Actor);
-                return true;
-            }
-            var setAutoPilot = message as TestKit.TestActor.SetAutoPilot;
-            if(setAutoPilot != null)
-            {
+                Sender.Tell(TestActor.UnwatchAck.Instance);
+                return;
+            case TestActor.SetAutoPilot setAutoPilot:
                 _autoPilot = setAutoPilot.AutoPilot;
-                return true;
-            }
-            
-            var spawn = message as TestKit.TestActor.Spawn;
-            if (spawn != null)
+                return;
+            case TestActor.Spawn spawn:
             {
                 var actor = spawn.Apply(Context);
                 if (spawn._supervisorStrategy.HasValue)
                 {
                     _supervisorStrategy.Update(actor, spawn._supervisorStrategy.Value);
                 }
-                _queue.Enqueue(new RealMessageEnvelope(actor, Self));
-                return true;
+                var wrote = _queue.TryWrite(new RealMessageEnvelope(actor, Self));
+                if (!wrote)
+                {
+                    throw new InvalidOperationException("Failed to write to internal TestActor queue");
+                }
+                return;
             }
-
-            var actorRef = Sender;
-            if(_autoPilot != null)
-            {
-                var newAutoPilot = _autoPilot.Run(actorRef, message);
-                if(!(newAutoPilot is KeepRunning))
-                    _autoPilot = newAutoPilot;
-            }
-            if(_ignore == null || !_ignore(message))
-                _queue.Enqueue(new RealMessageEnvelope(message, actorRef));
-            return true;
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        protected override void PostStop()
+        var actorRef = Sender;
+        if(_autoPilot != null)
         {
-            var self = Self;
-            foreach(var messageEnvelope in _queue.ToList())
+            var newAutoPilot = _autoPilot.Run(actorRef, message);
+            if(newAutoPilot is not KeepRunning)
+                _autoPilot = newAutoPilot;
+        }
+
+        if (_ignore != null && _ignore(message)) return;
+        {
+            var wrote =  _queue.TryWrite(new RealMessageEnvelope(message, actorRef));
+            if (!wrote)
             {
-                var messageSender = messageEnvelope.Sender;
-                var message = messageEnvelope.Message;
-                Context.System.DeadLetters.Tell(new DeadLetter(message, messageSender, self), messageSender);
+                throw new InvalidOperationException("Failed to write to internal TestActor queue");
             }
         }
     }
+
+    protected override SupervisorStrategy SupervisorStrategy() => _supervisorStrategy;
 }

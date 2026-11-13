@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="WithUdpSend.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -14,7 +14,6 @@ using Akka.Event;
 namespace Akka.IO
 {
     using static Udp;
-    using ByteBuffer = ArraySegment<byte>;
 
     abstract class WithUdpSend : ActorBase
     {
@@ -118,7 +117,7 @@ namespace Akka.IO
             {
                 var data = _pendingSend.Payload;
 
-                var bytesWritten = Socket.SendTo(data.ToArray(), _pendingSend.Target);
+                var bytesWritten = Socket.SendTo(data.Span, _pendingSend.Target);
                 if (Udp.Setting.TraceLogging)
                     _log.Debug("Wrote [{0}] bytes to socket", bytesWritten);
 

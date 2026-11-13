@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="GraphPartialSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,7 +13,6 @@ using Akka.Streams.Dsl;
 using Akka.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Streams.Tests.Dsl
 {
@@ -145,7 +144,7 @@ namespace Akka.Streams.Tests.Dsl
         public void GraphDSLs_Partial_must_be_able_to_expose_the_ports_of_imported_graphs()
         {
             var p = GraphDsl.Create(Flow.Create<int>().Select(x => x + 1),
-                (b, flow) => new FlowShape<int, int>(flow.Inlet, flow.Outlet));
+                (_, flow) => new FlowShape<int, int>(flow.Inlet, flow.Outlet));
 
             var task = RunnableGraph.FromGraph(GraphDsl.Create(Sink.First<int>(), p, Keep.Left,
                 (b, sink, flow) =>

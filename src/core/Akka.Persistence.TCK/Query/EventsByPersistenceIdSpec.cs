@@ -1,11 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="EventsByPersistenceIdSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Persistence.Query;
@@ -13,13 +15,11 @@ using Akka.Streams;
 using Akka.Streams.Dsl;
 using Akka.Streams.TestKit;
 using Akka.Util.Internal;
-using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Persistence.TCK.Query
 {
-    public abstract class EventsByPersistenceIdSpec : Akka.TestKit.Xunit2.TestKit
+    public abstract class EventsByPersistenceIdSpec : XTestKit
     {
         protected ActorMaterializer Materializer { get; }
 
@@ -46,7 +46,7 @@ namespace Akka.Persistence.TCK.Query
             var src = queries.EventsByPersistenceId("c", 0, long.MaxValue);
             var probe = src.Select(x => x.Event).RunWith(this.SinkProbe<object>(), Materializer)
                 .Request(5)
-                .ExpectNext("c-1", "c-2", "c-3");
+                .ExpectNext( "c-1", "c-2", "c-3");
 
             pref.Tell("c-4");
             ExpectMsg("c-4-done");
@@ -63,7 +63,7 @@ namespace Akka.Persistence.TCK.Query
             var src = queries.EventsByPersistenceId("d", 0, 4);
             var probe = src.Select(x => x.Event).RunWith(this.SinkProbe<object>(), Materializer)
                 .Request(5)
-                .ExpectNext("d-1", "d-2", "d-3");
+                .ExpectNext( "d-1", "d-2", "d-3");
 
             pref.Tell("d-4");
             ExpectMsg("d-4-done");
@@ -78,10 +78,10 @@ namespace Akka.Persistence.TCK.Query
             var pref = Setup("e");
 
             var src = queries.EventsByPersistenceId("e", 0, long.MaxValue);
-            var probe = src.Select(x => x.Event).RunWith(this.SinkProbe<object>(), Materializer)
-                .Request(2)
-                .ExpectNext("e-1", "e-2")
-                .ExpectNoMsg(TimeSpan.FromMilliseconds(100)) as TestSubscriber.Probe<object>;
+            var probe = src.Select(x => x.Event).RunWith(this.SinkProbe<object>(), Materializer);
+            probe.Request(2)
+                .ExpectNext( "e-1", "e-2")
+                .ExpectNoMsg(TimeSpan.FromMilliseconds(100));
 
             pref.Tell("e-4");
             ExpectMsg("e-4-done");
@@ -102,8 +102,8 @@ namespace Akka.Persistence.TCK.Query
 
             var probe = src.RunWith(this.SinkProbe<EventEnvelope>(), Materializer);
             probe.Request(5);
-            probe.ExpectNext().Timestamp.Should().BeGreaterThan(0);
-            probe.ExpectNext().Timestamp.Should().BeGreaterThan(0);
+            Assert.True( probe.ExpectNext().Timestamp > 0 );
+            Assert.True( probe.ExpectNext().Timestamp > 0 );
             probe.Cancel();
         }
 
@@ -126,10 +126,10 @@ namespace Akka.Persistence.TCK.Query
             return Sys.ActorOf(Query.TestActor.Props(persistenceId));
         }
 
-        protected override void Dispose(bool disposing)
+        protected override void AfterAll()
         {
             Materializer.Dispose();
-            base.Dispose(disposing);
+            base.AfterAll();
         }
     }
 }

@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AbstractDispatcher.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -54,14 +55,14 @@ namespace Akka.Dispatch
         /// <summary>
         /// Default constructor...
         /// </summary>
-        /// <param name="eventStream">TBD</param>
-        /// <param name="scheduler">TBD</param>
-        /// <param name="settings">TBD</param>
-        /// <param name="mailboxes">TBD</param>
+        /// <param name="eventStream">The event stream for the actor system.</param>
+        /// <param name="scheduler">The scheduler for the actor system.</param>
+        /// <param name="settings">The actor system settings.</param>
+        /// <param name="mailboxes">The registered mailbox types for the actor system.</param>
         public DefaultDispatcherPrerequisites(
-            EventStream eventStream, 
-            IScheduler scheduler, 
-            Settings settings, 
+            EventStream eventStream,
+            IScheduler scheduler,
+            Settings settings,
             Mailboxes mailboxes)
         {
             Mailboxes = mailboxes;
@@ -71,19 +72,22 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// The event stream shared with the actor system.
         /// </summary>
         public EventStream EventStream { get; private set; }
+
         /// <summary>
-        /// TBD
+        /// The scheduler shared with the actor system.
         /// </summary>
         public IScheduler Scheduler { get; private set; }
+
         /// <summary>
-        /// TBD
+        /// The settings for the actor system.
         /// </summary>
         public Settings Settings { get; private set; }
+
         /// <summary>
-        /// TBD
+        /// The registered mailbox types for the actor system.
         /// </summary>
         public Mailboxes Mailboxes { get; private set; }
     }
@@ -118,17 +122,25 @@ namespace Akka.Dispatch
 
     internal sealed class ChannelExecutorConfigurator : ExecutorServiceConfigurator
     {
-        public ChannelExecutorConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
+        private static readonly Config PriorityDefault = ConfigurationFactory.ParseString(@"
+executor = channel-executor 
+channel-executor.priority = normal");
+
+        public ChannelExecutorConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config,
+            prerequisites)
         {
-            var cfg = config.GetConfig("channel-executor");
-            Priority = (TaskSchedulerPriority)Enum.Parse(typeof(TaskSchedulerPriority), cfg.GetString("priority", "normal"), true);
+            config = config == null ? PriorityDefault : config.WithFallback(PriorityDefault);
+
+            var priority = config.GetString("channel-executor.priority", "normal");
+            Priority = (TaskSchedulerPriority)Enum.Parse(typeof(TaskSchedulerPriority), priority, true);
         }
 
         public TaskSchedulerPriority Priority { get; }
 
         public override ExecutorService Produce(string id)
         {
-            Prerequisites.EventStream.Publish(new Debug($"ChannelExecutor-[{id}]", typeof(TaskSchedulerExecutor), $"Launched Dispatcher [{id}] with Priority[{Priority}]"));
+            Prerequisites.EventStream.Publish(new Debug($"ChannelExecutor-[{id}]", typeof(TaskSchedulerExecutor),
+                $"Launched Dispatcher [{id}] with Priority[{Priority}]"));
 
             var scheduler = ChannelTaskScheduler.Get(Prerequisites.Settings.System).GetScheduler(Priority);
             return new TaskSchedulerExecutor(id, scheduler);
@@ -143,21 +155,21 @@ namespace Akka.Dispatch
     internal sealed class DefaultTaskSchedulerExecutorConfigurator : ExecutorServiceConfigurator
     {
         /// <summary>
-        /// TBD
+        /// Produces an executor service backed by the default task scheduler.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The identifier assigned to the executor.</param>
+        /// <returns>An executor service that schedules work on <see cref="TaskScheduler.Default"/>.</returns>
         public override ExecutorService Produce(string id)
         {
             return new TaskSchedulerExecutor(id, TaskScheduler.Default);
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a configurator for the default task scheduler executor.
         /// </summary>
-        /// <param name="config">TBD</param>
-        /// <param name="prerequisites">TBD</param>
-        public DefaultTaskSchedulerExecutorConfigurator(Config config, IDispatcherPrerequisites prerequisites) 
+        /// <param name="config">The executor configuration.</param>
+        /// <param name="prerequisites">The actor system services required by dispatcher executors.</param>
+        public DefaultTaskSchedulerExecutorConfigurator(Config config, IDispatcherPrerequisites prerequisites)
             : base(config, prerequisites)
         {
         }
@@ -183,8 +195,8 @@ namespace Akka.Dispatch
         /// <summary>
         /// Initializes a new instance of the <see cref="ForkJoinExecutorServiceFactory"/> class.
         /// </summary>
-        /// <param name="config">TBD</param>
-        /// <param name="prerequisites">TBD</param>
+        /// <param name="config">The executor configuration, including dedicated thread-pool or fork-join settings.</param>
+        /// <param name="prerequisites">The actor system services required by dispatcher executors.</param>
         /// <exception cref="ConfigurationException">
         /// This exception is thrown if either 'dedicated-thread-pool' OR 'fork-join-executor' is not defined in <paramref name="config"/>.
         /// </exception>
@@ -195,10 +207,10 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Produces a fork-join executor with the settings loaded from the configuration.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The identifier assigned to the executor.</param>
+        /// <returns>A fork-join executor service.</returns>
         public override ExecutorService Produce(string id)
         {
             return new ForkJoinExecutor(id, _threadPoolConfiguration);
@@ -208,8 +220,9 @@ namespace Akka.Dispatch
         {
             var dtp = config.GetConfig("dedicated-thread-pool");
             var fje = config.GetConfig("fork-join-executor");
-            if (dtp.IsNullOrEmpty() && fje.IsNullOrEmpty()) throw new ConfigurationException(
-                $"must define section 'dedicated-thread-pool' OR 'fork-join-executor' for fork-join-executor {config.GetString("id", "unknown")}");
+            if (dtp.IsNullOrEmpty() && fje.IsNullOrEmpty())
+                throw new ConfigurationException(
+                    $"must define section 'dedicated-thread-pool' OR 'fork-join-executor' for fork-join-executor {config.GetString("id", "unknown")}");
 
             if (!dtp.IsNullOrEmpty())
             {
@@ -225,13 +238,12 @@ namespace Akka.Dispatch
             {
                 var settings = new DedicatedThreadPoolSettings(
                     ThreadPoolConfig.ScaledPoolSize(
-                        fje.GetInt("parallelism-min"), 
-                        1.0, 
+                        fje.GetInt("parallelism-min"),
+                        1.0,
                         fje.GetInt("parallelism-max")),
-                        name:config.GetString("id"));
+                    name: config.GetString("id"));
                 return settings;
             }
-            
         }
     }
 
@@ -244,10 +256,10 @@ namespace Akka.Dispatch
         private static readonly bool IsFullTrusted = AppDomain.CurrentDomain.IsFullyTrusted;
 
         /// <summary>
-        /// TBD
+        /// Produces a thread-pool executor appropriate for the current trust level.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The identifier assigned to the executor.</param>
+        /// <returns>A full-trust or partial-trust thread-pool executor service.</returns>
         public override ExecutorService Produce(string id)
         {
             if (IsFullTrusted)
@@ -257,11 +269,12 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a thread-pool executor service factory.
         /// </summary>
-        /// <param name="config">TBD</param>
-        /// <param name="prerequisites">TBD</param>
-        public ThreadPoolExecutorServiceFactory(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
+        /// <param name="config">The executor configuration.</param>
+        /// <param name="prerequisites">The actor system services required by dispatcher executors.</param>
+        public ThreadPoolExecutorServiceFactory(Config config, IDispatcherPrerequisites prerequisites) : base(config,
+            prerequisites)
         {
         }
     }
@@ -274,8 +287,8 @@ namespace Akka.Dispatch
         /// <summary>
         /// Takes a <see cref="Config"/> object, usually passed in via <see cref="Settings.Config"/>
         /// </summary>
-        /// <param name="config">TBD</param>
-        /// <param name="prerequisites">TBD</param>
+        /// <param name="config">The configuration for this dispatcher.</param>
+        /// <param name="prerequisites">The actor system services required by this dispatcher.</param>
         protected MessageDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites)
         {
             Prerequisites = prerequisites;
@@ -299,7 +312,7 @@ namespace Akka.Dispatch
         /// or returns a reference to an existing instance is an implementation detail of the
         /// underlying implementation.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A dispatcher instance configured by this configurator.</returns>
         public abstract MessageDispatcher Dispatcher();
 
         /// <summary>
@@ -312,6 +325,11 @@ namespace Akka.Dispatch
         protected ExecutorServiceConfigurator ConfigureExecutor()
         {
             var executor = Config.GetString("executor", null);
+
+            // This switch is also the built-in table for executors: the cases are short aliases rather than
+            // type names, so the trimmer and the Native AOT compiler already see every configurator Akka.NET
+            // ships. Only the default arm - an executor named by type in HOCON - needs reflection, which is
+            // why that is the one branch behind the Akka.DynamicTypeLoading switch.
             switch (executor)
             {
                 case null:
@@ -328,17 +346,28 @@ namespace Akka.Dispatch
                 case "channel-executor":
                     return new ChannelExecutorConfigurator(Config, Prerequisites);
                 default:
-                    Type executorConfiguratorType = Type.GetType(executor);
-                    if (executorConfiguratorType == null)
-                    {
-                        throw new ConfigurationException(
-                            $"Could not resolve executor service configurator type {executor} for path {Config.GetString("id", "unknown")}");
-                    }
-                    var args = new object[] { Config, Prerequisites };
-                    return (ExecutorServiceConfigurator)Activator.CreateInstance(executorConfiguratorType, args);
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                        throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                            $"{Config.GetString("id", "unknown")}.executor", executor, "one of the built-in executors"));
+
+                    return CreateExecutorServiceConfiguratorFromTypeName(executor, Config, Prerequisites);
             }
         }
 
+        [RequiresUnreferencedCode("Loads a dispatcher [executor] named in HOCON by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static ExecutorServiceConfigurator CreateExecutorServiceConfiguratorFromTypeName(
+            string executor, Config config, IDispatcherPrerequisites prerequisites)
+        {
+            var executorConfiguratorType = Type.GetType(executor);
+            if (executorConfiguratorType == null)
+            {
+                throw new ConfigurationException(
+                    $"Could not resolve executor service configurator type {executor} for path {config.GetString("id", "unknown")}");
+            }
+
+            var args = new object[] { config, prerequisites };
+            return (ExecutorServiceConfigurator)Activator.CreateInstance(executorConfiguratorType, args);
+        }
     }
 
     /// <summary>
@@ -352,11 +381,15 @@ namespace Akka.Dispatch
         private const int Rescheduled = 2;
 
         /* dispatcher debugging helpers */
-        private const bool DebugDispatcher = false; // IMPORTANT: make this a compile-time constant so compiler will elide debug code in production
+        private const bool
+            DebugDispatcher =
+                false; // IMPORTANT: make this a compile-time constant so compiler will elide debug code in production
+
         /// <summary>
-        /// TBD
+        /// Tracks actor references by dispatcher for internal dispatcher diagnostics.
         /// </summary>
-        internal static readonly Lazy<Index<MessageDispatcher, IInternalActorRef>> Actors = new Lazy<Index<MessageDispatcher, IInternalActorRef>>(() => new Index<MessageDispatcher, IInternalActorRef>(), LazyThreadSafetyMode.PublicationOnly);
+        internal static readonly Lazy<Index<MessageDispatcher, IInternalActorRef>> Actors =
+            new(() => new Index<MessageDispatcher, IInternalActorRef>(), LazyThreadSafetyMode.PublicationOnly);
 
 #pragma warning disable CS0162 // Disabled since the flag can be set while debugging
         /// <summary>
@@ -372,7 +405,9 @@ namespace Akka.Dispatch
                     Console.WriteLine("{0} inhabitants {1}", dispatcher, dispatcher.Inhabitants);
                     foreach (var actor in a)
                     {
+#pragma warning disable CS0618 // Type or member is obsolete
                         var status = actor.IsTerminated ? "(terminated)" : "(active)";
+#pragma warning restore CS0618 // Type or member is obsolete
                         var messages = actor is ActorRefWithCell
                             ? " " + actor.AsInstanceOf<ActorRefWithCell>().Underlying.NumberOfMessages + " messages"
                             : " " + actor.GetType();
@@ -400,7 +435,7 @@ namespace Akka.Dispatch
         /// <summary>
         ///     Initializes a new instance of the <see cref="MessageDispatcher" /> class.
         /// </summary>
-        /// <param name="configurator">TBD</param>
+        /// <param name="configurator">The configurator that supplies this dispatcher's settings and prerequisites.</param>
         protected MessageDispatcher(MessageDispatcherConfigurator configurator)
         {
             Configurator = configurator;
@@ -458,10 +493,12 @@ namespace Akka.Dispatch
             {
                 // We haven't succeeded in decreasing the inhabitants yet but the simple fact that we're trying to
                 // go below zero means that there is an imbalance and we might as well throw the exception
-                var e = new InvalidOperationException("ACTOR SYSTEM CORRUPTED!!! A dispatcher can't have less than 0 inhabitants!");
+                var e = new InvalidOperationException(
+                    "ACTOR SYSTEM CORRUPTED!!! A dispatcher can't have less than 0 inhabitants!");
                 ReportFailure(e);
                 throw e;
             }
+
             return ret;
         }
 
@@ -502,6 +539,13 @@ namespace Akka.Dispatch
                     _runnable = null;
                 }
             }
+
+#if !NETSTANDARD
+            public void Execute()
+            {
+                Run();
+            }
+#endif
         }
 
         /// <summary>
@@ -552,6 +596,7 @@ namespace Akka.Dispatch
         protected abstract void Shutdown();
 
         private readonly ShutdownAction _shutdownAction;
+
         sealed class ShutdownAction : IRunnable
         {
             private readonly MessageDispatcher _dispatcher;
@@ -572,15 +617,25 @@ namespace Akka.Dispatch
                     }
                     finally
                     {
-                        while (!_dispatcher.UpdateShutdownSchedule(_dispatcher.ShutdownSchedule, Unscheduled)) { }
+                        while (!_dispatcher.UpdateShutdownSchedule(_dispatcher.ShutdownSchedule, Unscheduled))
+                        {
+                        }
                     }
                 }
                 else if (sched == Rescheduled)
                 {
-                    if (_dispatcher.UpdateShutdownSchedule(Rescheduled, Scheduled)) _dispatcher.ScheduleShutdownAction();
+                    if (_dispatcher.UpdateShutdownSchedule(Rescheduled, Scheduled))
+                        _dispatcher.ScheduleShutdownAction();
                     else Run();
                 }
             }
+
+#if !NETSTANDARD
+            public void Execute()
+            {
+                Run();
+            }
+#endif
         }
 
         private void IfSensibleToDoSoThenScheduleShutdown()
@@ -594,9 +649,12 @@ namespace Akka.Dispatch
                 if (UpdateShutdownSchedule(Unscheduled, Scheduled)) ScheduleShutdownAction();
                 else IfSensibleToDoSoThenScheduleShutdown();
             }
+
             if (sched == Scheduled)
             {
-                if (UpdateShutdownSchedule(Scheduled, Rescheduled)) { }
+                if (UpdateShutdownSchedule(Scheduled, Rescheduled))
+                {
+                }
                 else IfSensibleToDoSoThenScheduleShutdown();
             }
 
@@ -631,7 +689,7 @@ namespace Akka.Dispatch
         /// <param name="cell">Cell of the actor.</param>
         /// <param name="mailboxType">The mailbox configurator.</param>
         /// <returns>The configured <see cref="Mailbox"/> for this actor.</returns>
-        internal Mailbox CreateMailbox(ActorCell cell, MailboxType mailboxType)
+        internal static Mailbox CreateMailbox(ActorCell cell, MailboxType mailboxType)
         {
             return new Mailbox(mailboxType.Create(cell.Self, cell.System));
         }
@@ -639,8 +697,8 @@ namespace Akka.Dispatch
         /// <summary>
         /// Dispatches a user-defined message from a mailbox to an <see cref="ActorCell"/>
         /// </summary>
-        /// <param name="cell">TBD</param>
-        /// <param name="envelope">TBD</param>
+        /// <param name="cell">The actor cell that will process the message.</param>
+        /// <param name="envelope">The user message and sender to enqueue for the actor.</param>
         public virtual void Dispatch(ActorCell cell, Envelope envelope)
         {
             var mbox = cell.Mailbox;
@@ -651,8 +709,8 @@ namespace Akka.Dispatch
         /// <summary>
         /// Dispatches a <see cref="SystemMessage"/> from a mailbox to an <see cref="ActorCell"/>
         /// </summary>
-        /// <param name="cell">TBD</param>
-        /// <param name="message">TBD</param>
+        /// <param name="cell">The actor cell that will process the system message.</param>
+        /// <param name="message">The system message to enqueue for the actor.</param>
         public virtual void SystemDispatch(ActorCell cell, SystemMessage message)
         {
             var mbox = cell.Mailbox;
@@ -700,15 +758,18 @@ namespace Akka.Dispatch
         /// <returns><c>true</c> if the <see cref="Mailbox"/> was scheduled for execution, otherwise <c>false</c>.</returns>
         internal bool RegisterForExecution(Mailbox mbox, bool hasMessageHint, bool hasSystemMessageHint)
         {
-            if (mbox.CanBeScheduledForExecution(hasMessageHint, hasSystemMessageHint)) //This needs to be here to ensure thread safety and no races
+            if (mbox.CanBeScheduledForExecution(hasMessageHint,
+                    hasSystemMessageHint)) //This needs to be here to ensure thread safety and no races
             {
                 if (mbox.SetAsScheduled())
                 {
                     ExecuteTask(mbox);
                     return true;
                 }
+
                 return false;
             }
+
             return false;
         }
 
@@ -756,7 +817,8 @@ namespace Akka.Dispatch
         internal virtual void Suspend(ActorCell actorCell)
         {
             var mbox = actorCell.Mailbox;
-            if (mbox.Actor == actorCell && mbox.Dispatcher == this) //make sure everything is referring to the same instance
+            if (mbox.Actor == actorCell &&
+                mbox.Dispatcher == this) //make sure everything is referring to the same instance
             {
                 mbox.Suspend();
             }
@@ -769,11 +831,11 @@ namespace Akka.Dispatch
         internal virtual void Resume(ActorCell actorCell)
         {
             var mbox = actorCell.Mailbox;
-            if (mbox.Actor == actorCell && mbox.Dispatcher == this && mbox.Resume()) //make sure everything is referring to the same instance
+            if (mbox.Actor == actorCell && mbox.Dispatcher == this &&
+                mbox.Resume()) //make sure everything is referring to the same instance
             {
                 RegisterForExecution(mbox, false, false); // force the mailbox to re-run after resume
             }
         }
     }
 }
-

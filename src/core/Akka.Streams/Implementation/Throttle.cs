@@ -1,14 +1,16 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Throttle.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using Akka.Annotations;
+using Akka.Event;
 using Akka.Streams.Implementation.Fusing;
 using Akka.Streams.Stage;
+using Akka.Streams.Supervision;
 using Akka.Streams.Util;
 using Akka.Util;
 
@@ -17,7 +19,7 @@ namespace Akka.Streams.Implementation
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The type of elements whose costs are throttled.</typeparam>
     [InternalApi]
     public class Throttle<T> : SimpleLinearGraphStage<T>
     {
@@ -29,16 +31,20 @@ namespace Akka.Streams.Implementation
             private readonly Throttle<T> _stage;
             private readonly TickTimeTokenBucket _tokenBucket;
             private readonly bool _enforcing;
+            private readonly Decider _decider;
 
             private bool _willStop;
             private Option<T> _currentElement;
 
-            public Logic(Throttle<T> stage) : base(stage.Shape)
+            public Logic(Throttle<T> stage, Attributes inheritedAttributes) : base(stage.Shape)
             {
                 _stage = stage;
                 _tokenBucket = new TickTimeTokenBucket(stage._maximumBurst, stage._ticksBetweenTokens);
                 _enforcing = stage._mode == ThrottleMode.Enforcing;
 
+                var attr = inheritedAttributes.GetAttribute<ActorAttributes.SupervisionStrategy>(null);
+                _decider = attr != null ? attr.Decider : Deciders.StoppingDecider;
+                
                 SetHandler(_stage.Inlet, this);
                 SetHandler(_stage.Outlet, this);
             }
@@ -46,7 +52,32 @@ namespace Akka.Streams.Implementation
             public void OnPush()
             {
                 var element = Grab(_stage.Inlet);
-                var cost = _stage._costCalculation(element);
+                int cost;
+                try
+                {
+                    cost = _stage._costCalculation(element);
+                }
+                catch (Exception e)
+                {
+                    var strategy = _decider(e);
+                    Log.Error(e, "An exception occured inside Throttle while calculating cost for element [{0}]. Supervision strategy: {1}", element, strategy);
+                    switch (strategy)
+                    {
+                        case Directive.Stop:
+                            FailStage(e);
+                            return;
+                        
+                        case Directive.Resume:
+                        case Directive.Restart:
+                            if (!HasBeenPulled(_stage.Inlet))
+                                TryPull(_stage.Inlet);
+                            return;
+                        
+                        default:
+                            throw new AggregateException($"Unknown SupervisionStrategy directive: {strategy}", e);
+                    }
+                }
+                
                 var delayTicks = _tokenBucket.Offer(cost);
 
                 if (delayTicks == 0)
@@ -73,7 +104,7 @@ namespace Akka.Streams.Implementation
 
             public void OnPull() => Pull(_stage.Inlet);
 
-            public void OnDownstreamFinish() => CompleteStage();
+            public void OnDownstreamFinish(Exception cause) => InternalOnDownstreamFinish(cause);
 
             protected internal override void OnTimer(object timerKey)
             {
@@ -95,13 +126,13 @@ namespace Akka.Streams.Implementation
         private readonly long _ticksBetweenTokens;
 
         /// <summary>
-        /// TBD
+        /// Creates a stage that limits throughput according to element cost and a token-bucket rate.
         /// </summary>
-        /// <param name="cost">TBD</param>
-        /// <param name="per">TBD</param>
-        /// <param name="maximumBurst">TBD</param>
-        /// <param name="costCalculation">TBD</param>
-        /// <param name="mode">TBD</param>
+        /// <param name="cost">The amount of cost replenished during each <paramref name="per"/> interval.</param>
+        /// <param name="per">The interval over which <paramref name="cost"/> is replenished.</param>
+        /// <param name="maximumBurst">The maximum token-bucket burst capacity.</param>
+        /// <param name="costCalculation">Calculates the cost of each input element.</param>
+        /// <param name="mode">Whether excess throughput is delayed or causes the stage to fail.</param>
         public Throttle(int cost, TimeSpan per, int maximumBurst, Func<T, int> costCalculation, ThrottleMode mode)
         {
             _maximumBurst = maximumBurst;
@@ -115,16 +146,16 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Creates stage logic using the inherited supervision strategy for cost-calculation failures.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
-        protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The graph stage logic.</returns>
+        protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this, inheritedAttributes);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The string <c>Throttle</c>.</returns>
         public override string ToString() => "Throttle";
     }
 }

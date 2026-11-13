@@ -1,18 +1,21 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Dispatchers.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
+using Akka.Annotations;
 using Akka.Configuration;
 using Akka.Event;
+using Akka.Util;
 using Helios.Concurrency;
 using ConfigurationFactory = Akka.Configuration.ConfigurationFactory;
 
@@ -25,12 +28,12 @@ namespace Akka.Dispatch
     {
         // cache the delegate used for execution to prevent allocations		
         /// <summary>
-        /// TBD
+        /// Delegate that invokes <see cref="IRunnable.Run"/> for work queued to the .NET thread pool.
         /// </summary>
         protected static readonly WaitCallback Executor = t => { ((IRunnable)t).Run(); };
 
         /// <summary>
-        /// TBD
+        /// Releases executor resources; this thread-pool implementation has no resources to release.
         /// </summary>
         public override void Shutdown()
         {
@@ -38,9 +41,9 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Initializes the executor service with its registry identifier.
         /// </summary>
-        /// <param name="id">TBD</param>
+        /// <param name="id">The identifier used to register and identify this executor service.</param>
         protected ThreadPoolExecutorService(string id) : base(id)
         {
         }
@@ -52,18 +55,24 @@ namespace Akka.Dispatch
     internal sealed class FullThreadPoolExecutorServiceImpl : ThreadPoolExecutorService
     {
         /// <summary>
-        /// TBD
+        /// Queues the runnable on the .NET thread pool for asynchronous execution.
         /// </summary>
-        /// <param name="run">TBD</param>
+        /// <param name="run">The runnable to queue.</param>
         public override void Execute(IRunnable run)
         {
+#if NETSTANDARD
             ThreadPool.UnsafeQueueUserWorkItem(Executor, run);
+#else
+            // use native .NET 6 APIs here to reduce allocations
+            // preferLocal to help reduce context switching
+            ThreadPool.UnsafeQueueUserWorkItem(run, true);
+#endif
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a thread-pool executor service with the supplied identifier.
         /// </summary>
-        /// <param name="id">TBD</param>
+        /// <param name="id">The identifier used to register and identify this executor service.</param>
         public FullThreadPoolExecutorServiceImpl(string id) : base(id)
         {
         }
@@ -75,18 +84,18 @@ namespace Akka.Dispatch
     internal sealed class PartialTrustThreadPoolExecutorService : ThreadPoolExecutorService
     {
         /// <summary>
-        /// TBD
+        /// Queues the runnable on the .NET thread pool for asynchronous execution.
         /// </summary>
-        /// <param name="run">TBD</param>
+        /// <param name="run">The runnable to queue.</param>
         public override void Execute(IRunnable run)
         {
             ThreadPool.QueueUserWorkItem(Executor, run);
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a thread-pool executor service for environments that use the partial-trust-compatible queueing API.
         /// </summary>
-        /// <param name="id">TBD</param>
+        /// <param name="id">The identifier used to register and identify this executor service.</param>
         public PartialTrustThreadPoolExecutorService(string id) : base(id)
         {
         }
@@ -99,10 +108,8 @@ namespace Akka.Dispatch
     /// </summary>
     internal sealed class FixedConcurrencyTaskScheduler : TaskScheduler
     {
-
-        [ThreadStatic]
-        private static bool _threadRunning = false;
-        private ConcurrentQueue<Task> _tasks = new ConcurrentQueue<Task>();
+        [ThreadStatic] private static bool _threadRunning = false;
+        private ConcurrentQueue<Task> _tasks = new();
 
         private int _readers = 0;
 
@@ -186,10 +193,10 @@ namespace Akka.Dispatch
         private TaskScheduler _scheduler;
 
         /// <summary>
-        /// TBD
+        /// Creates an executor service that schedules runnables on the supplied task scheduler.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <param name="scheduler">TBD</param>
+        /// <param name="id">The identifier used to register and identify this executor service.</param>
+        /// <param name="scheduler">The scheduler on which queued runnables are executed.</param>
         public TaskSchedulerExecutor(string id, TaskScheduler scheduler) : base(id)
         {
             _scheduler = scheduler;
@@ -199,9 +206,9 @@ namespace Akka.Dispatch
         private static readonly Action<object> Executor = t => { ((IRunnable)t).Run(); };
 
         /// <summary>
-        /// TBD
+        /// Schedules the runnable as a task on the configured task scheduler.
         /// </summary>
-        /// <param name="run">TBD</param>
+        /// <param name="run">The runnable to schedule.</param>
         public override void Execute(IRunnable run)
         {
             var t = new Task(Executor, run);
@@ -209,7 +216,7 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Clears the task scheduler reference used by this executor service.
         /// </summary>
         public override void Shutdown()
         {
@@ -242,19 +249,19 @@ namespace Akka.Dispatch
         private byte _shuttingDown = 0;
 
         /// <summary>
-        /// TBD
+        /// Creates an executor backed by a dedicated thread pool configured by <paramref name="poolSettings"/>.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <param name="poolSettings">TBD</param>
+        /// <param name="id">The identifier used to register and identify this executor service.</param>
+        /// <param name="poolSettings">The settings used to create the dedicated thread pool.</param>
         public ForkJoinExecutor(string id, DedicatedThreadPoolSettings poolSettings) : base(id)
         {
             _dedicatedThreadPool = new DedicatedThreadPool(poolSettings);
         }
 
         /// <summary>
-        /// TBD
+        /// Queues the runnable on the dedicated thread pool.
         /// </summary>
-        /// <param name="run">TBD</param>
+        /// <param name="run">The runnable to queue.</param>
         /// <exception cref="RejectedExecutionException">
         /// This exception is thrown if this method is called during the shutdown of this executor.
         /// </exception>
@@ -262,11 +269,11 @@ namespace Akka.Dispatch
         {
             if (Volatile.Read(ref _shuttingDown) == 1)
                 throw new RejectedExecutionException("ForkJoinExecutor is shutting down");
-            _dedicatedThreadPool.QueueUserWorkItem(run.Run);
+            _dedicatedThreadPool.QueueUserWorkItem(run);
         }
 
         /// <summary>
-        /// TBD
+        /// Marks this executor as shutting down and disposes its dedicated thread pool.
         /// </summary>
         public override void Shutdown()
         {
@@ -298,26 +305,26 @@ namespace Akka.Dispatch
         /// <summary>
         ///     The default dispatcher identifier, also the full key of the configuration of the default dispatcher.
         /// </summary>
-        public static readonly string DefaultDispatcherId = "akka.actor.default-dispatcher";
+        public const string DefaultDispatcherId = "akka.actor.default-dispatcher";
 
         ///<summary>
         /// The id of a default dispatcher to use for operations known to be blocking. Note that
         /// for optimal performance you will want to isolate different blocking resources
         /// on different thread pools.
         /// </summary>
-        public static readonly string DefaultBlockingDispatcherId = "akka.actor.default-blocking-io-dispatcher";
+        public const string DefaultBlockingDispatcherId = "akka.actor.default-blocking-io-dispatcher";
 
         /// <summary>
         /// INTERNAL API
         /// </summary>
-        internal static readonly string InternalDispatcherId = "akka.actor.internal-dispatcher";
+        internal const string InternalDispatcherId = "akka.actor.internal-dispatcher";
 
         private const int MaxDispatcherAliasDepth = 20;
 
         /// <summary>
         ///     The identifier for synchronized dispatchers.
         /// </summary>
-        public static readonly string SynchronizedDispatcherId = "akka.actor.synchronized-dispatcher";
+        public const string SynchronizedDispatcherId = "akka.actor.synchronized-dispatcher";
 
         private readonly ActorSystem _system;
         private Config _cachingConfig;
@@ -329,18 +336,48 @@ namespace Akka.Dispatch
         /// 
         /// Has to be thread-safe, as this collection can be accessed concurrently by many actors.
         /// </summary>
-        private readonly ConcurrentDictionary<string, MessageDispatcherConfigurator> _dispatcherConfigurators = new ConcurrentDictionary<string, MessageDispatcherConfigurator>();
+        private readonly ConcurrentDictionary<string, MessageDispatcherConfigurator> _dispatcherConfigurators = new();
+
+        /// <summary>
+        /// Get (possibly aliased) dispatcher config. Returns empty config if not found.
+        /// </summary>
+        [InternalApi]
+        public static Config GetConfig(Config config, string id, int depth = 0)
+        {
+            if (depth > MaxDispatcherAliasDepth)
+            {
+                // Didn't find dispatcher config after `MaxDispatcherAliasDepth` aliases
+                return ConfigurationFactory.Empty;
+            }
+            else if (config.HasPath(id))
+            {
+                var hocon = config.GetValue(id);
+                if (hocon.IsObject())
+                    return config.GetConfig(id);
+                if (hocon.IsString())
+                    return GetConfig(config, config.GetString(id), depth + 1);
+
+                // Expected either config or alias at `id` but found `unexpected`
+                return ConfigurationFactory.Empty;
+            }
+            else 
+            {
+                // Dispatcher `id` not configured
+                return ConfigurationFactory.Empty;
+            }
+        }
 
         /// <summary>Initializes a new instance of the <see cref="Dispatchers" /> class.</summary>
         /// <param name="system">The system.</param>
         /// <param name="prerequisites">The prerequisites required for some <see cref="MessageDispatcherConfigurator"/> instances.</param>
+        /// <param name="logger">The logger for dispatchers.</param>
         public Dispatchers(ActorSystem system, IDispatcherPrerequisites prerequisites, ILoggingAdapter logger)
         {
             _system = system;
+            _logger = logger;
             Prerequisites = prerequisites;
             _cachingConfig = new CachingConfig(prerequisites.Settings.Config);
             _defaultGlobalDispatcher = Lookup(DefaultDispatcherId);
-            _logger = logger;
 
             InternalDispatcher = Lookup(InternalDispatcherId);
         }
@@ -371,7 +408,7 @@ namespace Akka.Dispatch
         /// 
         /// Used when a plugin like Akka.Persistence needs to be able to load dispatcher configurations to the chain.
         /// </summary>
-        /// <param name="prerequisites">TBD</param>
+        /// <param name="prerequisites">The updated system settings, event stream, and other dispatcher prerequisites.</param>
         internal void ReloadPrerequisites(IDispatcherPrerequisites prerequisites)
         {
             Prerequisites = prerequisites;
@@ -392,11 +429,11 @@ namespace Akka.Dispatch
         /// of the actual dispatcher config to use. If several ids leading to the same actual dispatcher config is used only one
         /// instance is created. This means that for dispatchers you expect to be shared they will be.
         /// </summary>
-        /// <param name="dispatcherName">TBD</param>
+        /// <param name="dispatcherName">The configured dispatcher identifier or alias to resolve.</param>
         /// <exception cref="ConfigurationException">
         /// This exception is thrown if the specified dispatcher cannot be found in the configuration.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>The dispatcher resolved from the named configuration entry or alias.</returns>
         public MessageDispatcher Lookup(string dispatcherName)
         {
             return LookupConfigurator(dispatcherName).Dispatcher();
@@ -408,7 +445,7 @@ namespace Akka.Dispatch
         /// when using the dispatcher, because the details can only be checked by trying to
         /// instantiate it, which might be undesirable when just checking.
         /// </summary>
-        /// <param name="id">TBD</param>
+        /// <param name="id">The dispatcher identifier or alias to check.</param>
         public bool HasDispatcher(string id)
         {
             return _dispatcherConfigurators.ContainsKey(id) || _cachingConfig.HasPath(id);
@@ -443,13 +480,20 @@ namespace Akka.Dispatch
                     if (valueAtPath.IsObject())
                     {
                         var newConfigurator = ConfiguratorFrom(Config(id));
-                        return _dispatcherConfigurators.TryAdd(id, newConfigurator) ? newConfigurator : _dispatcherConfigurators[id];
+                        return _dispatcherConfigurators.TryAdd(id, newConfigurator)
+                            ? newConfigurator
+                            : _dispatcherConfigurators[id];
                     }
-                    throw new ConfigurationException($"Expected either a dispatcher config or an alias at [{id}] but found [{valueAtPath}]");
+
+                    throw new ConfigurationException(
+                        $"Expected either a dispatcher config or an alias at [{id}] but found [{valueAtPath}]");
                 }
+
                 throw new ConfigurationException($"Dispatcher {id} not configured.");
             }
-            throw new ConfigurationException($"Could not find a concrete dispatcher config after following {MaxDispatcherAliasDepth} deep. Is there a circular reference in your config? Last followed Id was [{id}]");
+
+            throw new ConfigurationException(
+                $"Could not find a concrete dispatcher config after following {MaxDispatcherAliasDepth} deep. Is there a circular reference in your config? Last followed Id was [{id}]");
         }
 
         /// <summary>
@@ -486,8 +530,8 @@ namespace Akka.Dispatch
         /// first registration will be used.
         /// </remarks>
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <param name="configurator">TBD</param>
+        /// <param name="id">The identifier under which the configurator is registered.</param>
+        /// <param name="configurator">The configurator to use for that identifier.</param>
         /// <returns>This method returns <c>true</c> if the specified configurator was successfully registered.</returns>
         public bool RegisterConfigurator(string id, MessageDispatcherConfigurator configurator)
         {
@@ -517,12 +561,14 @@ namespace Akka.Dispatch
         }
 
 
-        private static readonly Config ForkJoinExecutorConfig = ConfigurationFactory.ParseString("executor=fork-join-executor");
+        private static readonly Config ForkJoinExecutorConfig =
+            ConfigurationFactory.ParseString("executor=fork-join-executor");
 
         private static readonly Config CurrentSynchronizationContextExecutorConfig =
             ConfigurationFactory.ParseString(@"executor=current-context-executor");
 
         private static readonly Config TaskExecutorConfig = ConfigurationFactory.ParseString(@"executor=task-executor");
+
         private MessageDispatcherConfigurator ConfiguratorFrom(Config cfg)
         {
             if (cfg.IsNullOrEmpty())
@@ -540,6 +586,10 @@ namespace Akka.Dispatch
              * Fallbacks are added here in order to preserve backwards compatibility with versions of AKka.NET prior to 1.1,
              * before the ExecutorService system was implemented
              */
+            // This switch is also the built-in table for dispatchers: the cases are short aliases rather than
+            // type names, so the trimmer and the Native AOT compiler already see every configurator Akka.NET
+            // ships. Only the default arm - a dispatcher named by type in HOCON - needs reflection, which is
+            // why that is the one branch behind the Akka.DynamicTypeLoading switch.
             switch (type)
             {
                 case "Dispatcher":
@@ -560,16 +610,26 @@ namespace Akka.Dispatch
                 case null:
                     throw new ConfigurationException($"Could not resolve dispatcher for path {id}. type is null");
                 default:
-                    Type dispatcherType = Type.GetType(type);
-                    if (dispatcherType == null)
-                    {
-                        throw new ConfigurationException($"Could not resolve dispatcher type {type} for path {id}");
-                    }
-                    dispatcher = (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, Prerequisites);
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                        throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                            $"{id}.type", type, "one of the built-in dispatcher types"));
+
+                    dispatcher = CreateDispatcherConfiguratorFromTypeName(type, id, cfg, Prerequisites);
                     break;
             }
 
             return dispatcher;
+        }
+
+        [RequiresUnreferencedCode("Loads a dispatcher [type] named in HOCON by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static MessageDispatcherConfigurator CreateDispatcherConfiguratorFromTypeName(
+            string type, string id, Config cfg, IDispatcherPrerequisites prerequisites)
+        {
+            var dispatcherType = Type.GetType(type);
+            if (dispatcherType == null)
+                throw new ConfigurationException($"Could not resolve dispatcher type {type} for path {id}");
+
+            return (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, prerequisites);
         }
     }
 
@@ -613,11 +673,10 @@ namespace Akka.Dispatch
         /// or returns a reference to an existing instance is an implementation detail of the
         /// underlying implementation.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The dispatcher instance held by this configurator.</returns>
         public override MessageDispatcher Dispatcher()
         {
             return _instance;
         }
     }
 }
-

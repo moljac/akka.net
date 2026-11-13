@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ContinuousEnumerator.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -72,12 +72,11 @@ namespace Akka.Util
         /// 
         /// Internally, it just wraps <paramref name="collection"/>'s internal iterator with circular iteration behavior.
         /// </summary>
-        /// <param name="collection">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="collection">The sequence to iterate repeatedly.</param>
+        /// <returns>An enumerator that calls <see cref="IEnumerator.Reset"/> after reaching the end; repeating requires an enumerator that supports reset.</returns>
         public static ContinuousEnumerator<T> GetContinuousEnumerator<T>(this IEnumerable<T> collection)
         {
             return new ContinuousEnumerator<T>(collection.GetEnumerator());
         }
     }
 }
-

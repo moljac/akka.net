@@ -1,16 +1,18 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="EventFilterTestBase.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System;
+using System.Threading.Tasks;
 using Akka.Event;
-using Akka.Testkit.Tests.TestEventListenerTests;
+using Xunit;
 
-namespace Akka.TestKit.Tests.Xunit2.TestEventListenerTests
+namespace Akka.TestKit.Tests.TestEventListenerTests
 {
-    public abstract class EventFilterTestBase : TestKit.Xunit2.TestKit
+    public abstract class EventFilterTestBase : TestKit.Xunit.TestKit
     {
         /// <summary>
         /// Used to signal that the test was successful and that we should ensure no more messages were logged
@@ -20,12 +22,23 @@ namespace Akka.TestKit.Tests.Xunit2.TestEventListenerTests
         protected EventFilterTestBase(string config)
             : base(@"akka.loggers = [""" + typeof(ForwardAllEventsTestEventListener).AssemblyQualifiedName + @"""], " + (string.IsNullOrEmpty(config) ? "" : config))
         {
+        }
+
+        public override async ValueTask InitializeAsync()
+        {
+            await base.InitializeAsync();
+
             //We send a ForwardAllEventsTo containing message to the TestEventListenerToForwarder logger (configured as a logger above).
             //It should respond with an "OK" message when it has received the message.
             var initLoggerMessage = new ForwardAllEventsTestEventListener.ForwardAllEventsTo(TestActor);
-            // ReSharper disable once DoNotCallOverridableMethodsInConstructor
-            SendRawLogEventMessage(initLoggerMessage);
-            ExpectMsg("OK");
+
+            // Retry logger initialization to handle race conditions where logging system isn't ready yet
+            await AwaitAssertAsync(async () =>
+            {
+                SendRawLogEventMessage(initLoggerMessage);
+                await ExpectMsgAsync("OK", TimeSpan.FromSeconds(1));
+            }, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(200));
+
             //From now on we know that all messages will be forwarded to TestActor
         }
 
@@ -34,11 +47,21 @@ namespace Akka.TestKit.Tests.Xunit2.TestEventListenerTests
         protected override void AfterAll()
         {
             //After every test we make sure no uncatched messages have been logged
+            Exception exception = null;
             if(TestSuccessful)
             {
-                EnsureNoMoreLoggedMessages();
+                try
+                {
+                    EnsureNoMoreLoggedMessages();
+                }
+                catch (Exception e)
+                {
+                    exception = e;
+                }
             }
             base.AfterAll();
+            if (exception is { })
+                throw exception;
         }
 
         private void EnsureNoMoreLoggedMessages()

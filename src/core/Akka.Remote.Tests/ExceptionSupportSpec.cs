@@ -1,4 +1,11 @@
-﻿using System;
+﻿//-----------------------------------------------------------------------
+// <copyright file="ExceptionSupportSpec.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -13,7 +20,6 @@ using Akka.Remote.Transport;
 using Akka.Serialization;
 using Akka.TestKit;
 using Xunit;
-using Xunit.Abstractions;
 using FluentAssertions;
 
 namespace Akka.Remote.Tests
@@ -21,8 +27,8 @@ namespace Akka.Remote.Tests
     public class ExceptionSupportSpec : AkkaSpec
     {
         private readonly ExceptionSupport _serializer;
-        private readonly Exception _innerException = new Exception("inner message");
-        private readonly Exception _innerException2 = new Exception("inner message 2");
+        private readonly Exception _innerException = new("inner message");
+        private readonly Exception _innerException2 = new("inner message 2");
 
         public ExceptionSupportSpec(ITestOutputHelper output) : base(output)
         {

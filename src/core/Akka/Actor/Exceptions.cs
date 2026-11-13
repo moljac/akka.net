@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Exceptions.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -116,10 +116,10 @@ namespace Akka.Actor
     public class ActorInterruptedException : AkkaException
     {
         /// <summary>
-        /// TBD
+        /// Creates an exception indicating that an actor was interrupted while processing messages.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <param name="cause">TBD</param>
+        /// <param name="message">A message describing the interruption.</param>
+        /// <param name="cause">The exception that caused the interruption, if any.</param>
         public ActorInterruptedException(string message = null, Exception cause = null) : base(message, cause) { }
 
         /// <summary>
@@ -254,6 +254,17 @@ namespace Akka.Actor
             : base(info, context)
         {
         }
+    }
+
+    /// <summary>
+    /// Thrown when an actor is sent a <see cref="IntentionalRestart"/> message.
+    /// </summary>
+    /// <remarks>
+    /// Meant to be used primarily for testing purposes.
+    /// </remarks>
+    public sealed class IntentionalActorRestartException : AkkaException
+    {
+        public IntentionalActorRestartException() : base("Intentional actor restart") { }
     }
 
     /// <summary>
@@ -537,4 +548,3 @@ namespace Akka.Actor
         }
     }
 }
-

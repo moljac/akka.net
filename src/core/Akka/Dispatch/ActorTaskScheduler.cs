@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorTaskScheduler.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -16,14 +16,14 @@ using Akka.Util.Internal;
 namespace Akka.Dispatch
 {
     /// <summary>
-    /// TBD
+    /// Schedules tasks through an actor cell so asynchronous actor work is serialized with that actor's mailbox.
     /// </summary>
     public class ActorTaskScheduler : TaskScheduler
     {
         private readonly ActorCell _actorCell;
 
         /// <summary>
-        /// TBD
+        /// Gets or sets the message whose actor handler started the currently scheduled asynchronous operation.
         /// </summary>
         public object CurrentMessage { get; private set; }
         
@@ -37,16 +37,29 @@ namespace Akka.Dispatch
         protected virtual void OnAfterTaskCompleted() { }
         
         /// <summary>
-        /// TBD
+        /// Creates a new <see cref="ActorTaskScheduler"/> bound to the given
+        /// <see cref="ActorCell"/>.
+        ///
+        /// Exposed as <c>protected internal</c> so external libraries (notably
+        /// Phobos, the Akka.NET observability plugin) can subclass
+        /// <see cref="ActorTaskScheduler"/> and override
+        /// <see cref="OnBeforeTaskStarted"/> / <see cref="OnAfterTaskCompleted"/>
+        /// to observe async message handler lifetimes without reflection or
+        /// runtime codegen. The two virtual hooks have always been
+        /// <c>protected</c>, so widening the constructor to match finishes an
+        /// extension point that was already half-exposed. The <c>internal</c>
+        /// portion preserves the existing <c>new ActorTaskScheduler(this)</c>
+        /// call site inside <see cref="ActorCell"/> without requiring a
+        /// derived type.
         /// </summary>
-        /// <param name="actorCell">TBD</param>
-        internal ActorTaskScheduler(ActorCell actorCell)
+        /// <param name="actorCell">The cell this scheduler is bound to.</param>
+        protected internal ActorTaskScheduler(ActorCell actorCell)
         {
             _actorCell = actorCell;
         }
         
         /// <summary>
-        /// TBD
+        /// Reports the scheduler's concurrency limit, which is one task at a time.
         /// </summary>
         public override int MaximumConcurrencyLevel
         {
@@ -54,18 +67,18 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Scheduled tasks are not exposed for debugger enumeration.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>null</c>, indicating that scheduled tasks are not available for enumeration.</returns>
         protected override IEnumerable<Task> GetScheduledTasks()
         {
             return null;
         }
 
         /// <summary>
-        /// TBD
+        /// Executes a task inline when already running for this actor, or queues it through the actor cell.
         /// </summary>
-        /// <param name="task">TBD</param>
+        /// <param name="task">The task to execute or schedule.</param>
         protected override void QueueTask(Task task)
         {
             if ((task.CreationOptions & TaskCreationOptions.LongRunning) == TaskCreationOptions.LongRunning)
@@ -96,20 +109,20 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Attempts to run a task using this scheduler's execution rules.
         /// </summary>
-        /// <param name="task">TBD</param>
+        /// <param name="task">The task to execute.</param>
         internal void ExecuteTask(Task task)
         {
             TryExecuteTask(task);
         }
 
         /// <summary>
-        /// TBD
+        /// Does not execute tasks inline through the base TaskScheduler callback; QueueTask handles eligible inline execution.
         /// </summary>
-        /// <param name="task">TBD</param>
-        /// <param name="taskWasPreviouslyQueued">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="task">The task for which inline execution was requested.</param>
+        /// <param name="taskWasPreviouslyQueued">Whether the task was already queued.</param>
+        /// <returns>Always <c>false</c>.</returns>
         protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued)
         {
             // Prevent inline execution, it will execute inline anyway in QueueTask if we
@@ -118,9 +131,9 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Runs an action as actor-scheduled work while the actor mailbox is suspended. Successful completion resumes the mailbox; a fault is sent to the actor as a failure.
         /// </summary>
-        /// <param name="action">TBD</param>
+        /// <param name="action">The synchronous action to run.</param>
         public static void RunTask(Action action)
         {
             RunTask(() =>
@@ -131,9 +144,9 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Runs an asynchronous operation as actor-scheduled work while the actor mailbox is suspended. Successful completion resumes the mailbox; a fault or cancellation is sent to the actor as a failure.
         /// </summary>
-        /// <param name="asyncAction">TBD</param>
+        /// <param name="asyncAction">The asynchronous operation to run.</param>
         /// <exception cref="InvalidOperationException">
         /// This exception is thrown if this method is called outside an actor context.
         /// </exception>
@@ -149,7 +162,7 @@ namespace Akka.Dispatch
             //suspend the mailbox
             dispatcher.Suspend(context);
 
-            ActorTaskScheduler actorScheduler = context.TaskScheduler;
+            var actorScheduler = context.TaskScheduler;
             actorScheduler.CurrentMessage = context.CurrentMessage;
 
             actorScheduler.OnBeforeTaskStarted();
@@ -158,18 +171,21 @@ namespace Akka.Dispatch
                               .Unwrap()
                               .ContinueWith(parent =>
                               {
-                                  Exception exception = GetTaskException(parent);
-
+                                  var exception = GetTaskException(parent);
                                   if (exception == null)
                                   {
                                       dispatcher.Resume(context);
-
-                                      context.CheckReceiveTimeout();
+                                      context.CheckReceiveTimeout(context.CurrentMessage is not INotInfluenceReceiveTimeout);
                                   }
                                   else
                                   {
                                       context.Self.AsInstanceOf<IInternalActorRef>().SendSystemMessage(new ActorTaskSchedulerMessage(exception, actorScheduler.CurrentMessage));
                                   }
+                                  
+                                  // Used by TestActorRef to intercept async execution result
+                                  if(actorScheduler is IAsyncResultInterceptor interceptor)
+                                      interceptor.OnTaskCompleted(actorScheduler.CurrentMessage, exception);
+                                  
                                   //clear the current message field of the scheduler
                                   actorScheduler.CurrentMessage = null;
                                   actorScheduler.OnAfterTaskCompleted();
@@ -203,3 +219,7 @@ namespace Akka.Dispatch
     }
 }
 
+internal interface IAsyncResultInterceptor
+{
+    void OnTaskCompleted(object message, Exception exception);
+}

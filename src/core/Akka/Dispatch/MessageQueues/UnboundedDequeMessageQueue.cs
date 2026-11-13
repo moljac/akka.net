@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UnboundedDequeMessageQueue.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,7 +17,7 @@ namespace Akka.Dispatch.MessageQueues
     public class UnboundedDequeMessageQueue : DequeWrapperMessageQueue, IUnboundedDequeBasedMessageQueueSemantics
     {
         /// <summary>
-        /// TBD
+        /// Creates an unbounded deque-backed message queue for stash operations.
         /// </summary>
         public UnboundedDequeMessageQueue() : base(new UnboundedMessageQueue())
         {
@@ -30,10 +30,10 @@ namespace Akka.Dispatch.MessageQueues
     public class BoundedDequeMessageQueue : DequeWrapperMessageQueue, IBoundedDequeBasedMessageQueueSemantics
     {
         /// <summary>
-        /// TBD
+        /// Creates a bounded deque-backed message queue.
         /// </summary>
-        /// <param name="boundedCapacity">TBD</param>
-        /// <param name="pushTimeOut">TBD</param>
+        /// <param name="boundedCapacity">The maximum number of messages the underlying queue can hold; zero creates an unbounded queue.</param>
+        /// <param name="pushTimeOut">How long an enqueue waits for capacity before forwarding the message to dead letters.</param>
         public BoundedDequeMessageQueue(int boundedCapacity, TimeSpan pushTimeOut)
             : base(new BoundedMessageQueue(boundedCapacity, pushTimeOut))
         {
@@ -49,4 +49,3 @@ namespace Akka.Dispatch.MessageQueues
         public TimeSpan PushTimeOut { get; }
     }
 }
-

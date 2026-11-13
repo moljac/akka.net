@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Extensions.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Akka.Actor
 {
@@ -107,7 +108,9 @@ namespace Akka.Actor
         /// <param name="system">The actor system from which to retrieve the extension or to register with if it does not exist.</param>
         /// <param name="extensionId">The type of the extension to register if it does not exist in the given actor system.</param>
         /// <returns>The extension retrieved from the given actor system.</returns>
-        public static T WithExtension<T>(this ActorSystem system, Type extensionId) where T : class, IExtension
+        public static T WithExtension<T>(this ActorSystem system,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] Type extensionId)
+            where T : class, IExtension
         {
             if (system.HasExtension<T>())
                 return system.GetExtension<T>();
@@ -126,8 +129,9 @@ namespace Akka.Actor
         /// <typeparam name="TI">The type associated with the extension to retrieve if it does not exist within the system.</typeparam>
         /// <param name="system">The actor system from which to retrieve the extension or to register with if it does not exist.</param>
         /// <returns>The extension retrieved from the given actor system.</returns>
-        public static T WithExtension<T,TI>(this ActorSystem system) where T : class, IExtension
-                                                                     where TI: IExtensionId
+        public static T WithExtension<T, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] TI>(this ActorSystem system)
+            where T : class, IExtension
+            where TI : IExtensionId
         {
             if (system.HasExtension<T>())
                 return system.GetExtension<T>();
@@ -195,13 +199,13 @@ namespace Akka.Actor
         /// <returns>The extension created using the given actor system.</returns>
         public abstract T CreateExtension(ExtendedActorSystem system);
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             return obj is T;
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             return typeof (T).GetHashCode();

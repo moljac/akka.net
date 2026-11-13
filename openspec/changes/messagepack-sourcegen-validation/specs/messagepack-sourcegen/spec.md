@@ -1,0 +1,288 @@
+## ADDED Requirements
+
+### Requirement: MessagePack writer and reader package
+
+The system SHALL provide an `Akka.Serialization.V2` package containing MessagePack-CSharp-backed helper conventions for generated serializers.
+
+#### Scenario: Writer uses V2 buffer API
+- **WHEN** a generated serializer writes a message
+- **THEN** it SHALL write MessagePack bytes into the provided `IBufferWriter<byte>` using a cursor-based `MessagePackWriter`
+
+#### Scenario: Reader uses V2 sequence API
+- **WHEN** a generated serializer reads a message
+- **THEN** it SHALL read MessagePack bytes from the provided V2 input using a cursor-based `MessagePackReader`
+
+### Requirement: SerializerV2 size hints are exact or unknown
+
+The system SHALL treat a non-negative `SerializerV2.SizeHint` result as the exact serialized byte size and SHALL use `SerializerV2.UnknownSize` when exact sizing cannot be proven cheaply.
+
+#### Scenario: Generated serializer cannot prove exact size
+- **WHEN** a generated serializer cannot compute the exact encoded size of every field it writes
+- **THEN** `SizeHint` SHALL return `SerializerV2.UnknownSize`
+
+#### Scenario: Generated serializer can prove exact size
+- **WHEN** a generated serializer can compute the exact encoded size of every field it writes
+- **THEN** `SizeHint` SHALL return the exact serialized byte count
+
+#### Scenario: Unknown envelope payload size propagates
+- **WHEN** a generated serializer contains an envelope payload whose payload serializer reports `SerializerV2.UnknownSize`
+- **THEN** every enclosing generated serializer that includes that payload SHALL also report `SerializerV2.UnknownSize`
+
+#### Scenario: Unknown-size serialization fallback
+- **WHEN** `SizeHint` returns `SerializerV2.UnknownSize`
+- **THEN** serialization SHALL still write valid bytes through the V2 `IBufferWriter<byte>` API
+
+### Requirement: Source generator emits V2 serializers
+
+The system SHALL provide a Roslyn incremental source generator that emits `SerializerV2` implementations for annotated messages.
+
+#### Scenario: Serializable type annotated
+- **WHEN** a type is annotated with `[AkkaSerializable]` and valid `[AkkaField]` members
+- **THEN** the generator SHALL emit serializer code for that type
+
+#### Scenario: Invalid schema rejected
+- **WHEN** field indexes are missing, duplicated, or unsupported
+- **THEN** the generator SHALL produce compile-time diagnostics
+
+#### Scenario: Field IDs encoded
+- **WHEN** a generated serializer writes a message
+- **THEN** it SHALL encode each `[AkkaField]` index as an explicit field ID in the MessagePack payload
+
+#### Scenario: Unknown field skipped
+- **WHEN** a generated serializer reads a payload containing an unknown field ID
+- **THEN** it SHALL skip that field and continue reading known fields
+
+#### Scenario: Missing required field rejected
+- **WHEN** a generated serializer reads a payload missing a non-nullable required field
+- **THEN** deserialization SHALL fail with a serialization error
+
+#### Scenario: Nullable field preserved
+- **WHEN** a generated serializer writes or reads nullable scalar, reference, enum, or nested generated fields
+- **THEN** MessagePack nil and missing optional fields SHALL deserialize as null while present values SHALL round-trip normally
+
+#### Scenario: Byte array field preserved
+- **WHEN** a generated serializer writes or reads a byte-array field
+- **THEN** it SHALL encode the value as a MessagePack binary payload and preserve the original bytes
+
+### Requirement: Generated serializers support envelope payload boundaries
+
+Generated serializers SHALL treat a field whose static type, after generic substitution, is `object` (or `object?`) as an Akka serializer boundary rather than an inline generated schema. No attribute is required, and none exists for this purpose.
+
+#### Scenario: Envelope payload field serialized
+- **WHEN** a generated serializer writes an `object`-typed field
+- **THEN** it SHALL resolve the field value through normal Akka serializer lookup
+- **AND** it SHALL store the payload serializer id, serializer manifest, and opaque serialized payload bytes
+
+#### Scenario: Envelope payload field deserialized
+- **WHEN** a generated serializer reads a non-null `object`-typed field
+- **THEN** it SHALL recover the field value through normal Akka deserialization using the stored serializer id, manifest, and bytes
+
+#### Scenario: V2 envelope payload deserialized without byte-array copy
+- **WHEN** a generated serializer reads a non-null `object`-typed field whose payload serializer is V2
+- **THEN** it SHALL dispatch the MessagePack `bin` payload as a `ReadOnlySequence<byte>` without first copying it into a byte array
+
+#### Scenario: Unknown-size envelope payload serialized through staging buffer
+- **WHEN** a generated serializer writes a non-null `object`-typed field whose serialized length is not known before writing the MessagePack `bin` header
+- **THEN** it SHALL stage the inner payload bytes before writing the outer `bin` field
+
+#### Scenario: Nested envelope payload chain
+- **WHEN** generated envelopes contain nested `object`-typed fields
+- **THEN** generated V2 payloads and custom V1 payloads SHALL round-trip without requiring structural MessagePack encoding for the inner payload object
+
+#### Scenario: Generic wrapper closed over object is a boundary
+- **WHEN** a generic `[AkkaSerializable]` definition has a `[AkkaField]` property typed by its type parameter, and a registered closed construction substitutes `object` for that parameter
+- **THEN** the generator SHALL treat that field as a serializer boundary in the closed construction
+
+#### Scenario: Object elements inside a collection are boundaries
+- **WHEN** a supported collection's element type is `object` (an array, a list, a read-only or immutable collection, or a dictionary value -- a dictionary KEY typed `object` is rejected with AKKASG003 instead)
+- **THEN** the generator SHALL treat each element as its own serializer boundary, writing and reading it as an envelope payload the same way an `object`-typed field is
+
+#### Scenario: Interface field with no members names the fixes
+- **WHEN** an `[AkkaField]` property's static type is an interface or abstract class that no `[AkkaSerializable]` type implements or derives from
+- **THEN** the generator SHALL fail compilation with a diagnostic (AKKASG019) whose message names both fixes: mark its implementations `[AkkaSerializable]`, or type the property as `object`
+
+### Requirement: Generated serializers use explicit registration
+
+Generated serializers SHALL expose per-serializer registration helpers and SHALL NOT require runtime assembly scanning.
+
+#### Scenario: Serializer declares protocol family
+- **WHEN** a user declares a partial serializer class for a protocol marker interface
+- **THEN** the generator SHALL attach discoverable registration helpers to that serializer class
+
+#### Scenario: Multiple serializers registered
+- **WHEN** an application uses serializers from multiple assemblies
+- **THEN** the application SHALL compose per-serializer registrations explicitly into one `SerializationSetup`
+
+### Requirement: Generated serializers support actor references
+
+Generated serializers SHALL support `IActorRef` fields using Akka's transport-aware actor-ref serialization helpers.
+
+#### Scenario: Actor reference field serialized
+- **WHEN** a generated serializer writes an `IActorRef` field
+- **THEN** it SHALL serialize the field using `Serialization.SerializedActorPath`
+
+#### Scenario: Actor reference field deserialized
+- **WHEN** a generated serializer reads an actor-ref path
+- **THEN** it SHALL resolve the path using the serializer's `ExtendedActorSystem`
+
+### Requirement: Generated serializers favor immutable message shapes
+
+Generated serializers SHALL initially support immutable message designs and nested generated structures.
+
+#### Scenario: Immutable constructor-bound message
+- **WHEN** a message uses a record primary constructor or supported constructor-bound immutable shape
+- **THEN** the generator SHALL emit read and write code for the message
+
+#### Scenario: Constructor argument matched by field name
+- **WHEN** the generator selects a constructor to reconstruct an `[AkkaSerializable]` type on deserialize
+- **THEN** it SHALL match each non-default constructor parameter to an `[AkkaField]` property by name, preferring an ordinal case-sensitive match and falling back to a unique case-insensitive match
+
+#### Scenario: Init-only property or field message
+- **WHEN** a message assigns some or all of its `[AkkaField]` members through init-only property or field assignment rather than exclusively through a constructor
+- **THEN** the generator SHALL emit read code that combines any covering constructor arguments with object-initializer assignment for the remaining settable or init-only members
+
+#### Scenario: Nested generated type
+- **WHEN** a message contains a nested generated type with explicit field IDs
+- **THEN** the generator SHALL serialize and deserialize the nested structure without runtime reflection
+
+#### Scenario: Multi-level nested generated type
+- **WHEN** a message contains multiple levels of nested generated types with explicit field IDs
+- **THEN** the generator SHALL serialize and deserialize the full nested structure inline without runtime reflection
+
+#### Scenario: Nested value object without manifest
+- **WHEN** a nested generated type is not a top-level protocol message
+- **THEN** the generator SHALL serialize it inline without requiring or using a serializer manifest for that nested type
+
+#### Scenario: Nested value object without serialization definition
+- **WHEN** a message contains a nested value-object field that is not annotated for generated serialization
+- **THEN** the generator SHALL fail compilation with a diagnostic
+
+#### Scenario: Mutable or factory-only shape
+- **WHEN** a message requires mutable setter-centric hydration, arbitrary factory methods, or unsupported polymorphic discovery
+- **THEN** the generator SHALL reject it with a diagnostic
+
+#### Scenario: No usable constructor
+- **WHEN** no accessible constructor of an `[AkkaSerializable]` type maps every required parameter to an `[AkkaField]` property by name with an assignable type, and no uncovered property has an accessible setter
+- **THEN** the generator SHALL fail compilation with a diagnostic
+
+#### Scenario: Ambiguous constructor parameter match
+- **WHEN** a constructor parameter matches more than one `[AkkaField]` property case-insensitively
+- **THEN** the generator SHALL fail compilation with a diagnostic
+
+#### Scenario: Defaulted constructor parameter left uncovered
+- **WHEN** the selected constructor has a defaulted parameter that is not covered by any `[AkkaField]` property
+- **THEN** the generator SHALL emit a diagnostic warning that the parameter silently resets to its default value on every deserialize
+
+#### Scenario: Inaccessible field property
+- **WHEN** an `[AkkaField]` property is static or has no accessible getter
+- **THEN** the generator SHALL fail compilation with a diagnostic
+
+### Requirement: Generated serializers support manifest-discriminated closed unions
+
+The system SHALL treat an `[AkkaField]` property whose static type is an interface, an abstract class, a C# 15 `closed` type, or a C# 15 `union` as a union over the `[AkkaSerializable]` types that implement or derive from it (or the union's cases), with no attribute, encoded structurally inline and discriminated by manifest, distinct from the runtime-resolved serializer boundary of an `object`-typed field (design.md Decision 22).
+
+#### Scenario: Union members are inferred from the property type
+- **WHEN** an `[AkkaField]` property's static type is an interface or abstract class
+- **THEN** its member set SHALL be every `[AkkaSerializable]` type in the compilation, or in a referenced assembly that references `Akka.Serialization.V2`, that implements or derives from it
+
+#### Scenario: Framework and collection types are not inferred
+- **WHEN** a property's static type is in the `System` namespace or Akka.NET's own core assembly, or implements `IEnumerable`
+- **THEN** the generator SHALL NOT treat it as a union
+
+#### Scenario: Union wire format
+- **WHEN** a generated serializer writes a union field
+- **THEN** it SHALL encode a 2-entry map of the member's manifest and its inline field map
+
+#### Scenario: Union write dispatch matches exact runtime type
+- **WHEN** a generated serializer writes a union field whose runtime value's exact type is not a declared member of the union, including an undeclared subtype of a declared member
+- **THEN** serialization SHALL fail
+
+#### Scenario: Union read fails on unknown manifest
+- **WHEN** a generated serializer reads a union field whose manifest does not match any declared member
+- **THEN** deserialization SHALL fail
+
+#### Scenario: Union read skips unknown frame keys
+- **WHEN** a generated serializer reads a union field whose frame contains keys other than the manifest and payload
+- **THEN** it SHALL skip the unknown keys and continue reading the known ones
+
+#### Scenario: Union member validation
+- **WHEN** a declared union member type is not `[AkkaSerializable]`, has no manifest, has a manifest that collides with another member of the same union, has an invalid member set, or is not assignable to the field's static type
+- **THEN** the generator SHALL fail compilation with a diagnostic
+
+#### Scenario: Unsealed union member advisory
+- **WHEN** a union member type is not sealed
+- **THEN** the generator SHALL emit an informational diagnostic, since write dispatch matches exact runtime type and an unsealed member can have undeclared subtypes
+
+### Requirement: Generated serializers support closed generic type registrations
+
+The system SHALL support registering closed generic constructions of a generic `[AkkaSerializable]` type via `[AkkaSerializerIncludes<T>]` on the `[AkkaSerializer]` class, since a source generator cannot emit serialization code for an open generic definition.
+
+#### Scenario: Closed construction registered
+- **WHEN** a generic `[AkkaSerializable]` type has an `[AkkaSerializerIncludes<T>(Manifest = ...)]` registration on the serializer class
+- **THEN** the generator SHALL emit dispatch for that closed construction as its own top-level message with its own manifest, with generic fields resolved against the concrete type arguments
+
+#### Scenario: Closed construction as nested field
+- **WHEN** a registered closed generic construction is used as the type of an ordinary message's field
+- **THEN** the generator SHALL serialize and deserialize it inline the same way it would an ordinary nested generated type
+
+#### Scenario: Open generic definition never serialized
+- **WHEN** a generic `[AkkaSerializable]` type has no registered closed construction
+- **THEN** the open generic definition SHALL NOT be directly serializable
+
+#### Scenario: Generic definition implementing protocol requires registration
+- **WHEN** a generic `[AkkaSerializable]` type implements a serializer's protocol interface
+- **THEN** the generator SHALL fail compilation unless at least one closed construction of that type is registered on the serializer
+
+#### Scenario: Unregistered closed generic field
+- **WHEN** a message field is typed as a closed generic construction that is not registered on the owning serializer
+- **THEN** the generator SHALL fail compilation with a diagnostic
+
+### Requirement: Generated serializers validate SerializerV2 API
+
+Generated serializers SHALL validate `SerializerV2` through real Akka.NET integration points before Artery envelopes are implemented.
+
+#### Scenario: Serialization round-trip
+- **WHEN** a generated serializer is registered
+- **THEN** the message SHALL round-trip through `Serialization.cs`
+
+#### Scenario: Classic remoting round-trip
+- **WHEN** a generated-serializer message is sent over classic Akka.Remote
+- **THEN** the receiver SHALL deserialize the original message
+
+#### Scenario: Persistence event round-trip
+- **WHEN** a generated-serializer event is persisted
+- **THEN** it SHALL recover as the original event
+
+#### Scenario: Persistence snapshot round-trip
+- **WHEN** a generated-serializer snapshot is saved
+- **THEN** it SHALL load as the original snapshot
+
+#### Scenario: V1 coexistence
+- **WHEN** V1 and generated V2 serializers are registered in the same actor system
+- **THEN** both SHALL work through the V2 serialization infrastructure
+
+#### Scenario: Opaque non-MessagePack payload inside generated wrapper
+- **WHEN** a generated MessagePack wrapper carries an application payload owned by a custom non-MessagePack Akka serializer
+- **THEN** the wrapper SHALL store the payload serializer id, serializer manifest, and opaque serialized payload bytes
+- **AND** the wrapper SHALL NOT require the inner payload type to be annotated for generated MessagePack serialization
+- **AND** the inner payload SHALL be recoverable through normal Akka deserialization using the stored serializer id, manifest, and bytes
+
+#### Scenario: Akka.Delivery wrapper validation
+- **WHEN** a generated-serializer message is used as an Akka.Delivery payload
+- **THEN** the delivery wrapper SHALL preserve the generated payload metadata and recover the original message
+
+#### Scenario: DistributedData wrapper validation
+- **WHEN** a generated-serializer message is used inside a DistributedData value where supported
+- **THEN** the DistributedData wrapper SHALL preserve the generated payload metadata and recover the original message
+
+### Requirement: Benchmark POC demonstrates protocol-family performance
+
+The system SHALL include an early benchmark POC using real C# protocol-family message types before the full spec is completed.
+
+#### Scenario: Generated serializer benchmarked
+- **WHEN** the benchmark serializes and deserializes a real protocol-family message
+- **THEN** it SHALL report generated MessagePack throughput/allocation/payload-size signals against an existing baseline serializer
+
+#### Scenario: Envelope payload composition benchmarked
+- **WHEN** the benchmark serializes generated MessagePack envelopes around generated V2 payloads, custom V1 payloads, same-shape custom V1 payloads, pre-captured payload metadata, and attribute-driven nested envelope payload fields
+- **THEN** it SHALL report throughput/allocation/payload-size signals for capture, wrapper serialization, and recovery paths

@@ -1,12 +1,11 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LeastShardAllocationStrategy.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Threading.Tasks;
@@ -35,13 +34,13 @@ namespace Akka.Cluster.Sharding.Internal
     [Serializable]
     internal class LeastShardAllocationStrategy : AbstractLeastShardAllocationStrategy
     {
-        private static readonly Task<IImmutableSet<ShardId>> emptyRebalanceResult = Task.FromResult<IImmutableSet<ShardId>>(ImmutableHashSet<ShardId>.Empty);
+        private static readonly Task<IImmutableSet<ShardId>> _emptyRebalanceResult = Task.FromResult<IImmutableSet<ShardId>>(ImmutableHashSet<ShardId>.Empty);
 
         private readonly int _absoluteLimit;
         private readonly double _relativeLimit;
 
         /// <summary>
-        /// TBD
+        /// Creates a strategy with per-round absolute and relative rebalance limits.
         /// </summary>
         /// <param name="absoluteLimit">The maximum number of shards that will be rebalanced in one rebalance round</param>
         /// <param name="relativeLimit">Fraction (&lt; 1.0) of total number of (known) shards that will be rebalanced in one rebalance round</param>
@@ -52,11 +51,11 @@ namespace Akka.Cluster.Sharding.Internal
         }
 
         /// <summary>
-        /// TBD
+        /// Selects shards to rebalance when there is no rebalance already in progress.
         /// </summary>
-        /// <param name="currentShardAllocations">TBD</param>
-        /// <param name="rebalanceInProgress">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="currentShardAllocations">The shards currently allocated to each region.</param>
+        /// <param name="rebalanceInProgress">The shard identifiers whose rebalance has not completed.</param>
+        /// <returns>The shard identifiers selected for a rebalance round, or an empty set when no rebalance is started.</returns>
         public override Task<IImmutableSet<ShardId>> Rebalance(IImmutableDictionary<IActorRef, IImmutableList<ShardId>> currentShardAllocations, IImmutableSet<ShardId> rebalanceInProgress)
         {
             int Limit(int numberOfShards)
@@ -96,7 +95,7 @@ namespace Akka.Cluster.Sharding.Internal
 
                 if (countBelowOptimal == 0)
                 {
-                    return emptyRebalanceResult;
+                    return _emptyRebalanceResult;
                 }
                 else
                 {
@@ -117,14 +116,14 @@ namespace Akka.Cluster.Sharding.Internal
             if (rebalanceInProgress.Count > 0)
             {
                 // one rebalance at a time
-                return emptyRebalanceResult;
+                return _emptyRebalanceResult;
             }
             else
             {
                 var sortedRegionEntries = RegionEntriesFor(currentShardAllocations).OrderBy(i => i, ShardSuitabilityOrdering.Instance).ToImmutableList();
                 if (!IsAGoodTimeToRebalance(sortedRegionEntries))
                 {
-                    return emptyRebalanceResult;
+                    return _emptyRebalanceResult;
                 }
                 else
                 {
@@ -132,7 +131,7 @@ namespace Akka.Cluster.Sharding.Internal
                     var numberOfRegions = sortedRegionEntries.Count;
                     if (numberOfRegions == 0 || numberOfShards == 0)
                     {
-                        return emptyRebalanceResult;
+                        return _emptyRebalanceResult;
                     }
                     else
                     {
@@ -142,7 +141,7 @@ namespace Akka.Cluster.Sharding.Internal
 
                         if (result1.Count > 0)
                         {
-                            return Task.FromResult<IImmutableSet<ShardId>>(result1);
+                            return Task.FromResult(result1);
                         }
                         else
                         {

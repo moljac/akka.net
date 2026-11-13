@@ -1,23 +1,20 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="MetricsCollectorSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
+using Akka.Cluster.Metrics.Serialization;
 using Akka.Cluster.Metrics.Tests.Base;
 using Akka.Cluster.Metrics.Tests.Helpers;
-using Akka.TestKit;
-using Akka.Util.Extensions;
-using Akka.Util.Internal;
+using Akka.TestKit.Xunit.Attributes;
 using FluentAssertions;
-using Google.Protobuf.WellKnownTypes;
+using FluentAssertions.Extensions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Cluster.Metrics.Tests
 {
@@ -49,12 +46,24 @@ namespace Akka.Cluster.Metrics.Tests
         }
 
         [Fact]
-        public void MetricsCollector_should_collector_accurate_metrics_for_node()
+        public async Task MetricsCollector_should_collector_accurate_metrics_for_node()
         {
-            var sample = Collector.Sample();
+            NodeMetrics sample;
+            try
+            {
+                // Increase timeout to handle slow CI environments and collector initialization
+                // DefaultCollector needs time for first sample (500ms sleep + process access)
+                sample = await CreateTestDataAsync(60.Seconds(), [
+                    StandardMetrics.MemoryAvailable,
+                    StandardMetrics.MemoryUsed
+                ]);
+            }
+            catch (Exception e)
+            {
+                throw new Exception("Failed to initialize test data", e);
+            }
+            
             var metrics = sample.Metrics.Select(m => (Name: m.Name, Value: m.Value)).ToList();
-            var used = metrics.First(m => m.Name == StandardMetrics.MemoryUsed);
-            var available = metrics.First(m => m.Name == StandardMetrics.MemoryAvailable);
             metrics.ForEach(m =>
             {
                 switch (m.Name)
@@ -62,24 +71,24 @@ namespace Akka.Cluster.Metrics.Tests
                     case StandardMetrics.Processors:
                         m.Value.DoubleValue.Should().BeGreaterOrEqualTo(0);
                         break;
-                    case StandardMetrics.MemoryAvailable: 
+                    case StandardMetrics.MemoryAvailable:
                         m.Value.LongValue.Should().BeGreaterThan(0);
                         break;
-                    case StandardMetrics.MemoryUsed: 
+                    case StandardMetrics.MemoryUsed:
                         m.Value.LongValue.Should().BeGreaterOrEqualTo(0);
                         break;
                     case StandardMetrics.MaxMemoryRecommended:
                         m.Value.LongValue.Should().BeGreaterThan(0);
                         // Since setting is only a recommendation, we can ignore it
                         // See: https://stackoverflow.com/a/7729022/3094849
-                        
+
                         // used.Value.LongValue.Should().BeLessThan(m.Value.LongValue);
                         // available.Value.LongValue.Should().BeLessThan(m.Value.LongValue);
                         break;
                     case StandardMetrics.CpuProcessUsage:
                         m.Value.DoubleValue.Should().BeInRange(0, 1);
                         break;
-                    case StandardMetrics.CpuTotalUsage: 
+                    case StandardMetrics.CpuTotalUsage:
                         m.Value.DoubleValue.Should().BeInRange(0, 1);
                         break;
                     default:
@@ -88,8 +97,8 @@ namespace Akka.Cluster.Metrics.Tests
             });
         }
 
-        [Fact(Skip = "This performance really depends on current load - so while should work well with specified timeouts," +
-                     "let's disable it to avoid flaky failures in future")]
+        [LocalFact(SkipLocal = "This performance really depends on current load - so while should work well with " +
+                               "specified timeouts, let's disable it to avoid flaky failures in future")]
         public async Task MetricsCollector_should_collect_50_node_metrics_samples_in_an_acceptable_duration()
         {
             const int iterationsCount = 50;

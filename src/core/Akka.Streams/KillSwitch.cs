@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="KillSwitch.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Streams.Stage;
+using Akka.Util.Internal;
 
 namespace Akka.Streams
 {
@@ -28,9 +29,9 @@ namespace Akka.Streams
         /// Creates a new <see cref="SharedKillSwitch"/> with the given name that can be used to control the completion of multiple
         /// streams from the outside simultaneously.
         /// </summary>
-        /// <param name="name">TBD</param>
-        /// <returns>TBD</returns>
-        public static SharedKillSwitch Shared(string name) => new SharedKillSwitch(name);
+        /// <param name="name">The name assigned to the shared kill switch.</param>
+        /// <returns>A shared kill switch that can control multiple stream materializations.</returns>
+        public static SharedKillSwitch Shared(string name) => new(name);
 
         /// <summary>
         /// Creates a new <see cref="IGraph{TShape}"/> of <see cref="FlowShape{TIn,TOut}"/> that materializes to an external switch that allows external completion
@@ -38,8 +39,8 @@ namespace Akka.Streams
         /// 
         /// For a Bidi version see <see cref="SingleBidi{TIn1,TOut1}"/>
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T">The element type passing through the flow.</typeparam>
+        /// <returns>A flow graph that materializes to a distinct <see cref="UniqueKillSwitch"/> for each materialization.</returns>
         public static IGraph<FlowShape<T, T>, UniqueKillSwitch> Single<T>() => UniqueKillSwitchStage<T>.Instance;
 
         /// <summary>
@@ -48,9 +49,9 @@ namespace Akka.Streams
         /// 
         /// For a Flow version see <see cref="Single{T}"/>
         /// </summary>
-        /// <typeparam name="T1">TBD</typeparam>
-        /// <typeparam name="T2">TBD</typeparam>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T1">The element type passing through the first inlet and outlet pair.</typeparam>
+        /// <typeparam name="T2">The element type passing through the second inlet and outlet pair.</typeparam>
+        /// <returns>A bidirectional graph that materializes to a distinct <see cref="UniqueKillSwitch"/> for each materialization.</returns>
         public static IGraph<BidiShape<T1, T1, T2, T2>, UniqueKillSwitch> SingleBidi<T1, T2>
             () => UniqueBidiKillSwitchStage<T1, T2>.Instance;
 
@@ -124,7 +125,7 @@ namespace Akka.Streams
                 private void OnCancelComplete() => CompleteStage();
 
                 [MethodImpl(MethodImplOptions.AggressiveInlining)]
-                private void OnCancelFail() => FailStage(new OperationCanceledException($"Stage cancelled due to cancellation token request.", _stage._cancellationToken));
+                private void OnCancelFail() => FailStage(new OperationCanceledException("Stage cancelled due to cancellation token request.", _stage._cancellationToken));
             }
 
             #endregion
@@ -139,32 +140,32 @@ namespace Akka.Streams
                 Shape = new FlowShape<T, T>(Inlet, Outlet);
             }
 
-            public Inlet<T> Inlet { get; } = new Inlet<T>("cancel.in");
-            public Outlet<T> Outlet { get; } = new Outlet<T>("cancel.out");
+            public Inlet<T> Inlet { get; } = new("cancel.in");
+            public Outlet<T> Outlet { get; } = new("cancel.out");
 
             public override FlowShape<T, T> Shape { get; }
             protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
         }
 
         /// <summary>
-        /// TBD
+        /// Stage logic that completes or fails its stage when a termination signal completes.
         /// </summary>
         internal abstract class KillableGraphStageLogic : InAndOutGraphStageLogic
         {
             private readonly Task _terminationSignal;
 
             /// <summary>
-            /// TBD
+            /// Initializes the logic with the task whose completion controls the stage and the stage shape.
             /// </summary>
-            /// <param name="terminationSignal">TBD</param>
-            /// <param name="shape">TBD</param>
+            /// <param name="terminationSignal">The task whose completion or failure terminates the stage.</param>
+            /// <param name="shape">The shape handled by this logic.</param>
             protected KillableGraphStageLogic(Task terminationSignal, Shape shape) : base(shape)
             {
                 _terminationSignal = terminationSignal;
             }
 
             /// <summary>
-            /// TBD
+            /// Registers a callback for the termination signal, or handles it immediately if it has already completed.
             /// </summary>
             public override void PreStart()
             {
@@ -207,22 +208,22 @@ namespace Akka.Streams
 
             #endregion
 
-            public static UniqueKillSwitchStage<T> Instance { get; } = new UniqueKillSwitchStage<T>();
+            public static UniqueKillSwitchStage<T> Instance { get; } = new();
 
             private UniqueKillSwitchStage() => Shape = new FlowShape<T, T>(In, Out);
 
             protected override Attributes InitialAttributes { get; } = Attributes.CreateName("breaker");
 
-            private Inlet<T> In { get; } = new Inlet<T>("KillSwitch.in");
+            private Inlet<T> In { get; } = new("KillSwitch.in");
 
-            private Outlet<T> Out { get; } = new Outlet<T>("KillSwitch.out");
+            private Outlet<T> Out { get; } = new("KillSwitch.out");
 
             public override FlowShape<T, T> Shape { get; }
 
             public override ILogicAndMaterializedValue<UniqueKillSwitch> CreateLogicAndMaterializedValue(
                 Attributes inheritedAttributes)
             {
-                var promise = new TaskCompletionSource<NotUsed>();
+                var promise = TaskEx.NonBlockingTaskCompletionSource<NotUsed>();
                 var killSwitch = new UniqueKillSwitch(promise);
                 return new LogicAndMaterializedValue<UniqueKillSwitch>(new Logic(promise.Task, this), killSwitch);
             }
@@ -254,7 +255,7 @@ namespace Akka.Streams
 
                     SetHandler(killSwitch.Out2,
                         onPull: () => Pull(killSwitch.In2),
-                        onDownstreamFinish: () => Cancel(killSwitch.In2));
+                        onDownstreamFinish: cause => Cancel(killSwitch.In2, cause));
                 }
 
                 public override void OnPush() => Push(_killSwitch.Out1, Grab(_killSwitch.In1));
@@ -265,30 +266,30 @@ namespace Akka.Streams
 
                 public override void OnPull() => Pull(_killSwitch.In1);
 
-                public override void OnDownstreamFinish() => Cancel(_killSwitch.In1);
+                public override void OnDownstreamFinish(Exception cause) => Cancel(_killSwitch.In1, cause);
             }
 
             #endregion
 
-            public static UniqueBidiKillSwitchStage<T1, T2> Instance { get; } = new UniqueBidiKillSwitchStage<T1, T2>();
+            public static UniqueBidiKillSwitchStage<T1, T2> Instance { get; } = new();
 
             private UniqueBidiKillSwitchStage() => Shape = new BidiShape<T1, T1, T2, T2>(In1, Out1, In2, Out2);
 
             protected override Attributes InitialAttributes { get; } = Attributes.CreateName("breaker");
 
-            private Inlet<T1> In1 { get; } = new Inlet<T1>("KillSwitchBidi.in1");
+            private Inlet<T1> In1 { get; } = new("KillSwitchBidi.in1");
 
-            private Outlet<T1> Out1 { get; } = new Outlet<T1>("KillSwitchBidi.out1");
+            private Outlet<T1> Out1 { get; } = new("KillSwitchBidi.out1");
 
-            private Inlet<T2> In2 { get; } = new Inlet<T2>("KillSwitchBidi.in2");
+            private Inlet<T2> In2 { get; } = new("KillSwitchBidi.in2");
 
-            private Outlet<T2> Out2 { get; } = new Outlet<T2>("KillSwitchBidi.out2");
+            private Outlet<T2> Out2 { get; } = new("KillSwitchBidi.out2");
 
             public override BidiShape<T1, T1, T2, T2> Shape { get; }
                 
             public override ILogicAndMaterializedValue<UniqueKillSwitch> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
             {
-                var promise = new TaskCompletionSource<NotUsed>();
+                var promise = TaskEx.NonBlockingTaskCompletionSource<NotUsed>();
                 var killSwitch = new UniqueKillSwitch(promise);
                 var logic = new Logic(promise.Task, this);
 
@@ -316,7 +317,7 @@ namespace Akka.Streams
         /// <summary>
         /// After calling <see cref="Abort"/> the linked <see cref="IGraph{TShape}"/>s of <see cref="FlowShape{TIn,TOut}"/> are failed.
         /// </summary>
-        /// <param name="cause">TBD</param>
+        /// <param name="cause">The exception used to fail the linked streams.</param>
         void Abort(Exception cause);
     }
 
@@ -339,9 +340,9 @@ namespace Akka.Streams
         private readonly TaskCompletionSource<NotUsed> _promise;
 
         /// <summary>
-        /// TBD
+        /// Creates a unique kill switch backed by the task completion source for the materialized stage.
         /// </summary>
-        /// <param name="promise">TBD</param>
+        /// <param name="promise">The completion source whose completion or failure controls the stage.</param>
         internal UniqueKillSwitch(TaskCompletionSource<NotUsed> promise) => _promise = promise;
 
         /// <summary>
@@ -358,13 +359,13 @@ namespace Akka.Streams
         /// (unless if finished or failed already in which case the command is ignored). Subsequent invocations of
         /// completion commands will be ignored.
         /// </summary>
-        /// <param name="cause">TBD</param>
+        /// <param name="cause">The exception used to fail the linked stream.</param>
         public void Abort(Exception cause) => _promise.TrySetException(cause);
 
         /// <summary>
-        /// TBD
+        /// Returns a string identifying this unique kill switch instance.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A string containing this instance's hash code.</returns>
         public override string ToString() => $"SingleKillSwitch({GetHashCode()})";
     }
 
@@ -427,9 +428,9 @@ namespace Akka.Streams
                 Shape = new FlowShape<T, T>(In, Out);
             }
 
-            private Inlet<T> In { get; } = new Inlet<T>("KillSwitch.in");
+            private Inlet<T> In { get; } = new("KillSwitch.in");
 
-            private Outlet<T> Out { get; } = new Outlet<T>("KillSwitch.out");
+            private Outlet<T> Out { get; } = new("KillSwitch.out");
 
             public override FlowShape<T, T> Shape { get; }
 
@@ -442,13 +443,13 @@ namespace Akka.Streams
 
         #endregion
 
-        private readonly TaskCompletionSource<NotUsed> _shutdownPromise = new TaskCompletionSource<NotUsed>();
+        private readonly TaskCompletionSource<NotUsed> _shutdownPromise = TaskEx.NonBlockingTaskCompletionSource<NotUsed>();
         private readonly string _name;
 
         /// <summary>
-        /// TBD
+        /// Creates a shared kill switch with the specified name.
         /// </summary>
-        /// <param name="name">TBD</param>
+        /// <param name="name">The name used to identify this switch in its string representation.</param>
         internal SharedKillSwitch(string name) => _name = name;
 
         /// <summary>
@@ -478,13 +479,12 @@ namespace Akka.Streams
         /// </summary>
         /// <returns>A reusable <see cref="IGraph{TShape}"/> that is linked with the switch. The materialized value provided is this switch itself.</returns> 
         /// <typeparam name="T">Type of the elements the Flow will forward</typeparam>
-        /// <returns>TBD</returns>
         public IGraph<FlowShape<T, T>, SharedKillSwitch> Flow<T>() => new SharedKillSwitchFlow<T>(this);
 
         /// <summary>
-        /// TBD
+        /// Returns a string containing this shared kill switch's name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A string identifying this shared kill switch.</returns>
         public override string ToString() => $"KillSwitch({_name})";
     }
 }

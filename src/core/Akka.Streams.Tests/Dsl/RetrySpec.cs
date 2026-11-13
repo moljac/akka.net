@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RetrySpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -18,7 +18,7 @@ using Xunit;
 
 namespace Akka.Streams.Tests.Dsl
 {
-    public class RetrySpec : Akka.TestKit.Xunit2.TestKit
+    public class RetrySpec : Akka.TestKit.Xunit.TestKit
     {
         private static readonly Result<int> FailedElement = Result.Failure<int>(new Exception("cooked failure"));
 
@@ -266,7 +266,7 @@ namespace Akka.Streams.Tests.Dsl
                 {
                     var s = (os + 1) % 3;
                     if (os < 42) return new[] { (os + 1, os + 1), (s, s) };
-                    if (os == 42) return new (int, int)[0];
+                    if (os == 42) return Array.Empty<(int, int)>();
                     return null;
                 }))
                 .ToMaterialized(this.SinkProbe<(Result<int>, int)>(), Keep.Both)

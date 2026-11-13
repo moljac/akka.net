@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="MetricsCollectorBuilder.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -31,7 +31,7 @@ namespace Akka.Cluster.Metrics
             var settings = ClusterMetricsSettings.Create(system.Settings.Config);
 
             var collectorCustom = settings.CollectorProvider;
-            var defaultCollector = typeof(DefaultCollector).AssemblyQualifiedName;
+            var defaultCollector = typeof(DefaultCollector).AssemblyQualifiedName!;
 
             var useCustom = !settings.CollectorFallback;
             var useInternal = settings.CollectorFallback && string.IsNullOrEmpty(settings.CollectorProvider);

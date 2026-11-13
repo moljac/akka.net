@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="EntityRecoveryStrategy.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -38,42 +38,42 @@ namespace Akka.Cluster.Sharding
 
     internal class ConstantRateEntityRecoveryStrategy : EntityRecoveryStrategy
     {
-        private readonly ActorSystem actorSystem;
-        private readonly TimeSpan frequency;
-        private readonly int numberOfEntities;
+        private readonly ActorSystem _actorSystem;
+        private readonly TimeSpan _frequency;
+        private readonly int _numberOfEntities;
 
         public ConstantRateEntityRecoveryStrategy(ActorSystem actorSystem, TimeSpan frequency, int numberOfEntities)
         {
-            this.actorSystem = actorSystem;
-            this.frequency = frequency;
-            this.numberOfEntities = numberOfEntities;
+            _actorSystem = actorSystem;
+            _frequency = frequency;
+            _numberOfEntities = numberOfEntities;
         }
 
         public override IImmutableSet<Task<IImmutableSet<EntityId>>> RecoverEntities(IImmutableSet<EntityId> entities)
         {
-            var stamp = frequency;
-            var builder = ImmutableHashSet<Task<IImmutableSet<EntityId>>>.Empty.ToBuilder();
-            foreach (var bucket in entities.Grouped(numberOfEntities))
+            var stamp = _frequency;
+            var builder = ImmutableHashSet.CreateBuilder<Task<IImmutableSet<EntityId>>>();
+            foreach (var bucket in entities.Grouped(_numberOfEntities))
             {
                 var scheduled = ScheduleEntities(stamp, bucket.ToImmutableHashSet());
                 builder.Add(scheduled);
-                stamp += frequency;
+                stamp += _frequency;
             }
             return builder.ToImmutable();
         }
 
         private Task<IImmutableSet<EntityId>> ScheduleEntities(TimeSpan interval, IImmutableSet<EntityId> entityIds)
         {
-            return After(interval, actorSystem.Scheduler, () => Task.FromResult(entityIds));
+            return After(interval, _actorSystem.Scheduler, () => Task.FromResult(entityIds));
         }
 
         /// <summary>
-        /// Returns a Task that will be completed with the success or failure of the provided value after the specified duration.
+        /// Schedules the supplied asynchronous value factory after the specified duration and returns its result as a task.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        /// <param name="value">TBD</param>
-        /// <param name="timeout">TBD</param>
-        /// <param name="scheduler">TBD</param>
+        /// <typeparam name="T">The result type produced by the value factory.</typeparam>
+        /// <param name="value">The asynchronous factory to invoke after the delay.</param>
+        /// <param name="timeout">The delay before invoking the factory.</param>
+        /// <param name="scheduler">The scheduler used to invoke the factory.</param>
         private static Task<T> After<T>(TimeSpan timeout, IScheduler scheduler, Func<Task<T>> value)
         {
             var promise = new TaskCompletionSource<T>();
@@ -95,11 +95,11 @@ namespace Akka.Cluster.Sharding
 
     public static class EnumerableExtensions
     {
-        /// <summary> 
+        /// <summary>
         /// Partitions elements in fixed size
         /// Credits to http://stackoverflow.com/a/13731854/465132
         /// </summary>
-        /// <param name="items">TBD</param>
+        /// <param name="items">The sequence whose elements are grouped.</param>
         /// <param name="size">The number of elements per group</param>
         public static IEnumerable<IEnumerable<T>> Grouped<T>(this IEnumerable<T> items, int size)
         {

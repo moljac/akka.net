@@ -1,9 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <Import Project="..\..\..\common.props" />
-
     <PropertyGroup>
-        <AssemblyTitle>Akka.DependencyInjection</AssemblyTitle>
         <Description>Dependency injection support for Akka.NET</Description>
         <TargetFramework>$(NetStandardLibVersion)</TargetFramework>
         <PackageTags>$(AkkaPackageTags);dependency injection</PackageTags>
@@ -12,7 +9,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[3.1.0,)" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MsExtVersion)" />
     </ItemGroup>
 
     <ItemGroup>

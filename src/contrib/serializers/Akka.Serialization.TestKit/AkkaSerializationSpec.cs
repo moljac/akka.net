@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AkkaSerializationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ namespace Akka.Tests.Serialization
             };
         }
     }
-    public abstract class AkkaSerializationSpec : TestKit.Xunit2.TestKit
+    public abstract class AkkaSerializationSpec : TestKit.Xunit.TestKit
     {
         protected AkkaSerializationSpec(Type serializerType):base(GetConfig(serializerType))
         {

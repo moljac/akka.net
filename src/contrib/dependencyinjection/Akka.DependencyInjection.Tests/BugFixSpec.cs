@@ -1,0 +1,107 @@
+﻿//-----------------------------------------------------------------------
+// <copyright file="BugFixSpec.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Akka.Actor;
+using Akka.Event;
+using Akka.TestKit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Xunit;
+using FluentAssertions;
+using static FluentAssertions.FluentActions;
+
+namespace Akka.DependencyInjection.Tests
+{
+    public class BugFixSpec: AkkaSpec
+    {
+        private readonly IServiceProvider _serviceProvider;
+        private readonly AkkaService _akkaService;
+        
+        public BugFixSpec(ITestOutputHelper output) : base(output)
+        {
+            var services = new ServiceCollection()
+                .AddSingleton<AkkaService>()
+                .AddHostedService<AkkaService>();
+            
+            _serviceProvider = services.BuildServiceProvider();
+            _akkaService = _serviceProvider.GetRequiredService<AkkaService>();
+        }
+
+        [Fact(DisplayName = "DI should log an error if DI provider does not contain required parameter")]
+        public async Task ShouldLogAnErrorIfParameterInjectionFailed()
+        {
+            var system = _serviceProvider.GetRequiredService<AkkaService>().ActorSystem;
+            var probe = CreateTestProbe(system);
+            system.EventStream.Subscribe(probe, typeof(Error));
+
+            var props = DependencyResolver.For(system).Props<TestDiActor>();
+            var actor = system.ActorOf(props.WithDeploy(Deploy.Local), "testDIActor");
+
+            (await probe.ExpectMsgAsync<Error>()).Cause.Should().BeOfType<ActorInitializationException>();
+        }
+
+        internal class TestDiActor : ReceiveActor
+        {
+            public TestDiActor(NotInServices doesNotExistInDi)
+            {
+            }
+        }
+
+        internal class NotInServices
+        {
+        }
+        
+        
+        public override async ValueTask InitializeAsync()
+        {
+            await base.InitializeAsync();
+            await _akkaService.StartAsync(default);
+            InitializeLogger(_akkaService.ActorSystem);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            // The DI-created "TestSystem" ActorSystem is separate from Sys and is not torn
+            // down by the base dispose chain, so it must be shut down explicitly here.
+            // ShutdownAsync does not block a thread pool thread the way the synchronous
+            // Shutdown() does. This keeps the original teardown order: the DI-managed
+            // system first, then the base class's own AfterAll()/Sys shutdown.
+            await ShutdownAsync(_akkaService.ActorSystem);
+
+            await base.DisposeAsync();
+        }
+
+        internal class AkkaService : IHostedService
+        {
+            public ActorSystem ActorSystem { get; private set; }
+
+            private readonly IServiceProvider _serviceProvider;
+
+            public AkkaService(IServiceProvider serviceProvider)
+            {
+                _serviceProvider = serviceProvider;
+            }
+
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                var setup = DependencyResolverSetup.Create(_serviceProvider)
+                    .And(BootstrapSetup.Create().WithConfig(TestKitBase.DefaultConfig));
+
+                ActorSystem = ActorSystem.Create("TestSystem", setup);
+                return Task.CompletedTask;
+            }
+
+            public async Task StopAsync(CancellationToken cancellationToken)
+            {
+                await ActorSystem.Terminate();
+            }
+        }
+    }
+}

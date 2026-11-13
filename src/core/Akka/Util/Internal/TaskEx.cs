@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TaskEx.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Akka.Util.Internal
@@ -49,6 +50,16 @@ namespace Akka.Util.Internal
         public static void NonBlockingTrySetException<T>(this TaskCompletionSource<T> taskCompletionSource, Exception exception)
         {
             taskCompletionSource.TrySetException(exception);
+        }
+
+        /// <summary>
+        /// Tries to cancel given <paramref name="taskCompletionSource"/> in asynchronous, non-blocking
+        /// fashion. For safety reasons, this method should be called only on tasks created via
+        /// <see cref="NonBlockingTaskCompletionSource{T}"/> method.
+        /// </summary>
+        public static void NonBlockingTrySetCanceled<T>(this TaskCompletionSource<T> taskCompletionSource, CancellationToken cancellationToken)
+        {
+            taskCompletionSource.TrySetCanceled(cancellationToken);
         }
 
         /// <summary>

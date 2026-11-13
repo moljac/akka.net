@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="JournalSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,22 +17,24 @@ using Akka.Persistence.TCK.Serialization;
 using Akka.Serialization;
 using Akka.TestKit;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Persistence.TCK.Journal
 {
     public abstract class JournalSpec : PluginSpec
     {
         protected static readonly Config Config =
-            ConfigurationFactory.ParseString(@"akka.persistence.publish-plugin-commands = on
-            akka.actor{
-                serializers{
-                    persistence-tck-test=""Akka.Persistence.TCK.Serialization.TestSerializer,Akka.Persistence.TCK""
+            ConfigurationFactory.ParseString(
+                $$"""
+                akka.persistence.publish-plugin-commands = on
+                akka.actor {
+                    serializers { 
+                        persistence-tck-test="{{typeof(TestSerializer).FullName}}, {{typeof(TestSerializer).Assembly.GetName().Name}}"
+                    }
+                    serialization-bindings {
+                        "{{typeof(TestPayload).FullName}}, {{typeof(TestPayload).Assembly.GetName().Name}}" = persistence-tck-test
+                    }
                 }
-                serialization-bindings {
-                    ""Akka.Persistence.TCK.Serialization.TestPayload,Akka.Persistence.TCK"" = persistence-tck-test
-                }
-            }");
+                """);
 
         private static readonly string _specConfigTemplate = @"
             akka.persistence {{
@@ -155,7 +157,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_all_messages()
+        public virtual void Journal_should_replay_all_messages()
         {
             Journal.Tell(new ReplayMessages(1, long.MaxValue, long.MaxValue, Pid, _receiverProbe.Ref));
             for (int i = 1; i <= 5; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -163,7 +165,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_messages_using_a_lower_sequence_number_bound()
+        public virtual void Journal_should_replay_messages_using_a_lower_sequence_number_bound()
         {
             Journal.Tell(new ReplayMessages(3, long.MaxValue, long.MaxValue, Pid, _receiverProbe.Ref));
             for (int i = 3; i <= 5; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -171,7 +173,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_messages_using_an_upper_sequence_number_bound()
+        public virtual void Journal_should_replay_messages_using_an_upper_sequence_number_bound()
         {
             Journal.Tell(new ReplayMessages(1, 3, long.MaxValue, Pid, _receiverProbe.Ref));
             for (int i = 1; i <= 3; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -179,7 +181,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_messages_using_a_count_limit()
+        public virtual void Journal_should_replay_messages_using_a_count_limit()
         {
             Journal.Tell(new ReplayMessages(1, long.MaxValue, 3, Pid, _receiverProbe.Ref));
             for (int i = 1; i <= 3; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -187,7 +189,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_messages_using_lower_and_upper_sequence_number_bound()
+        public virtual void Journal_should_replay_messages_using_lower_and_upper_sequence_number_bound()
         {
             Journal.Tell(new ReplayMessages(2, 3, long.MaxValue, Pid, _receiverProbe.Ref));
             for (int i = 2; i <= 3; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -195,7 +197,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_messages_using_lower_and_upper_sequence_number_bound_and_count_limit()
+        public virtual void Journal_should_replay_messages_using_lower_and_upper_sequence_number_bound_and_count_limit()
         {
             Journal.Tell(new ReplayMessages(2, 5, 2, Pid, _receiverProbe.Ref));
             for (int i = 2; i <= 3; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -203,7 +205,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_a_single_if_lower_sequence_number_bound_equals_upper_sequence_number_bound()
+        public virtual void Journal_should_replay_a_single_if_lower_sequence_number_bound_equals_upper_sequence_number_bound()
         {
             Journal.Tell(new ReplayMessages(2, 2, long.MaxValue, Pid, _receiverProbe.Ref));
             _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, 2));
@@ -211,7 +213,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_replay_a_single_message_if_count_limit_is_equal_one()
+        public virtual void Journal_should_replay_a_single_message_if_count_limit_is_equal_one()
         {
             Journal.Tell(new ReplayMessages(2, 4, 1, Pid, _receiverProbe.Ref));
             _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, 2));
@@ -219,28 +221,28 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_not_replay_messages_if_count_limit_equals_zero()
+        public virtual void Journal_should_not_replay_messages_if_count_limit_equals_zero()
         {
             Journal.Tell(new ReplayMessages(2, 4, 0, Pid, _receiverProbe.Ref));
             _receiverProbe.ExpectMsg<RecoverySuccess>(m => m.HighestSequenceNr == 5L);
         }
 
         [Fact]
-        public void Journal_should_not_replay_messages_if_lower_sequence_number_bound_is_greater_than_upper_sequence_number_bound()
+        public virtual void Journal_should_not_replay_messages_if_lower_sequence_number_bound_is_greater_than_upper_sequence_number_bound()
         {
             Journal.Tell(new ReplayMessages(3, 2, long.MaxValue, Pid, _receiverProbe.Ref));
             _receiverProbe.ExpectMsg<RecoverySuccess>(m => m.HighestSequenceNr == 5L);
         }
 
         [Fact]
-        public void Journal_should_not_replay_messages_if_the_persistent_actor_has_not_yet_written_messages()
+        public virtual void Journal_should_not_replay_messages_if_the_persistent_actor_has_not_yet_written_messages()
         {
             Journal.Tell(new ReplayMessages(0, long.MaxValue, long.MaxValue, "non-existing-pid", _receiverProbe.Ref));
             _receiverProbe.ExpectMsg<RecoverySuccess>(m => m.HighestSequenceNr == 0L);
         }
 
         [Fact]
-        public void Journal_should_not_replay_permanently_deleted_messages_on_range_deletion()
+        public virtual void Journal_should_not_replay_permanently_deleted_messages_on_range_deletion()
         {
             var receiverProbe2 = CreateTestProbe();
             var command = new DeleteMessagesTo(Pid, 3, receiverProbe2.Ref);
@@ -259,7 +261,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_not_reset_HighestSequenceNr_after_message_deletion()
+        public virtual void Journal_should_not_reset_HighestSequenceNr_after_message_deletion()
         {
             Journal.Tell(new ReplayMessages(0, long.MaxValue, long.MaxValue, Pid, _receiverProbe.Ref));
             for (int i = 1; i <= 5; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -274,7 +276,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_not_reset_HighestSequenceNr_after_journal_cleanup()
+        public virtual void Journal_should_not_reset_HighestSequenceNr_after_journal_cleanup()
         {
             Journal.Tell(new ReplayMessages(0, long.MaxValue, long.MaxValue, Pid, _receiverProbe.Ref));
             for (int i = 1; i <= 5; i++) _receiverProbe.ExpectMsg<ReplayedMessage>(m => IsReplayedMessage(m, i));
@@ -288,7 +290,7 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_should_serialize_events()
+        public virtual void Journal_should_serialize_events()
         {
             if (!SupportsSerialization) return;
 
@@ -340,13 +342,13 @@ namespace Akka.Persistence.TCK.Journal
         }
 
         [Fact]
-        public void Journal_optionally_may_reject_non_serializable_events()
+        public virtual void Journal_optionally_may_reject_non_serializable_events()
         {
             if (!SupportsRejectingNonSerializableObjects) return;
 
             // Test that JSON actually fail
             var serializer = Sys.Serialization.FindSerializerForType(typeof(NotSerializableEvent));
-            if (!(serializer is NewtonSoftJsonSerializer))
+            if (serializer is not NewtonSoftJsonSerializer)
             {
                 Output.WriteLine("[SKIP] This test only works with NewtonSoftJsonSerializer.");
                 return;

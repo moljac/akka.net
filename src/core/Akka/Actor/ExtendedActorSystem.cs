@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ExtendedActorSystem.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Akka.Actor
 {
@@ -43,7 +44,6 @@ namespace Akka.Actor
         /// Gets the actor producer pipeline resolver for current actor system. It may be used by
         /// Akka plugins to inject custom behavior directly into actor creation chain.
         /// </summary>
-        [Obsolete("Actor producer pipeline API will be removed in v1.5.")]
         public abstract ActorProducerPipelineResolver ActorPipelineResolver { get; }
 
         /// <summary>
@@ -64,12 +64,14 @@ namespace Akka.Actor
         /// <typeparam name="TActor">The type of actor to create</typeparam>
         /// <param name="name">The name of the actor to create. The default value is <see langword="null"/>.</param>
         /// <returns>A reference to the newly created actor</returns>
-        public abstract IActorRef SystemActorOf<TActor>(string name = null) where TActor : ActorBase, new();
+        public abstract IActorRef SystemActorOf<[DynamicallyAccessedMembers(Props.ActorTypeMembers)] TActor>(string name = null) where TActor : ActorBase, new();
 
         /// <summary>
         /// Aggressively terminates an <see cref="ActorSystem"/> without waiting for the normal shutdown process to run as-is.
         /// </summary>
         public abstract void Abort();
+
+        public abstract string PrintTree();
 
         //TODO: Missing threadFactory, dynamicAccess, printTree
         //  /**

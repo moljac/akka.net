@@ -1,16 +1,19 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="DotNettyTransport.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+#nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.Serialization;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
@@ -20,6 +23,8 @@ using Akka.Event;
 using Akka.Util;
 using DotNetty.Buffers;
 using DotNetty.Codecs;
+using ByteOrder = DotNetty.Buffers.ByteOrder;
+using DotNetty.Common.Concurrency;
 using DotNetty.Common.Utilities;
 using DotNetty.Handlers.Tls;
 using DotNetty.Transport.Bootstrapping;
@@ -70,7 +75,7 @@ namespace Akka.Remote.Transport.DotNetty
         protected abstract void RegisterListener(IChannel channel, IHandleEventListener listener, object msg, IPEndPoint remoteAddress);
 
         protected void Init(IChannel channel, IPEndPoint remoteSocketAddress, Address remoteAddress, object msg,
-            out AssociationHandle op)
+            out AssociationHandle? op)
         {
             var localAddress = DotNettyTransport.MapSocketToAddress((IPEndPoint)channel.LocalAddress, Transport.SchemeIdentifier, Transport.System.Name, Transport.Settings.Hostname);
 
@@ -100,7 +105,7 @@ namespace Akka.Remote.Transport.DotNetty
         /// </summary>
         /// <param name="message">The message that describes the error.</param>
         /// <param name="cause">The exception that is the cause of the current exception.</param>
-        public DotNettyTransportException(string message, Exception cause = null) : base(message, cause)
+        public DotNettyTransportException(string message, Exception? cause = null) : base(message, cause)
         {
         }
 
@@ -120,29 +125,41 @@ namespace Akka.Remote.Transport.DotNetty
 
         protected readonly TaskCompletionSource<IAssociationEventListener> AssociationListenerPromise;
         protected readonly ILoggingAdapter Log;
-        protected volatile Address LocalAddress;
-        protected internal volatile IChannel ServerChannel;
+        protected volatile Address? LocalAddress;
+        protected internal volatile IChannel? ServerChannel;
 
         private readonly IEventLoopGroup _serverEventLoopGroup;
         private readonly IEventLoopGroup _clientEventLoopGroup;
+        private readonly TimeSpan _flushWait;
+        private readonly ConcurrentDictionary<IChannel, Task> _draining = new();
+
+        internal static readonly FieldInfo? SocketField =
+            typeof(AbstractSocketChannel).GetField("Socket", BindingFlags.Instance | BindingFlags.NonPublic);
 
         protected DotNettyTransport(ActorSystem system, Config config)
         {
             System = system;
             Config = config;
 
+            // Helios compatibility
             if (system.Settings.Config.HasPath("akka.remote.helios.tcp"))
             {
-                var heliosFallbackConfig = system.Settings.Config.GetConfig("akka.remote.helios.tcp");
+                var heliosFallbackConfig = system.Settings.Config.GetConfig("akka.remote.helios.tcp")
+                    .WithFallback("transport-class = \"Akka.Remote.Transport.Helios.HeliosTcpTransport, Akka.Remote.Transport.Helios\"");
                 config = heliosFallbackConfig.WithFallback(config);
             }
 
-            Settings = DotNettyTransportSettings.Create(config);
+            var setup = system.Settings.Setup.Get<DotNettySslSetup>();
+            var sslSettings = setup.HasValue ? setup.Value.Settings : null;
+            Settings = DotNettyTransportSettings.Create(config, sslSettings);
             Log = Logging.GetLogger(System, GetType());
             _serverEventLoopGroup = new MultithreadEventLoopGroup(Settings.ServerSocketWorkerPoolSize);
             _clientEventLoopGroup = new MultithreadEventLoopGroup(Settings.ClientSocketWorkerPoolSize);
             ConnectionGroup = new ConcurrentSet<IChannel>();
             AssociationListenerPromise = new TaskCompletionSource<IAssociationEventListener>();
+            _flushWait = system.Settings.Config.GetTimeSpan("akka.remote.flush-wait-on-shutdown", TimeSpan.FromSeconds(2));
+            if (SocketField == null)
+                Log.Warning("DotNetty's AbstractSocketChannel.Socket field was not found; disassociate falls back to a full close, which can reset the connection.");
 
             SchemeIdentifier = (Settings.EnableSsl ? "ssl." : string.Empty) + Settings.TransportMode.ToString().ToLowerInvariant();
         }
@@ -176,9 +193,15 @@ namespace Akka.Remote.Transport.DotNetty
 
         public override async Task<(Address, TaskCompletionSource<IAssociationEventListener>)> Listen()
         {
+            // Validate SSL certificate before starting server
+            // This ensures fail-fast behavior if private key is inaccessible
+            if (Settings.EnableSsl)
+            {
+                Settings.Ssl.ValidateCertificate();
+            }
+
             EndPoint listenAddress;
-            IPAddress ip;
-            if (IPAddress.TryParse(Settings.Hostname, out ip))
+            if (IPAddress.TryParse(Settings.Hostname, out var ip))
                 listenAddress = new IPEndPoint(ip, Settings.Port);
             else
                 listenAddress = new DnsEndPoint(Settings.Hostname, Settings.Port);
@@ -206,7 +229,7 @@ namespace Akka.Remote.Transport.DotNetty
                 LocalAddress = addr;
                 // resume accepting incoming connections
 #pragma warning disable 4014 // we WANT this task to run without waiting
-                AssociationListenerPromise.Task.ContinueWith(result => newServerChannel.Configuration.AutoRead = true,
+                AssociationListenerPromise.Task.ContinueWith(_ => newServerChannel.Configuration.AutoRead = true,
                     TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnRanToCompletion);
 #pragma warning restore 4014
 
@@ -228,20 +251,86 @@ namespace Akka.Remote.Transport.DotNetty
             }
         }
 
-        public override async Task<AssociationHandle> Associate(Address remoteAddress)
+        public override Task<AssociationHandle> Associate(Address remoteAddress)
         {
-            if (!ServerChannel.Open)
-                throw new ChannelException("Transport is not open");
+            if (ServerChannel == null || !ServerChannel.Open)
+                throw new ChannelException("Transport is not bound or not open");
 
-            return await AssociateInternal(remoteAddress).ConfigureAwait(false);
+            return AssociateInternal(remoteAddress);
         }
 
         protected abstract Task<AssociationHandle> AssociateInternal(Address remoteAddress);
+
+        // Half-close once lastWrite is in the kernel, then read until the peer's FIN. Closing with unread
+        // inbound data sends an RST, and a Windows peer then drops our last frames (#8589).
+        internal void BeginGracefulClose(TcpSocketChannel channel, Task lastWrite)
+        {
+            // register before any async hop, so a Shutdown that follows the disassociate waits for this close
+            _draining[channel] = channel.CloseCompletion;
+            channel.CloseCompletion.ContinueWith(_ => _draining.TryRemove(channel, out Task? _), TaskContinuationOptions.ExecuteSynchronously);
+
+            try
+            {
+                // not the ActorSystem scheduler: it may already be shutting down
+                channel.EventLoop.Schedule(() => channel.CloseAsync(), _flushWait);
+            }
+            catch (RejectedExecutionException)
+            {
+                channel.CloseAsync();
+                return;
+            }
+
+            lastWrite.ContinueWith(_ =>
+            {
+                try
+                {
+                    channel.EventLoop.Execute(() => HalfClose(channel));
+                }
+                catch (RejectedExecutionException)
+                {
+                    channel.CloseAsync(); // event loop already shut down
+                }
+            }, TaskContinuationOptions.ExecuteSynchronously);
+        }
+
+        private void HalfClose(TcpSocketChannel channel)
+        {
+            if (!channel.Active)
+                return;
+
+            channel.Pipeline.FireUserEventTriggered(DrainInbound.Instance);
+            channel.Configuration.AutoRead = true;
+            try
+            {
+                // Not channel.ShutdownOutputAsync(): Socket.Shutdown clears Socket.Connected, which DotNetty reads as
+                // EOF, so it would close over unread data. Shut down through a second Socket on the same handle.
+                if (SocketField?.GetValue(channel) is not Socket socket)
+                {
+                    channel.CloseAsync();
+                    return;
+                }
+
+                using var alias = new Socket(new SafeSocketHandle(socket.Handle, ownsHandle: false));
+                // Shutdown re-applies the alias's blocking mode to the shared handle, and on Windows the
+                // handle constructor assumes blocking; DotNetty's socket must stay non-blocking.
+                alias.Blocking = false;
+                alias.Shutdown(SocketShutdown.Send);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Half-close failed on channel [{0}->{1}]; closing it outright", channel.LocalAddress, channel.RemoteAddress);
+                channel.CloseAsync();
+            }
+        }
 
         public override async Task<bool> Shutdown()
         {
             try
             {
+                // give graceful closes up to flush-wait to finish before the force-close below
+                if (!_draining.IsEmpty)
+                    await Task.WhenAny(Task.WhenAll(_draining.Values), Task.Delay(_flushWait)).ConfigureAwait(false);
+
                 var tasks = new List<Task>();
                 foreach (var channel in ConnectionGroup)
                 {
@@ -342,11 +431,47 @@ namespace Akka.Remote.Transport.DotNetty
             if (Settings.EnableSsl)
             {
                 var certificate = Settings.Ssl.Certificate;
-                var host = certificate.GetNameInfo(X509NameType.DnsName, false);
+                // Use the remote address host for TLS validation, not the client's certificate name
+                var host = remoteAddress.Host;
 
-                var tlsHandler = Settings.Ssl.SuppressValidation
-                    ? new TlsHandler(stream => new SslStream(stream, true, (sender, cert, chain, errors) => true), new ClientTlsSettings(host))
-                    : TlsHandler.Client(host, certificate);
+                IChannelHandler tlsHandler;
+
+                // Compose validator: either use custom validator or build from config settings
+                // This ensures a single execution path through validation logic
+                var validator = Settings.Ssl.CustomValidator ?? ComposeValidatorFromSettings();
+
+                // Create adapter bridge from our CertificateValidationCallback to RemoteCertificateValidationCallback
+                // The adapter extracts remote peer information from the remote address
+                RemoteCertificateValidationCallback validationCallback = (sender, cert, chain, errors) =>
+                {
+                    // Convert X509Certificate to X509Certificate2 if needed
+#if NET10_0_OR_GREATER
+                    var x509Cert = cert as X509Certificate2 ?? (cert != null ? X509CertificateLoader.LoadCertificate(cert.GetRawCertData()) : null);
+#else
+                    var x509Cert = cert as X509Certificate2 ?? (cert != null ? new X509Certificate2(cert) : null);
+#endif
+                    return validator(x509Cert, chain, remoteAddress.ToString(), errors, Log);
+                };
+
+                if (Settings.Ssl.RequireMutualAuthentication)
+                {
+                    // Mutual TLS requires a certificate to be configured
+                    if (certificate == null)
+                        throw new InvalidOperationException("Mutual TLS authentication is enabled but no certificate is configured. Please provide a certificate via DotNettySslSetup or HOCON configuration.");
+
+                    // Provide client cert for mutual TLS
+                    tlsHandler = new TlsHandler(
+                        stream => new SslStream(stream, true, validationCallback,
+                            (_, _, _, _, _) => certificate),
+                        new ClientTlsSettings(host));
+                }
+                else
+                {
+                    // Standard TLS: Only validate server certificate, no client cert
+                    tlsHandler = new TlsHandler(
+                        stream => new SslStream(stream, true, validationCallback),
+                        new ClientTlsSettings(host));
+                }
 
                 channel.Pipeline.AddFirst("TlsHandler", tlsHandler);
             }
@@ -365,7 +490,52 @@ namespace Akka.Remote.Transport.DotNetty
         {
             if (Settings.EnableSsl)
             {
-                channel.Pipeline.AddFirst("TlsHandler", TlsHandler.Server(Settings.Ssl.Certificate));
+                IChannelHandler tlsHandler;
+
+                if (Settings.Ssl.RequireMutualAuthentication)
+                {
+                    // Mutual TLS: Require client certificate authentication
+                    // Compose validator: either use custom validator or build from config settings
+                    // This ensures a single execution path through validation logic
+                    var validator = Settings.Ssl.CustomValidator ?? ComposeValidatorFromSettings();
+
+                    // Create adapter bridge from our CertificateValidationCallback to RemoteCertificateValidationCallback
+                    // For server-side, extract the remote peer (client address) from the channel
+                    RemoteCertificateValidationCallback validationCallback = (sender, certificate, chain, errors) =>
+                    {
+                        // When mutual TLS is required, reject if no client certificate was provided
+                        if (certificate == null)
+                        {
+                            Log.Warning("Mutual TLS required but client did not provide a certificate from {0}",
+                                channel.RemoteAddress?.ToString() ?? "unknown");
+                            return false;
+                        }
+
+                        // Extract client address from channel
+                        var remoteAddress = channel.RemoteAddress?.ToString() ?? "unknown";
+                        // Convert X509Certificate to X509Certificate2 if needed
+#if NET10_0_OR_GREATER
+                        var x509Cert = certificate as X509Certificate2 ?? X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
+#else
+                        var x509Cert = certificate as X509Certificate2 ?? new X509Certificate2(certificate);
+#endif
+                        return validator(x509Cert, chain, remoteAddress, errors, Log);
+                    };
+
+                    tlsHandler = new TlsHandler(
+                        stream => new SslStream(
+                            stream,
+                            leaveInnerStreamOpen: true,
+                            userCertificateValidationCallback: validationCallback),
+                        new ServerTlsSettings(Settings.Ssl.Certificate, negotiateClientCertificate: true));
+                }
+                else
+                {
+                    // Standard TLS: Server authentication only (backward compatible)
+                    tlsHandler = TlsHandler.Server(Settings.Ssl.Certificate);
+                }
+
+                channel.Pipeline.AddFirst("TlsHandler", tlsHandler);
             }
 
             SetInitialChannelPipeline(channel);
@@ -376,6 +546,29 @@ namespace Akka.Remote.Transport.DotNetty
                 var handler = new TcpServerHandler(this, Logging.GetLogger(System, typeof(TcpServerHandler)), AssociationListenerPromise.Task);
                 pipeline.AddLast("ServerHandler", handler);
             }
+        }
+
+        /// <summary>
+        /// Composes a certificate validation callback from the current SSL settings.
+        /// This creates a validator that respects SuppressValidation
+        /// and ValidateCertificateHostname configuration options.
+        /// </summary>
+        /// <returns>A CertificateValidationCallback composed from configuration settings.</returns>
+        private CertificateValidationCallback ComposeValidatorFromSettings()
+        {
+            // Build validator from configuration settings
+            // Note: SuppressValidation and ValidateCertificateHostname are independent settings
+            var suppressChain = Settings.Ssl.SuppressValidation;
+            var validateHostname = Settings.Ssl.ValidateCertificateHostname;
+
+            return suppressChain switch
+            {
+                true when validateHostname => CertificateValidation.ValidateHostname(log: Log),
+                true => (cert, chain, peer, errors, log) => true,
+                false when validateHostname => CertificateValidation.Combine(
+                    CertificateValidation.ValidateChain(log: Log), CertificateValidation.ValidateHostname(log: Log)),
+                _ => CertificateValidation.ValidateChain(log: Log)
+            };
         }
 
         private ServerBootstrap ServerFactory()
@@ -410,14 +603,43 @@ namespace Akka.Remote.Transport.DotNetty
         {
             var resolved = await Dns.GetHostEntryAsync(address.Host).ConfigureAwait(false);
             //NOTE: for some reason while Helios takes first element from resolved address list
-            // on the DotNetty side we need to take the last one in order to be compatible
-            return new IPEndPoint(resolved.AddressList[resolved.AddressList.Length - 1], address.Port);
+            // on the DotNetty side we need to take the last one in order to be compatible.
+            // We filter link-local addresses first, but fallback to the original list if filtering
+            // eliminates everything, preserving backward compatibility.
+            var filtered = FilterLinkLocalAddresses(resolved.AddressList).ToArray();
+
+            if (Log.IsDebugEnabled && filtered.Length < resolved.AddressList.Length)
+                Log.Debug("Filtered {0} link-local address(es) from DNS results for '{1}'",
+                    resolved.AddressList.Length - filtered.Length, address.Host);
+
+            // Important detail here: if your network is relying on APIPA addresses, then this patch preserves that.
+            // If 100% of resolved DNS addresses are link-local, and therefore 100% of them get filtered out,
+            // then we use the originally resolved list instead.
+            // In scenarios where you have a mix of APIPA and routable addresses, routable addresses win.
+            var selected = filtered.FirstOrDefault() ?? resolved.AddressList.LastOrDefault();
+            return new IPEndPoint(selected!, address.Port);
         }
 
         private async Task<IPEndPoint> ResolveNameAsync(DnsEndPoint address, AddressFamily addressFamily)
         {
             var resolved = await Dns.GetHostEntryAsync(address.Host).ConfigureAwait(false);
-            var found = resolved.AddressList.LastOrDefault(a => a.AddressFamily == addressFamily);
+            var matching = resolved.AddressList.Where(a => a.AddressFamily == addressFamily).ToArray();
+
+            // Filter out link-local addresses (169.254.0.0/16, fe80::/10) which break cluster formation
+            // on multi-NIC hosts where APIPA addresses appear in DNS results.
+            // Fallback to unfiltered list to preserve backward compatibility if filtering eliminates all candidates.
+            var filtered = FilterLinkLocalAddresses(matching).ToArray();
+
+            if (Log.IsDebugEnabled && filtered.Length < matching.Length)
+                Log.Debug("Filtered {0} link-local address(es) from DNS results for '{1}' with address family '{2}'",
+                    matching.Length - filtered.Length, address.Host, addressFamily);
+
+            // Important detail here: if your network is relying on APIPA addresses, then this patch preserves that.
+            // If 100% of resolved DNS addresses are link-local, and therefore 100% of them get filtered out,
+            // then we use the originally resolved list instead.
+            // In scenarios where you have a mix of APIPA and routable addresses, routable addresses win.
+            var found = filtered.FirstOrDefault() ?? matching.FirstOrDefault();
+
             if (found == null)
             {
                 throw new KeyNotFoundException($"Couldn't resolve IP endpoint from provided DNS name '{address}' with address family of '{addressFamily}'");
@@ -426,31 +648,52 @@ namespace Akka.Remote.Transport.DotNetty
             return new IPEndPoint(found, address.Port);
         }
 
+        /// <summary>
+        /// Filters out IPv4 link-local (169.254.0.0/16) and IPv6 link-local (fe80::/10) addresses.
+        /// These addresses are not routable and can break cluster formation on multi-NIC hosts
+        /// where APIPA addresses appear in DNS results.
+        /// </summary>
+        internal static IEnumerable<IPAddress> FilterLinkLocalAddresses(IEnumerable<IPAddress> addresses)
+        {
+            return addresses.Where(a => !IsIPv4LinkLocal(a) && !IsIPv6LinkLocal(a));
+        }
+
+        private static bool IsIPv4LinkLocal(IPAddress ip)
+        {
+            if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+            var bytes = ip.GetAddressBytes();
+            return bytes[0] == 169 && bytes[1] == 254;
+        }
+
+        private static bool IsIPv6LinkLocal(IPAddress ip)
+        {
+            return ip.AddressFamily == AddressFamily.InterNetworkV6 && ip.IsIPv6LinkLocal;
+        }
+
         #endregion
 
         #region static methods
 
-        public static Address MapSocketToAddress(IPEndPoint socketAddress, string schemeIdentifier, string systemName, string hostName = null, int? publicPort = null)
+        public static Address? MapSocketToAddress(IPEndPoint socketAddress, string schemeIdentifier, string systemName, string? hostName = null, int? publicPort = null)
         {
             return socketAddress == null
                 ? null
                 : new Address(schemeIdentifier, systemName, SafeMapHostName(hostName) ?? SafeMapIPv6(socketAddress.Address), publicPort ?? socketAddress.Port);
         }
 
-        private static string SafeMapHostName(string hostName)
+        private static string? SafeMapHostName(string? hostName)
         {
-            IPAddress ip;
-            return !string.IsNullOrEmpty(hostName) && IPAddress.TryParse(hostName, out ip) ? SafeMapIPv6(ip) : hostName;
+            return !string.IsNullOrEmpty(hostName) && IPAddress.TryParse(hostName, out var ip) ? SafeMapIPv6(ip) : hostName;
         }
 
         private static string SafeMapIPv6(IPAddress ip) => ip.AddressFamily == AddressFamily.InterNetworkV6 ? "[" + ip + "]" : ip.ToString();
 
         public static EndPoint ToEndpoint(Address address)
         {
-            if (!address.Port.HasValue) throw new ArgumentNullException(nameof(address), $"Address port must not be null: {address}");
+            if (string.IsNullOrWhiteSpace(address.Host)) throw new ArgumentNullException(nameof(address), $"Address host must not be null or empty: {address}");
+            if (address.Port is null) throw new ArgumentNullException(nameof(address), $"Address port must not be null: {address}");
 
-            IPAddress ip;
-            return IPAddress.TryParse(address.Host, out ip)
+            return IPAddress.TryParse(address.Host, out var ip)
                 ? (EndPoint)new IPEndPoint(ip, address.Port.Value)
                 : new DnsEndPoint(address.Host, address.Port.Value);
         }
@@ -463,10 +706,11 @@ namespace Akka.Remote.Transport.DotNetty
         /// <returns><see cref="IPEndPoint"/> for IP-based addresses, <see cref="DnsEndPoint"/> for named addresses.</returns>
         public static EndPoint AddressToSocketAddress(Address address)
         {
-            if (address.Port == null) throw new ArgumentException($"address port must not be null: {address}");
+            if (string.IsNullOrWhiteSpace(address.Host)) throw new ArgumentNullException(nameof(address), $"Address host must not be null or empty: {address}");
+            if (address.Port is null) throw new ArgumentException($"Address port must not be null: {address}");
+            
             EndPoint listenAddress;
-            IPAddress ip;
-            if (IPAddress.TryParse(address.Host, out ip))
+            if (IPAddress.TryParse(address.Host, out var ip))
             {
                 listenAddress = new IPEndPoint(ip, (int)address.Port);
             }
@@ -481,9 +725,9 @@ namespace Akka.Remote.Transport.DotNetty
         #endregion
     }
 
-    internal class HeliosBackwardsCompatabilityLengthFramePrepender : LengthFieldPrepender
+    internal sealed class HeliosBackwardsCompatabilityLengthFramePrepender : LengthFieldPrepender
     {
-        private readonly List<object> _temporaryOutput = new List<object>(2);
+        private readonly List<object> _temporaryOutput = new(2);
 
         public HeliosBackwardsCompatabilityLengthFramePrepender(int lengthFieldLength,
             bool lengthFieldIncludesLengthFieldLength) : base(ByteOrder.LittleEndian, lengthFieldLength, 0, lengthFieldIncludesLengthFieldLength)

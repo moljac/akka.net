@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ISemantics.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,7 +11,7 @@ using Akka.Actor;
 namespace Akka.Dispatch
 {
     /// <summary>
-    /// TBD
+    /// Describes the message queue semantics of a mailbox.
     /// </summary>
     public interface ISemantics
     {
@@ -59,9 +59,9 @@ namespace Akka.Dispatch
     public interface IDequeBasedMessageQueueSemantics : ISemantics
     {
         /// <summary>
-        /// TBD
+        /// Adds the envelope at the front of the deque so it is the next message returned by dequeue.
         /// </summary>
-        /// <param name="envelope">TBD</param>
+        /// <param name="envelope">The envelope to place at the front of the queue.</param>
         void EnqueueFirst(Envelope envelope);
     }
 
@@ -81,4 +81,3 @@ namespace Akka.Dispatch
     {
     }
 }
-

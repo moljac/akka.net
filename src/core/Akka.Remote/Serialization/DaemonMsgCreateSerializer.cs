@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="DaemonMsgCreateSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Runtime.Serialization;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Routing;
@@ -30,6 +31,12 @@ namespace Akka.Remote.Serialization
         }
 
         /// <inheritdoc />
+        /// <remarks>
+        /// A subclass keeps resolving its own id from HOCON via <see cref="Serializer.Identifier"/>.
+        /// </remarks>
+        public override int Identifier => GetType() == typeof(DaemonMsgCreateSerializer) ? 3 : base.Identifier;
+
+        /// <inheritdoc />
         public override bool IncludeManifest => false;
 
         /// <inheritdoc />
@@ -46,7 +53,8 @@ namespace Akka.Remote.Serialization
                 return message.ToByteArray();
             }
 
-            throw new ArgumentException($"Can't serialize a non-DaemonMsgCreate message using DaemonMsgCreateSerializer [{obj.GetType()}]");
+            throw new ArgumentException(
+                $"Can't serialize a non-DaemonMsgCreate message using DaemonMsgCreateSerializer [{obj.GetType()}]");
         }
 
         /// <inheritdoc />
@@ -84,7 +92,9 @@ namespace Akka.Remote.Serialization
 
         private Props PropsFromProto(Proto.Msg.PropsData protoProps)
         {
-            var actorClass = Type.GetType(protoProps.Clazz);
+            var actorClass = Type.GetType(protoProps.Clazz)
+                ?? throw new SerializationException(
+                    $"Could not resolve actor type [{protoProps.Clazz}] during DaemonMsgCreate deserialization.");
             var args = new object[protoProps.Args.Count];
             for (int i = 0; i < args.Length; i++)
             {
@@ -105,7 +115,7 @@ namespace Akka.Remote.Serialization
         {
             var deployBuilder = new Proto.Msg.DeployData();
             deployBuilder.Path = deploy.Path;
-
+            deployBuilder.StashCapacity = deploy.StashCapacity;
             {
                 var tuple = Serialize(deploy.Config);
                 deployBuilder.ConfigSerializerId = tuple.Item1;
@@ -113,7 +123,7 @@ namespace Akka.Remote.Serialization
                 deployBuilder.Config = ByteString.CopyFrom(tuple.Item4);
             }
 
-            if (deploy.RouterConfig != NoRouter.Instance)
+            if (!deploy.RouterConfig.Equals(NoRouter.Instance))
             {
                 var tuple = Serialize(deploy.RouterConfig);
                 deployBuilder.RouterConfigSerializerId = tuple.Item1;
@@ -140,7 +150,8 @@ namespace Akka.Remote.Serialization
         private Deploy DeployFromProto(Proto.Msg.DeployData protoDeploy)
         {
             Config config;
-            if (protoDeploy.ConfigSerializerId > 0) // TODO: should be protoDeploy.Config != null. But it always not null
+            if (protoDeploy.ConfigSerializerId >
+                0) // TODO: should be protoDeploy.Config != null. But it always not null
             {
                 config = system.Serialization.Deserialize(
                     protoDeploy.Config.ToByteArray(),
@@ -152,9 +163,10 @@ namespace Akka.Remote.Serialization
                 config = Config.Empty;
             }
 
-            
+
             RouterConfig routerConfig;
-            if (protoDeploy.RouterConfigSerializerId > 0) // TODO: should be protoDeploy.RouterConfig != null. But it always not null
+            if (protoDeploy.RouterConfigSerializerId >
+                0) // TODO: should be protoDeploy.RouterConfig != null. But it always not null
             {
                 routerConfig = system.Serialization.Deserialize(
                     protoDeploy.RouterConfig.ToByteArray(),
@@ -183,18 +195,22 @@ namespace Akka.Remote.Serialization
                 ? protoDeploy.Dispatcher
                 : Deploy.NoDispatcherGiven;
 
-            return new Deploy(protoDeploy.Path, config, routerConfig, scope, dispatcher);
+            // automatically covers backwards compat scenarios too - if the stash capacity is 0 (Protobuf default)
+            // it'll be set to -1 here, which is consistent with how defaults prior to v1.5.4 were handled.
+            var stashCapacity = protoDeploy.StashCapacity > 0 ? protoDeploy.StashCapacity : Deploy.NoStashSize;
+
+            return stashCapacity == Deploy.NoStashSize
+                ? new Deploy(protoDeploy.Path, config, routerConfig, scope, dispatcher)
+                : new Deploy(protoDeploy.Path, config, routerConfig, scope, dispatcher)
+                    .WithStashCapacity(stashCapacity);
         }
 
         //
         // IActorRef
         //
-        private Proto.Msg.ActorRefData SerializeActorRef(IActorRef actorRef)
+        private static Proto.Msg.ActorRefData SerializeActorRef(IActorRef actorRef)
         {
-            return new Proto.Msg.ActorRefData
-            {
-                Path = Akka.Serialization.Serialization.SerializedActorPath(actorRef)
-            };
+            return new Proto.Msg.ActorRefData { Path = Akka.Serialization.Serialization.SerializedActorPath(actorRef) };
         }
 
         private IActorRef DeserializeActorRef(Proto.Msg.ActorRefData actorRefData)

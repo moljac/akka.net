@@ -1,178 +1,166 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="CircuitBreakerSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Pattern;
 using Akka.TestKit;
+using Akka.Util.Internal;
+using FluentAssertions;
 using Xunit;
 
 namespace Akka.Tests.Pattern
 {
     public class ASynchronousCircuitBreakerThatIsClosed : CircuitBreakerSpecBase
     {
-        [Fact(DisplayName = "A synchronous circuit breaker that is closed should allow call through")]
-        public void Should_Allow_Call_Through( )
+        [Fact(DisplayName = "A synchronous circuit breaker that is closed must allow calls through")]
+        public void Must_allow_calls_through()
         {
-            var breaker = LongCallTimeoutCb( );
-            var result = breaker.Instance.WithSyncCircuitBreaker( ( ) => "Test" );
-
-            Assert.Equal( "Test", result );
+            var breaker = LongCallTimeoutCb();
+            breaker.Instance.WithSyncCircuitBreaker(SayHi).ShouldBe("hi");
         }
 
-        [Fact( DisplayName = "A synchronous circuit breaker that is closed should increment failure count when call fails" )]
-        public void Should_Increment_FailureCount_When_Call_Fails( )
+        [Fact(DisplayName = "A synchronous circuit breaker that is closed must increment failure count on failure")]
+        public void Must_increment_failure_count_on_failure()
         {
-            var breaker = LongCallTimeoutCb( );
-
-            Assert.Equal(0, breaker.Instance.CurrentFailureCount);
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
-            Assert.Equal( 1, breaker.Instance.CurrentFailureCount );
-        }
-
-        [Fact( DisplayName = "A synchronous circuit breaker that is closed should reset failure count when call succeeds" )]
-        public void Should_Reset_FailureCount_When_Call_Succeeds( )
-        {
-            var breaker = MultiFailureCb( );
-
-            Assert.Equal(0, breaker.Instance.CurrentFailureCount);
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
-            Assert.Equal(1, breaker.Instance.CurrentFailureCount);
-
-            breaker.Instance.WithSyncCircuitBreaker( ( ) => "Test" );
-
-            Assert.Equal( 0, breaker.Instance.CurrentFailureCount );
-        }
-
-        [Fact(DisplayName = "A synchronous circuit breaker that is closed should increment failure count when call times out")]
-        public void Should_Increment_FailureCount_When_Call_Times_Out( )
-        {
-            var breaker = ShortCallTimeoutCb( );
-
-            breaker.Instance.WithSyncCircuitBreaker( ( ) => Thread.Sleep( 500 ) );
-
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
-            Assert.Equal( 1, breaker.Instance.CurrentFailureCount );
+            var breaker = LongCallTimeoutCb();
+            breaker.Instance.CurrentFailureCount.ShouldBe(0);
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.OpenLatch));
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
         }
 
         [Fact(DisplayName = "A synchronous circuit breaker that is closed must increment failure count on fail method")]
         public void Must_increment_failure_count_on_fail_method()
         {
             var breaker = LongCallTimeoutCb();
-            Assert.True(breaker.Instance.CurrentFailureCount == 0);
+            breaker.Instance.CurrentFailureCount.ShouldBe(0);
             breaker.Instance.Fail();
             Assert.True(CheckLatch(breaker.OpenLatch));
-            Assert.True(breaker.Instance.CurrentFailureCount == 1);
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
         }
 
-        [Fact(DisplayName = "A synchronous circuit breaker that is closed must reset failure count and clears cached last exception after success method")]
+        [Fact(DisplayName = "A synchronous circuit breaker that is closed must invoke onOpen if call fails and breaker transits to open state")]
+        public void Must_invoke_onOpen_if_call_fails_and_breaker_transits_to_open_state()
+        {
+            var breaker = ShortCallTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.OpenLatch));
+        }
+
+        [Fact(DisplayName = "A synchronous circuit breaker that is closed must reset failure count after success")]
+        public void Must_reset_failure_count_after_success()
+        {
+            var breaker = MultiFailureCb();
+            breaker.Instance.CurrentFailureCount.ShouldBe(0);
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
+            breaker.Instance.WithSyncCircuitBreaker(SayHi);
+            breaker.Instance.CurrentFailureCount.ShouldBe(0);
+        }
+
+        [Fact(DisplayName = "A synchronous circuit breaker that is closed must reset failure count after success method")]
         public void Must_reset_failure_count_after_success_method()
         {
             var breaker = MultiFailureCb();
-            Assert.True(breaker.Instance.CurrentFailureCount == 0);
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException)));
-            Assert.True(breaker.Instance.CurrentFailureCount == 1);
-            Assert.True(breaker.Instance.LastCaughtException is TestException);
+            breaker.Instance.CurrentFailureCount.ShouldBe(0);
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
             breaker.Instance.Succeed();
-            Assert.True(breaker.Instance.CurrentFailureCount == 0);
-            Assert.True(breaker.Instance.LastCaughtException is null);
+            breaker.Instance.CurrentFailureCount.ShouldBe(0);
+        }
+
+        [Fact(DisplayName = "A synchronous circuit breaker that is closed must increment failure count on callTimeout before call finishes")]
+        public async Task Must_increment_failure_count_on_callTimeout_before_call_finishes()
+        {
+            var breaker = ShortCallTimeoutCb();
+
+            // WithSyncCircuitBreaker blocks its calling thread (GetAwaiter().GetResult()) while the body
+            // itself needs a second thread-pool thread. Driving it from the thread pool therefore makes this
+            // test depend on the pool having threads to spare: under starvation the call may not start for
+            // seconds, CurrentFailureCount stays 0, and the test fails. LongRunning gives it a dedicated
+            // thread instead, so the call always starts promptly regardless of pool pressure, and the
+            // expected timeout failure is captured by the returned Task rather than thrown on a loose thread.
+            var started = new TaskCompletionSource<Done>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var call = Task.Factory.StartNew(() =>
+            {
+                started.TrySetResult(Done.Instance);
+                breaker.Instance.WithSyncCircuitBreaker(() => Thread.Sleep(Dilated(TimeSpan.FromSeconds(1))));
+            }, TaskCreationOptions.LongRunning);
+            await started.Task;
+
+            // The 50ms call-timeout fires long before the 1s call returns, recording the failure. Wait for it
+            // with the framework's default AwaitAssert budget (event-based retry) rather than inside a
+            // hand-padded wall-clock window a loaded OS scheduler can blow past.
+            await AwaitAssertAsync(() => breaker.Instance.CurrentFailureCount.ShouldBe(1));
+
+            // Observe the protected call's expected timeout failure (AtomicState.CallThrough awaits the body
+            // with .WaitAsync(callTimeout), so it throws once the 50ms budget elapses).
+            var callFailure = await Record.ExceptionAsync(() => call);
+            callFailure.Should().BeOfType<TimeoutException>();
         }
     }
 
     public class ASynchronousCircuitBreakerThatIsHalfOpen : CircuitBreakerSpecBase
     {
-        [Fact(DisplayName = "A synchronous circuit breaker that is half open should pass call and transition to close on success")]
-        public void Should_Pass_Call_And_Transition_To_Close_On_Success( )
-        {
-            var breaker = ShortResetTimeoutCb( );
-            InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
-
-            var result = breaker.Instance.WithSyncCircuitBreaker( ( ) => SayTest( ) );
-
-            Assert.True( CheckLatch( breaker.ClosedLatch ) );
-            Assert.Equal( SayTest( ), result );
-        }
-
-        [Fact(DisplayName = "An asynchronous circuit breaker that is half open should pass only one call until it closes")]
-        public async Task Should_Pass_Only_One_Call_And_Transition_To_Close_On_Success()
+        [Fact(DisplayName = "A synchronous circuit breaker that is half open must pass through next call and close on success")]
+        public void Must_pass_through_call_and_close_on_success()
         {
             var breaker = ShortResetTimeoutCb();
-            InterceptExceptionType<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
             Assert.True(CheckLatch(breaker.HalfOpenLatch));
-
-            var task1 = breaker.Instance.WithCircuitBreaker(() => DelayedSayTest(TimeSpan.FromSeconds(0.1)));
-            var task2 = breaker.Instance.WithCircuitBreaker(() => DelayedSayTest(TimeSpan.FromSeconds(0.1)));
-            var combined = Task.WhenAny(task1, task2).Unwrap();
-
-            // One of the 2 tasks will throw, because the circuit breaker is half open
-            Exception caughtException = null;
-            try
-            {
-                await combined;
-            }
-            catch (Exception e)
-            {
-                caughtException = e;
-            }
-            Assert.True(caughtException is OpenCircuitException);
-            Assert.StartsWith("Circuit breaker is half open", caughtException.Message);
-
-            // Wait until one of task completes
-            await Task.Delay(TimeSpan.FromSeconds(0.25));
+            Assert.True("hi" == breaker.Instance.WithSyncCircuitBreaker(SayHi));
             Assert.True(CheckLatch(breaker.ClosedLatch));
-
-            // We don't know which one of the task got faulted
-            string result = null;
-            if (task1.IsCompleted && !task1.IsFaulted)
-                result = task1.Result;
-            else if (task2.IsCompleted && !task2.IsFaulted)
-                result = task2.Result;
-
-            Assert.Equal(SayTest(), result);
         }
 
-
-        [Fact(DisplayName = "A synchronous circuit breaker that is half open should pass call and transition to open on exception")]
-        public void Should_Pass_Call_And_Transition_To_Open_On_Exception( )
+        [Fact(DisplayName = "A synchronous circuit breaker that is half open must open on exception in call")]
+        public void Must_open_on_exception_in_call()
         {
-            var breaker = ShortResetTimeoutCb( );
-
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
+            var breaker = ShortResetTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.HalfOpenLatch));
+            breaker.OpenLatch.Reset();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.OpenLatch));
         }
 
-        [Fact(DisplayName = "A synchronous circuit breaker that is half open must open on calling fail method")]
+        [Fact(DisplayName = "A synchronous circuit breaker that is half open on calling fail method")]
         public void Must_open_on_calling_fail_method()
         {
-            var breaker = ShortCallTimeoutCb();
-
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException)));
+            var breaker = ShortResetTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
             Assert.True(CheckLatch(breaker.HalfOpenLatch));
+            breaker.OpenLatch.Reset();
             breaker.Instance.Fail();
             Assert.True(CheckLatch(breaker.OpenLatch));
+        }
+
+        [Fact(DisplayName = "A synchronous circuit breaker that is half open on calling success method")]
+        public void Must_open_on_calling_success_method()
+        {
+            var breaker = ShortResetTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.HalfOpenLatch));
+            breaker.Instance.Succeed();
+            Assert.True(CheckLatch(breaker.ClosedLatch));
         }
 
         [Fact(DisplayName = "A synchronous circuit breaker that is half open must close on calling success method")]
         public void Must_close_on_calling_success_method()
         {
-            var breaker = ShortCallTimeoutCb();
+            var breaker = ShortResetTimeoutCb();
 
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException)));
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
             Assert.True(CheckLatch(breaker.HalfOpenLatch));
             breaker.Instance.Succeed();
             Assert.True(CheckLatch(breaker.ClosedLatch));
@@ -181,344 +169,307 @@ namespace Akka.Tests.Pattern
 
     public class ASynchronousCircuitBreakerThatIsOpen : CircuitBreakerSpecBase
     {
-        [Fact(DisplayName = "A synchronous circuit breaker that is open should throw exceptions before reset timeout")]
-        public void Should_Throw_Exceptions_Before_Reset_Timeout( )
+        [Fact(DisplayName = "A synchronous circuit breaker that is open must throw exceptions when called before reset timeout")]
+        public void Must_throw_exceptions_before_reset_timeout()
         {
-            var breaker = LongResetTimeoutCb( );
+            var breaker = LongResetTimeoutCb();
 
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
-            Assert.True( InterceptExceptionType<OpenCircuitException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.OpenLatch));
+
+            var e = InterceptException<OpenCircuitException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            e.RemainingDuration.ShouldBeGreaterThan(TimeSpan.Zero);
+            e.RemainingDuration.ShouldBeLessOrEqualTo(LongResetTimeout);
         }
 
-        [Fact(DisplayName = "A synchronous circuit breaker that is open should transition to half open when reset times out")]
-        public void Should_Transition_To_Half_Open_When_Reset_Times_Out( )
+        [Fact(DisplayName = "A synchronous circuit breaker that is open must transition to half-open on reset timeout")]
+        public void Must_transition_to_half_open_on_reset_timeout()
         {
-            var breaker = ShortResetTimeoutCb( );
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithSyncCircuitBreaker( ThrowException ) ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
+            var breaker = ShortResetTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
+            Assert.True(CheckLatch(breaker.HalfOpenLatch));
         }
 
         [Fact(DisplayName = "A synchronous circuit breaker that is open must still be in open state after calling success method")]
         public void Must_still_be_in_open_state_after_calling_success_method()
         {
-            var breaker = LongCallTimeoutCb();
-
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException)));
+            var breaker = LongResetTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
             Assert.True(CheckLatch(breaker.OpenLatch));
             breaker.Instance.Succeed();
-            Assert.True(CheckLatch(breaker.OpenLatch));
+            breaker.Instance.IsOpen.ShouldBeTrue();
         }
 
         [Fact(DisplayName = "A synchronous circuit breaker that is open must still be in open state after calling fail method")]
         public void Must_still_be_in_open_state_after_calling_fail_method()
         {
-            var breaker = LongCallTimeoutCb();
-
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException)));
+            var breaker = LongResetTimeoutCb();
+            InterceptException<TestException>(() => breaker.Instance.WithSyncCircuitBreaker(ThrowException));
             Assert.True(CheckLatch(breaker.OpenLatch));
             breaker.Instance.Fail();
-            Assert.True(CheckLatch(breaker.OpenLatch));
+            breaker.Instance.IsOpen.ShouldBeTrue();
         }
     }
 
     public class AnAsynchronousCircuitBreakerThatIsClosed : CircuitBreakerSpecBase
     {
-        [Fact(DisplayName = "An asynchronous circuit breaker that is closed should allow call through")]
-        public void Should_Allow_Call_Through( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is closed must allow calls through")]
+        public async Task Must_allow_calls_through()
         {
-            var breaker = LongCallTimeoutCb( );
-            var result = breaker.Instance.WithCircuitBreaker( () => Task.Run( ( ) => SayTest( ) ) );
-
-            Assert.Equal( SayTest( ), result.Result );
+            var breaker = LongCallTimeoutCb();
+            var result = await breaker.Instance.WithCircuitBreaker(ct => Task.Run(SayHi, ct)).WaitAsync(AwaitTimeout);
+            Assert.Equal("hi", result);
         }
 
-        [Fact(DisplayName = "An asynchronous circuit breaker that is closed should increment failure count when call fails")]
-        public void Should_Increment_Failure_Count_When_Call_Fails( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is closed must increment failure count on exception")]
+        public async Task Must_increment_failure_count_on_exception()
         {
-            var breaker = LongCallTimeoutCb( );
-
-            Assert.Equal(0, breaker.Instance.CurrentFailureCount);
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Run( ( ) => ThrowException( ) ) ).Wait( AwaitTimeout ) ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
-            Assert.Equal( 1, breaker.Instance.CurrentFailureCount );
+            var breaker = LongCallTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)).WaitAsync(AwaitTimeout));
+            await CheckLatchAsync(breaker.OpenLatch);
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
         }
 
-        [Fact(DisplayName = "An asynchronous circuit breaker that is closed should reset failure count when call succeeds after failure")]
-        public void Should_Reset_Failure_Count_When_Call_Succeeds_After_Failure( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is closed must increment failure count on async failure")]
+        public async Task Must_increment_failure_count_on_async_failure()
         {
-            var breaker = MultiFailureCb( );
-
-            Assert.Equal(0, breaker.Instance.CurrentFailureCount);
-
-            var whenall = Task.WhenAll(
-                breaker.Instance.WithCircuitBreaker(() => Task.Factory.StartNew(ThrowException))
-                , breaker.Instance.WithCircuitBreaker(() => Task.Factory.StartNew(ThrowException))
-                , breaker.Instance.WithCircuitBreaker(() => Task.Factory.StartNew(ThrowException))
-                , breaker.Instance.WithCircuitBreaker(() => Task.Factory.StartNew(ThrowException)));
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => whenall.Wait( AwaitTimeout ) ) );
-
-            Assert.Equal(4, breaker.Instance.CurrentFailureCount);
-
-            var result = breaker.Instance.WithCircuitBreaker(() => Task.Run( ( ) => SayTest( ) ) ).Result;
-
-            Assert.Equal( SayTest( ), result );
-            Assert.Equal( 0, breaker.Instance.CurrentFailureCount );
+            var breaker = LongCallTimeoutCb();
+            // Await the failing call rather than firing it and hoping the thread pool schedules it. The
+            // breaker cannot record the failure - and so cannot trip any latch - until this call actually
+            // runs, so a detached call left every assertion below racing pool scheduling.
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.OpenLatch);
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
         }
 
-        [Fact(DisplayName = "An asynchronous circuit breaker that is closed should increment failure count when call times out")]
-        public void Should_Increment_Failure_Count_When_Call_Times_Out( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is closed must reset failure count after success")]
+        public async Task Must_reset_failure_count_after_success()
         {
-            var breaker = ShortCallTimeoutCb( );
+            var breaker = MultiFailureCb();
+            await WaitForTaskToBeScheduled(breaker.Instance.WithCircuitBreaker(ct => Task.Run(SayHi, ct)));
+            await WaitForTaskToBeScheduled(Enumerable.Range(1, 4).Select(_ => breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct))).ToList());
+            await AwaitAssertAsync(() => breaker.Instance.CurrentFailureCount.ShouldBe(4), AwaitTimeout);
+            await WaitForTaskToBeScheduled(breaker.Instance.WithCircuitBreaker(ct => Task.Run(SayHi, ct)));
+            await AwaitAssertAsync(() => breaker.Instance.CurrentFailureCount.ShouldBe(0), AwaitTimeout);
+        }
 
-            breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ( ) =>
+        [Fact(DisplayName = "An asynchronous circuit breaker that is closed must increment failure count on callTimeout")]
+        public async Task Must_increment_failure_count_on_callTimeout()
+        {
+            var breaker = ShortCallTimeoutCb();
+
+            var future = breaker.Instance.WithCircuitBreaker(async ct =>
             {
-                Thread.Sleep( 500 );
-                return SayTest( );
-            } ) );
+                await Task.Delay(Dilated(TimeSpan.FromSeconds(1)), ct);
+                ThrowException();
+            });
 
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
-            Assert.Equal( 1, breaker.Instance.CurrentFailureCount );
-            Assert.True(breaker.Instance.LastCaughtException is TimeoutException);
+            await CheckLatchAsync(breaker.OpenLatch);
+            breaker.Instance.CurrentFailureCount.ShouldBe(1);
+
+            // Since the timeout should have happened before the inner code finishes
+            // we expect a timeout, not TestException
+            await InterceptException<TimeoutException>(() => future.WaitAsync(AwaitTimeout));
+        }
+
+        [Fact(DisplayName = "An asynchronous circuit breaker that is closed must invoke onOpen if call fails and breaker transits to open state")]
+        public async Task Must_invoke_onOpen_if_call_fails_and_breaker_transits_to_open_state()
+        {
+            var breaker = ShortCallTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.OpenLatch);
         }
     }
 
     public class AnAsynchronousCircuitBreakerThatIsHalfOpen : CircuitBreakerSpecBase
     {
-        [Fact(DisplayName = "An asynchronous circuit breaker that is half open should pass call and transition to close on success")]
-        public void Should_Pass_Call_And_Transition_To_Close_On_Success( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is half open must pass through next call and close on success")]
+        public async Task Must_pass_through_next_call_and_close_on_success()
         {
-            var breaker = ShortResetTimeoutCb( );
-            InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
-
-            var result = breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ( ) => SayTest( ) ) );
-
-            Assert.True( CheckLatch( breaker.ClosedLatch ) );
-            Assert.Equal( SayTest( ), result.Result );
+            var breaker = ShortResetTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.HalfOpenLatch);
+            var result = await breaker.Instance.WithCircuitBreaker(ct => Task.Run(SayHi, ct)).WaitAsync(AwaitTimeout);
+            Assert.Equal("hi", result);
+            await CheckLatchAsync(breaker.ClosedLatch);
         }
 
-        [Fact(DisplayName = "An asynchronous circuit breaker that is half open should pass call and transition to open on exception")]
-        public void Should_Pass_Call_And_Transition_To_Open_On_Exception( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is half open must re-open on exception in call")]
+        public async Task Must_reopen_on_exception_in_call()
         {
-            var breaker = ShortResetTimeoutCb( );
-
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) ).Wait( ) ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) ).Wait( ) ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
+            var breaker = ShortResetTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.HalfOpenLatch);
+            breaker.OpenLatch.Reset();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)).WaitAsync(AwaitTimeout));
+            await CheckLatchAsync(breaker.OpenLatch);
         }
 
-        [Fact(DisplayName = "An asynchronous circuit breaker that is half open should pass call and transition to open on async failure")]
-        public void Should_Pass_Call_And_Transition_To_Open_On_Async_Failure( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is half open must re-open on async failure")]
+        public async Task Must_reopen_on_async_failure()
         {
-            var breaker = ShortResetTimeoutCb( );
+            var breaker = ShortResetTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.HalfOpenLatch);
 
-            breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
-
-            breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
+            breaker.OpenLatch.Reset();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.OpenLatch);
         }
     }
 
     public class AnAsynchronousCircuitBreakerThatIsOpen : CircuitBreakerSpecBase
     {
-        [Fact(DisplayName = "An asynchronous circuit breaker that is open should throw exceptions when called before reset timeout")]
-        public void Should_Throw_Exceptions_When_Called_Before_Reset_Timeout( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is open must throw exceptions when called before reset timeout")]
+        public async Task Must_throw_exceptions_when_called_before_reset_timeout()
         {
-            var breaker = LongResetTimeoutCb( );
+            var breaker = LongResetTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
 
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) ).Wait( ) ) );
-            Assert.True( CheckLatch( breaker.OpenLatch ) );
-            Assert.True( InterceptExceptionType<OpenCircuitException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) ).Wait( ) ) );
+            await CheckLatchAsync(breaker.OpenLatch);
+
+            await InterceptException<OpenCircuitException>(
+                () => breaker.Instance.WithCircuitBreaker(ct => Task.Run(SayHi, ct)).WaitAsync(AwaitTimeout));
         }
 
-        [Fact(DisplayName = "An asynchronous circuit breaker that is open should transition to half open when reset timeout")]
-        public void Should_Transition_To_Half_Open_When_Reset_Timeout( )
+        [Fact(DisplayName = "An asynchronous circuit breaker that is open must transition to half-open on reset timeout")]
+        public async Task Must_transition_to_half_open_on_reset_timeout()
         {
-            var breaker = ShortResetTimeoutCb( );
-
-            Assert.True( InterceptExceptionType<TestException>( ( ) => breaker.Instance.WithCircuitBreaker( () => Task.Factory.StartNew( ThrowException ) ).Wait( ) ) );
-            Assert.True( CheckLatch( breaker.HalfOpenLatch ) );
+            var breaker = ShortResetTimeoutCb();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.HalfOpenLatch);
         }
-        
-        [Fact(DisplayName = "An asynchronous circuit breaker that is open should increase the reset timeout after it transits to open again")]
-        public void Should_Reset_Timeout_After_It_Transits_To_Open_Again()
+
+        [Fact(DisplayName = "An asynchronous circuit breaker that is open must increase the reset timeout after it transits to open again")]
+        public async Task Must_increase_reset_timeout_after_it_transits_to_open_again()
         {
             var breaker = NonOneFactorCb();
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithCircuitBreaker(() => Task.Run(ThrowException)).Wait()));
-            Assert.True(CheckLatch(breaker.OpenLatch));
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.OpenLatch);
 
-            var e1 = InterceptException<OpenCircuitException>(() => breaker.Instance.WithSyncCircuitBreaker(SayTest));
+            var e1 = await InterceptException<OpenCircuitException>(
+                () => breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
             var shortRemainingDuration = e1.RemainingDuration;
 
-            Thread.Sleep(1000);
-            Assert.True(CheckLatch(breaker.HalfOpenLatch));
+            await Task.Delay(Dilated(TimeSpan.FromMilliseconds(1000)));
+            await CheckLatchAsync(breaker.HalfOpenLatch);
 
             // transit to open again
-            Assert.True(InterceptExceptionType<TestException>(() => breaker.Instance.WithCircuitBreaker(() => Task.Run(ThrowException)).Wait()));
-            Assert.True(CheckLatch(breaker.OpenLatch));
+            breaker.OpenLatch.Reset();
+            await InterceptException<TestException>(() =>
+                breaker.Instance.WithCircuitBreaker(ct => Task.Run(ThrowException, ct)));
+            await CheckLatchAsync(breaker.OpenLatch);
 
-            var e2 = InterceptException<OpenCircuitException>(() => breaker.Instance.WithSyncCircuitBreaker(SayTest));
+            var e2 = await InterceptException<OpenCircuitException>(() =>
+                breaker.Instance.WithCircuitBreaker(_ => Task.FromResult(SayHi())));
             var longRemainingDuration = e2.RemainingDuration;
 
-            Assert.True(shortRemainingDuration < longRemainingDuration);
+            shortRemainingDuration.ShouldBeLessThan(longRemainingDuration);
         }
     }
 
     public class CircuitBreakerSpecBase : AkkaSpec
     {
-        private readonly TimeSpan _awaitTimeout = TimeSpan.FromSeconds(2);
-        public TimeSpan AwaitTimeout { get { return _awaitTimeout; } }
+        /// <summary>
+        /// Undilated budget for latch and call waits. <see cref="AwaitTimeout"/> dilates it for the
+        /// raw waits that need it; TestKit methods dilate it themselves, so they get this one.
+        /// </summary>
+        private static readonly TimeSpan LatchTimeout = TimeSpan.FromSeconds(2);
 
-        public bool CheckLatch( CountdownEvent latch )
+        public TimeSpan AwaitTimeout => Dilated(LatchTimeout);
+
+        public bool CheckLatch(CountdownEvent latch) => latch.Wait(AwaitTimeout);
+
+        /// <summary>
+        /// Awaits a breaker-transition latch <b>without blocking the calling thread</b>.
+        /// The breaker signals these latches from callbacks dispatched to the thread pool, and the
+        /// half-open transition additionally waits on the scheduler's reset timer firing there.
+        /// Blocking the test thread inside <see cref="CheckLatch"/>'s <c>CountdownEvent.Wait()</c>
+        /// can starve the very work that sets the latch, so the test ends up holding the thread its
+        /// own signal needs. Polling <c>IsSet</c> yields between checks, and a miss reports which
+        /// condition timed out instead of a bare <c>Assert.True(false)</c>.
+        /// </summary>
+        /// <remarks>
+        /// This passes the undilated <see cref="LatchTimeout"/> because <c>AwaitConditionAsync</c>
+        /// runs its <c>max</c> through <c>RemainingOrDilated</c>. Handing it the already-dilated
+        /// <see cref="AwaitTimeout"/> would square the timefactor.
+        /// </remarks>
+        public async Task CheckLatchAsync(CountdownEvent latch)
+            => await AwaitConditionAsync(
+                () => latch.IsSet,
+                LatchTimeout,
+                TimeSpan.FromMilliseconds(50),
+                "Timed out waiting for the circuit breaker latch to be signaled");
+
+        public Task WaitForTaskToBeScheduled(Task childTask)
         {
-            return latch.Wait( AwaitTimeout );
+            return AwaitConditionAsync(() => childTask.Status >= TaskStatus.Running);
         }
-
-        public Task Delay( TimeSpan toDelay, CancellationToken? token )
+        
+        public Task WaitForTaskToBeScheduled(IReadOnlyCollection<Task> childTasks)
         {
-            return token.HasValue ? Task.Delay( toDelay, token.Value ) : Task.Delay( toDelay );
-        }
-
-        public async Task<string> DelayedSayTest(TimeSpan delay)
-        {
-            await Task.Delay(delay);
-            return "Test";
+            return AwaitConditionAsync(() => childTasks.All(t => t.Status >= TaskStatus.Running));
         }
 
         [DebuggerStepThrough]
-        public void ThrowException() => throw new TestException("Test Exception");
+        public static void ThrowException() => throw new TestException("Test Exception");
 
-        public string SayTest( ) => "Test";
-        
-        protected T InterceptException<T>(Action actionThatThrows) where T : Exception
+        public static string SayHi() => "hi";
+
+        protected T InterceptException<T>(Action actionThatThrows) where T : Exception =>
+            Intercept<T>(actionThatThrows);
+
+        protected static async Task<T> InterceptException<T>(Func<Task> actionThatThrows)
+            where T : Exception
         {
-            return Assert.Throws<T>(() =>
-            {
-                try
-                {
-                    actionThatThrows();
-                }
-                catch (AggregateException ex)
-                {
-                    foreach (var e in ex.Flatten().InnerExceptions.Where(e => e is T).Select(e => e))
-                        throw e;                     
-                }
-            });
+            return (await actionThatThrows.Should().ThrowExactlyAsync<T>()).And;
         }
 
-        [SuppressMessage( "Microsoft.Design", "CA1004:GenericMethodsShouldProvideTypeParameter" )]
-        public bool InterceptExceptionType<T>( Action action ) where T : Exception
-        {
-            try
-            {
-                action.Invoke( );
-                return false;
-            }
-            catch ( Exception ex )
-            {
-                if (ex is AggregateException aggregate)
-                {
-                    // ReSharper disable once UnusedVariable
-                    foreach (var temp in aggregate
-                        .InnerExceptions
-                        .Where(t => !(t is T)))
-                    {
-                        throw;
-                    }
-                } else if (!(ex is T))
-                {
-                    throw;
-                }
-            }
-            return true;
-        }
+        public TestBreaker ShortCallTimeoutCb() =>
+            new(new CircuitBreaker(Sys.Scheduler, 1, Dilated(TimeSpan.FromMilliseconds(50)), Dilated(TimeSpan.FromMilliseconds(500))));
 
-        public async Task<bool> InterceptExceptionTypeAsync<T>(Task action) where T : Exception
-        {
-            try
-            {
-                await action;
-                return false;
-            }
-            catch (Exception ex)
-            {
-                if (ex is AggregateException aggregate)
-                {
-                    // ReSharper disable once UnusedVariable
-                    foreach (var temp in aggregate
-                        .InnerExceptions
-                        .Where(t => !(t is T)))
-                    {
-                        throw;
-                    }
-                }
-                else if (!(ex is T))
-                {
-                    throw;
-                }
-            }
-            return true;
-        }
+        public TestBreaker ShortResetTimeoutCb() =>
+            new(new CircuitBreaker(Sys.Scheduler, 1, Dilated(TimeSpan.FromMilliseconds(1000)), Dilated(TimeSpan.FromMilliseconds(50))));
 
-        public TestBreaker ShortCallTimeoutCb( )
-        {
-            return new TestBreaker( new CircuitBreaker(Sys.Scheduler, 1, TimeSpan.FromMilliseconds( 50 ), TimeSpan.FromMilliseconds( 500 ) ) );
-        }
+        public TestBreaker LongCallTimeoutCb() =>
+            new(new CircuitBreaker(Sys.Scheduler, 1, TimeSpan.FromSeconds(5), Dilated(TimeSpan.FromMilliseconds(500))));
 
-        public TestBreaker ShortResetTimeoutCb( )
-        {
-            return new TestBreaker( new CircuitBreaker(Sys.Scheduler, 1, TimeSpan.FromMilliseconds( 1000 ), TimeSpan.FromMilliseconds( 50 ) ) );
-        }
+        public TimeSpan LongResetTimeout = TimeSpan.FromSeconds(5);
+        public TestBreaker LongResetTimeoutCb() =>
+            new(new CircuitBreaker(Sys.Scheduler, 1, Dilated(TimeSpan.FromMilliseconds(100)), Dilated(LongResetTimeout)));
 
-        public TestBreaker LongCallTimeoutCb( )
-        {
-            return new TestBreaker( new CircuitBreaker(Sys.Scheduler, 1, TimeSpan.FromMilliseconds( 5000 ), TimeSpan.FromMilliseconds( 500 ) ) );
-        }
+        public TestBreaker MultiFailureCb() =>
+            new(new CircuitBreaker(Sys.Scheduler, 5, Dilated(TimeSpan.FromMilliseconds(200)), Dilated(TimeSpan.FromMilliseconds(500))));
 
-        public TestBreaker LongResetTimeoutCb( )
-        {
-            return new TestBreaker( new CircuitBreaker(Sys.Scheduler, 1, TimeSpan.FromMilliseconds( 100 ), TimeSpan.FromMilliseconds( 5000 ) ) );
-        }
-
-        public TestBreaker MultiFailureCb( )
-        {
-            return new TestBreaker( new CircuitBreaker(Sys.Scheduler, 5, TimeSpan.FromMilliseconds( 200 ), TimeSpan.FromMilliseconds( 500 ) ) );
-        }
-        
-        public TestBreaker NonOneFactorCb()
-        {
-            return new TestBreaker(new CircuitBreaker(Sys.Scheduler, 1, TimeSpan.FromMilliseconds(2000), TimeSpan.FromMilliseconds(1000), TimeSpan.FromDays(1), 5));
-        }
+        public TestBreaker NonOneFactorCb() =>
+            new(new CircuitBreaker(Sys.Scheduler, 1, Dilated(TimeSpan.FromMilliseconds(2000)), Dilated(TimeSpan.FromMilliseconds(1000)), Dilated(TimeSpan.FromDays(1)), 5, 0));
     }
-
 
     internal class TestException : Exception
     {
-        public TestException( )
+        public TestException()
         {
         }
 
-        public TestException( string message )
-            : base( message )
+        public TestException(string message)
+            : base(message)
         {
         }
 
-        public TestException( string message, Exception innerException )
-            : base( message, innerException )
-        {
-        }
-
-        protected TestException( SerializationInfo info, StreamingContext context )
-            : base( info, context )
+        public TestException(string message, Exception innerException)
+            : base(message, innerException)
         {
         }
     }
-
 }

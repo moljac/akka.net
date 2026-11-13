@@ -1,71 +1,122 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="TcpOutgoingConnection.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
-using System.Collections.Generic;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using Akka.Actor;
-using Akka.Util;
+using Akka.Annotations;
+using Akka.Event;
+
+#nullable enable
 
 namespace Akka.IO
 {
     /// <summary>
-    /// TBD
+    /// An actor handling the connection state machine for an outgoing connection
+    /// to be established.
     /// </summary>
-    internal sealed class TcpOutgoingConnection : TcpConnection
+    internal sealed class TcpOutgoingConnection : TcpConnection, IWithTimers
     {
+        private const string RetryConnectTimerKey = "retry-connect";
+
         private readonly IActorRef _commander;
         private readonly Tcp.Connect _connect;
 
-        private SocketAsyncEventArgs _connectArgs;
+        private SocketAsyncEventArgs? _connectArgs;
+
+        private readonly ConnectException _finishConnectNeverReturnedTrueException =
+            new("Could not establish connection because finishConnect never returned true");
+
+        public ITimerScheduler Timers { get; set; } = null!;
+
+        /// <summary>
+        /// Internal trigger used to re-attempt an outgoing connection from inside the
+        /// actor's own message loop, so connect failures are reported as <see cref="Tcp.CommandFailed"/>
+        /// instead of being swallowed by the scheduler thread.
+        /// </summary>
+        private sealed class RetryConnect
+        {
+            public static readonly RetryConnect Instance = new();
+            private RetryConnect() { }
+        }
 
         public TcpOutgoingConnection(TcpExt tcp, IActorRef commander, Tcp.Connect connect)
             : base(
-                   tcp,
-                   tcp.Settings.OutgoingSocketForceIpv4
-                       ? new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp) { Blocking = false }
-                       : new Socket(SocketType.Stream, ProtocolType.Tcp) { Blocking = false },
-                   connect.PullMode,
-                   tcp.Settings.WriteCommandsQueueMaxSize >= 0 ? tcp.Settings.WriteCommandsQueueMaxSize : Option<int>.None)
+                (connect.TcpSettings ?? tcp.Settings),
+                (connect.TcpSettings ?? tcp.Settings).OutgoingSocketForceIpv4
+                    ? new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp) { Blocking = false }
+                    : new Socket(SocketType.Stream, ProtocolType.Tcp) { Blocking = false }, connect.PullMode)
         {
             _commander = commander;
             _connect = connect;
-
-            SignDeathPact(commander);
 
             foreach (var option in connect.Options)
             {
                 option.BeforeConnect(Socket);
             }
-            
+
             if (connect.LocalAddress != null)
                 Socket.Bind(connect.LocalAddress);
 
             if (connect.Timeout.HasValue)
-                Context.SetReceiveTimeout(connect.Timeout.Value);  //Initiate connection timeout if supplied
+                Context.SetReceiveTimeout(connect.Timeout.Value);
+        }
+
+        protected override ITransportConnection CreateTransport()
+        {
+            // NetworkStream requires a blocking socket; the socket was created
+            // non-blocking for the SAEA connect phase — switch to blocking now.
+            Socket.Blocking = true;
+
+            var pipeBufferSize = ResolvePipeBufferSize(Settings, _connect.Options);
+            var inputPipeOptions = new PipeOptions(
+                pauseWriterThreshold: pipeBufferSize * 2,
+                resumeWriterThreshold: pipeBufferSize,
+                minimumSegmentSize: Settings.MaxFrameSizeBytes,
+                useSynchronizationContext: false);
+
+            var outputPipeOptions = ResolveOutputPipeOptions(Settings, _connect.Options);
+            return TcpTransportConnection.CreateForOutgoing(Socket, _connect.RemoteAddress, inputPipeOptions,
+                outputPipeOptions, _connect.Tls, Log);
         }
 
         private void ReleaseConnectionSocketArgs()
         {
             if (_connectArgs != null)
             {
-                ReleaseSocketEventArgs(_connectArgs);
+                _connectArgs.UserToken = null;
+                _connectArgs.AcceptSocket = null;
+
+                try
+                {
+                    _connectArgs.SetBuffer(null, 0, 0);
+                    _connectArgs.BufferList = null;
+                }
+                catch (InvalidOperationException)
+                {
+                }
+
+                _connectArgs.Dispose();
                 _connectArgs = null;
             }
         }
 
-        private void Stop()
+        private void Stop(Exception cause)
         {
             ReleaseConnectionSocketArgs();
 
-            StopWith(new CloseInformation(new HashSet<IActorRef>(new[] {_commander}), _connect.FailureMessage));
+            var failureEvent = _connect.FailureMessage.WithCause(cause);
+            var closeInfo = CloseInformation.Single(_commander, failureEvent);
+            StopWith(closeInfo);
+            Context.Stop(Self);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -77,75 +128,64 @@ namespace Akka.IO
             }
             catch (Exception e)
             {
-                Log.Error(e, "Could not establish connection to [{0}].", _connect.RemoteAddress);
-                Stop();
+                Log.Debug(e, "Could not establish connection to [{0}] due to {1}", _connect.RemoteAddress, e.Message);
+                Stop(e);
             }
         }
-        
+
         protected override void PreStart()
         {
             ReportConnectFailure(() =>
             {
-                if (_connect.RemoteAddress is DnsEndPoint)
+                if (_connect.RemoteAddress is DnsEndPoint remoteAddress)
                 {
-                    var remoteAddress = (DnsEndPoint) _connect.RemoteAddress;
-                    Log.Debug("Resolving {0} before connecting", remoteAddress.Host);
-                    var resolved = Dns.ResolveName(remoteAddress.Host, Context.System, Self);
-                    if (resolved == null)
-                        Become(Resolving(remoteAddress));
-                    else if(resolved.Ipv4.Any() && resolved.Ipv6.Any()) // one of both families
-                        Register(new IPEndPoint(resolved.Ipv4.FirstOrDefault(), remoteAddress.Port), new IPEndPoint(resolved.Ipv6.FirstOrDefault(), remoteAddress.Port));
-                    else // one or the other
-                        Register(new IPEndPoint(resolved.Addr, remoteAddress.Port), null);
+                    // Pass DnsEndPoint directly to Socket.ConnectAsync — the runtime
+                    // resolves DNS and tries all addresses (IPv4 + IPv6) until one connects.
+                    // This is the only correct approach for dual-stack sockets where we
+                    // don't know what address family the server is bound to.
+                    Log.Debug("Connecting to DNS endpoint [{0}]", remoteAddress);
+                    RegisterEndPoint(remoteAddress);
                 }
-                else if(_connect.RemoteAddress is IPEndPoint)
+                else if (_connect.RemoteAddress is IPEndPoint point)
                 {
-                    Register((IPEndPoint)_connect.RemoteAddress, null);
+                    Register(point);
                 }
-                else throw new NotSupportedException($"Couldn't connect to [{_connect.RemoteAddress}]: only IP and DNS-based endpoints are supported");
+                else
+                    throw new NotSupportedException(
+                        $"Couldn't connect to [{_connect.RemoteAddress}]: only IP and DNS-based endpoints are supported");
             });
         }
 
         protected override void PostStop()
         {
-            // always try to release SocketAsyncEventArgs to avoid memory leaks
             ReleaseConnectionSocketArgs();
-
             base.PostStop();
         }
 
-        protected override bool Receive(object message)
+        private static SocketAsyncEventArgs CreateSocketEventArgs(IActorRef onCompleteNotificationsReceiver)
         {
-            throw new NotSupportedException();
-        }
-
-        private Receive Resolving(DnsEndPoint remoteAddress)
-        {
-            return message =>
+            var args = new SocketAsyncEventArgs();
+            args.UserToken = onCompleteNotificationsReceiver;
+            args.Completed += (_, e) =>
             {
-                var resolved = message as Dns.Resolved;
-                if (resolved != null)
-                {
-                    if (resolved.Ipv4.Any() && resolved.Ipv6.Any()) // multiple addresses
-                    {
-                        ReportConnectFailure(() => Register(
-                            new IPEndPoint(resolved.Ipv4.FirstOrDefault(), remoteAddress.Port),
-                            new IPEndPoint(resolved.Ipv6.FirstOrDefault(), remoteAddress.Port)));
-                    }
-                    else // only one address family. No fallbacks.
-                    {
-                        ReportConnectFailure(() => Register(
-                            new IPEndPoint(resolved.Addr, remoteAddress.Port),
-                            null));
-                    }
-                    return true;
-                }
-                return false;
+                var actorRef = e.UserToken as IActorRef;
+                var completeMsg = ResolveMessage(e);
+                actorRef?.Tell(completeMsg);
             };
+
+            return args;
+
+            Tcp.SocketCompleted ResolveMessage(SocketAsyncEventArgs e)
+            {
+                return e.LastOperation switch
+                {
+                    SocketAsyncOperation.Connect => IO.Tcp.SocketConnected.Instance,
+                    _ => throw new NotSupportedException($"Socket operation {e.LastOperation} is not supported")
+                };
+            }
         }
 
-
-        private void Register(IPEndPoint address, IPEndPoint fallbackAddress)
+        private void RegisterEndPoint(EndPoint address)
         {
             ReportConnectFailure(() =>
             {
@@ -153,68 +193,82 @@ namespace Akka.IO
 
                 _connectArgs = CreateSocketEventArgs(Self);
                 _connectArgs.RemoteEndPoint = address;
-                // we don't setup buffer here, it shouldn't be necessary just for connection
                 if (!Socket.ConnectAsync(_connectArgs))
                     Self.Tell(IO.Tcp.SocketConnected.Instance);
 
-                Become(Connecting(Tcp.Settings.FinishConnectRetries, _connectArgs, fallbackAddress));
+                Become(() => Connecting(Settings.FinishConnectRetries, _connectArgs));
             });
         }
 
-        private Receive Connecting(int remainingFinishConnectRetries, SocketAsyncEventArgs args, IPEndPoint fallbackAddress)
+        private void Register(IPEndPoint address)
         {
-            return message =>
+            RegisterEndPoint(address);
+        }
+
+        private void Connecting(int remainingFinishConnectRetries, SocketAsyncEventArgs args)
+        {
+            Receive<Tcp.SocketConnected>(_ =>
             {
-                if (message is IO.Tcp.SocketConnected)
+                if (args.SocketError == SocketError.Success)
                 {
-                    if (args.SocketError == SocketError.Success)
-                    {
-                        if (_connect.Timeout.HasValue) Context.SetReceiveTimeout(null);
-                        Log.Debug("Connection established to [{0}]", _connect.RemoteAddress);
+                    if (_connect.Timeout.HasValue) Context.SetReceiveTimeout(null);
+                    Log.Debug("Connection established to [{0}]", _connect.RemoteAddress);
 
-                        ReleaseConnectionSocketArgs();
-                        AcquireSocketAsyncEventArgs();
+                    ReleaseConnectionSocketArgs();
 
-                        CompleteConnect(_commander, _connect.Options);
-                    }
-                    else if (remainingFinishConnectRetries > 0 && fallbackAddress != null) // used only when we've resolved a DNS endpoint.
-                    {
-                        var self = Self;
-                        var previousAddress = (IPEndPoint)args.RemoteEndPoint;
-                        args.RemoteEndPoint = fallbackAddress;
-                        Context.System.Scheduler.Advanced.ScheduleOnce(TimeSpan.FromMilliseconds(1), () =>
-                        {
-                            if (!Socket.ConnectAsync(args))
-                                self.Tell(IO.Tcp.SocketConnected.Instance);
-                        });
-                        Context.Become(Connecting(remainingFinishConnectRetries - 1, args, previousAddress));
-                    }
-                    else if (remainingFinishConnectRetries > 0)
-                    {
-                        var self = Self;
-                        Context.System.Scheduler.Advanced.ScheduleOnce(TimeSpan.FromMilliseconds(1), () =>
-                        {
-                            if (!Socket.ConnectAsync(args))
-                                self.Tell(IO.Tcp.SocketConnected.Instance);
-                        });
-                        Context.Become(Connecting(remainingFinishConnectRetries - 1, args, null));
-                    }
-                    else
-                    {
-                        Log.Debug("Could not establish connection because finishConnect never returned true (consider increasing akka.io.tcp.finish-connect-retries)");
-                        Stop();
-                    }
-                    return true;
+                    ReportConnectFailure(() => InitializeTransport(_commander, _connect.Options));
                 }
-                if (message is ReceiveTimeout)
+                else
+                    switch (remainingFinishConnectRetries)
+                    {
+                        case > 0:
+                            {
+                                ScheduleConnectRetry();
+                                Become(() => Connecting(remainingFinishConnectRetries - 1, args));
+                                break;
+                            }
+                        default:
+                            Log.Debug(
+                                "Could not establish connection because finishConnect never returned true (consider increasing akka.io.tcp.finish-connect-retries)");
+                            Stop(_finishConnectNeverReturnedTrueException);
+                            break;
+                    }
+            });
+            Receive<RetryConnect>(_ =>
+            {
+                // Re-attempt the connection from within the actor's message loop so that any
+                // exception (e.g. PlatformNotSupportedException on Linux when reusing a socket
+                // after a failed connect attempt) is caught by ReportConnectFailure and reported
+                // to the commander as Tcp.CommandFailed instead of being swallowed by the scheduler.
+                ReportConnectFailure(() =>
                 {
-                    if (_connect.Timeout.HasValue) Context.SetReceiveTimeout(null);  // Clear the timeout
-                    Log.Error("Connect timeout expired, could not establish connection to [{0}]", _connect.RemoteAddress);
-                    Stop();
-                    return true;
-                }
-                return false;
-            };
+                    if (!Socket.ConnectAsync(args))
+                        Self.Tell(IO.Tcp.SocketConnected.Instance);
+                });
+            });
+            Receive<ReceiveTimeout>(_ =>
+            {
+                if (_connect.Timeout.HasValue) Context.SetReceiveTimeout(null);
+                Log.Debug("Connect timeout expired, could not establish connection to [{0}]", _connect.RemoteAddress);
+                Stop(new ConnectException($"Connect timeout of {_connect.Timeout} expired"));
+            });
+        }
+
+        private void ScheduleConnectRetry()
+            => Timers.StartSingleTimer(RetryConnectTimerKey, RetryConnect.Instance, TimeSpan.FromMilliseconds(1));
+
+        protected override void OnTransportInitializationFailed(Exception cause)
+        {
+            Stop(cause);
+        }
+    }
+
+    [InternalApi]
+    public class ConnectException : Exception
+    {
+        public ConnectException(string message)
+            : base(message)
+        {
         }
     }
 }

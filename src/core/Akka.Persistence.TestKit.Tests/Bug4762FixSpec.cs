@@ -1,14 +1,11 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Bug4762FixSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Event;
@@ -21,13 +18,18 @@ namespace Akka.Persistence.TestKit.Tests
     /// </summary>
     public class Bug4762FixSpec : PersistenceTestKit
     {
-        class WriteMessage
+        public Bug4762FixSpec(ITestOutputHelper outputHelper) : base(output: outputHelper)
+        {
+            
+        }
+        
+        private class WriteMessage
         { }
 
-        class TestEvent
+        private class TestEvent
         { }
 
-        class TestActor2 : UntypedPersistentActor
+        private class TestActor2 : UntypedPersistentActor
         {
             private readonly IActorRef _probe;
             private readonly ILoggingAdapter _log;
@@ -41,6 +43,8 @@ namespace Akka.Persistence.TestKit.Tests
 
             protected override void OnCommand(object message)
             {
+                _log.Info("Received command {0}", message);
+                
                 switch (message)
                 {
                     case WriteMessage _:
@@ -60,15 +64,16 @@ namespace Akka.Persistence.TestKit.Tests
 
             protected override void OnRecover(object message)
             {
+                _log.Info("Received recover {0}", message);
                 _probe.Tell(message);
             }
         }
 
         [Fact]
-        public async Task TestJournal_PersistAll_should_only_count_each_event_exceptions_once()
+        public Task TestJournal_PersistAll_should_only_count_each_event_exceptions_once()
         {
             var probe = CreateTestProbe();
-            await WithJournalWrite(write => write.Pass(), () =>
+            return WithJournalWrite(write => write.Pass(), async () =>
             {
                 var actor = ActorOf(() => new TestActor2(probe));
                 Watch(actor);
@@ -76,10 +81,10 @@ namespace Akka.Persistence.TestKit.Tests
                 var command = new WriteMessage();
                 actor.Tell(command, actor);
 
-                probe.ExpectMsg<RecoveryCompleted>();
-                probe.ExpectMsg<Done>();
-                probe.ExpectMsg<Done>();
-                probe.ExpectNoMsg(3000);
+                await probe.ExpectMsgAsync<RecoveryCompleted>();
+                await probe.ExpectMsgAsync<Done>();
+                await probe.ExpectMsgAsync<Done>();
+                await probe.ExpectNoMsgAsync(3000);
             });
         }
     }

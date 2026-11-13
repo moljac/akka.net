@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="PersistenceIdsSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
@@ -18,11 +19,10 @@ using Akka.TestKit;
 using Akka.Util.Internal;
 using Reactive.Streams;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Persistence.TCK.Query
 {
-    public abstract class PersistenceIdsSpec : Akka.TestKit.Xunit2.TestKit
+    public abstract class PersistenceIdsSpec : XTestKit
     {
         protected ActorMaterializer Materializer { get; }
 
@@ -76,18 +76,23 @@ namespace Akka.Persistence.TCK.Query
             var source = queries.PersistenceIds();
             var probe = source.RunWith(this.SinkProbe<string>(), Materializer);
 
+            var expected = new List<string> { "h", "i", "j" };
             probe.Within(TimeSpan.FromSeconds(10), () =>
             {
-                probe.Request(1).ExpectNext();
-                return probe.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+                Assert.True(expected.Remove(probe.Request(1).ExpectNext()));
+                return probe.ExpectNoMsg(TimeSpan.FromMilliseconds(500));
             });
 
             Setup("j", 1);
-            probe.Within(TimeSpan.FromSeconds(10), () =>
-            {
-                probe.Request(5).ExpectNext();
-                return probe.ExpectNext();
-            });
+            probe.Within(TimeSpan.FromSeconds(10), () => probe.Request(5).ExpectNextUnordered(expected[0], expected[1]));
+            
+            Setup("a1", 1);
+            Thread.Sleep(TimeSpan.FromSeconds(2));
+            probe.ExpectNext(TimeSpan.FromSeconds(10));
+
+            Thread.Sleep(TimeSpan.FromSeconds(2));
+            Setup("a2", 1);
+            probe.ExpectNext(TimeSpan.FromSeconds(10));
         }
 
         [Fact]
@@ -240,18 +245,17 @@ namespace Akka.Persistence.TCK.Query
                 ExpectMsg($"{persistenceId}-{i}-done");
             }
 
-            var metadata = new SnapshotMetadata(persistenceId, n + 10);
+            var metadata = new SnapshotMetadata(persistenceId, n + 10, Sys.Scheduler.Now.UtcDateTime);
             SnapshotStore.Tell(new SaveSnapshot(metadata, $"s-{n}"), _senderProbe.Ref);
             _senderProbe.ExpectMsg<SaveSnapshotSuccess>();
 
             return pref;
         }
 
-
-        protected override void Dispose(bool disposing)
+        protected override void AfterAll()
         {
             Materializer.Dispose();
-            base.Dispose(disposing);
+            base.AfterAll();
         }
     }
 }

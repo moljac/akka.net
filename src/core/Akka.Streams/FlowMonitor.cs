@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="FlowMonitor.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,18 +15,18 @@ namespace Akka.Streams
     public interface IFlowMonitor
     {
         /// <summary>
-        /// TBD
+        /// The most recently observed state of the monitored stream.
         /// </summary>
         FlowMonitor.IStreamState State { get; }
     }
 
     /// <summary>
-    /// TBD
+    /// State values reported by a monitored stream.
     /// </summary>
     public static class FlowMonitor
     {
         /// <summary>
-        /// TBD
+        /// Represents a state reported by a stream monitor.
         /// </summary>
         public interface IStreamState
         {
@@ -39,9 +39,9 @@ namespace Akka.Streams
         public class Initialized : IStreamState
         {
             /// <summary>
-            /// TBD
+            /// Singleton state value for a stream before it processes a message.
             /// </summary>
-            public static Initialized Instance { get; } = new Initialized();
+            public static Initialized Instance { get; } = new();
 
             private Initialized()
             {
@@ -52,7 +52,7 @@ namespace Akka.Streams
         /// <summary>
         /// Stream processed a message
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
+        /// <typeparam name="T">Type of the processed message.</typeparam>
         public sealed class Received<T> : IStreamState
         {
             /// <summary>
@@ -91,14 +91,14 @@ namespace Akka.Streams
         }
 
         /// <summary>
-        /// Stream completed successfully
+        /// Upstream completed normally or downstream canceled.
         /// </summary>
         public class Finished : IStreamState
         {
             /// <summary>
-            /// TBD
+            /// Singleton state value for a stream that completed successfully.
             /// </summary>
-            public static Finished Instance { get; } = new Finished();
+            public static Finished Instance { get; } = new();
 
             private Finished()
             {

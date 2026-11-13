@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorRefBackpressureSinkStage.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -16,8 +16,8 @@ namespace Akka.Streams.Implementation
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    internal class ActorRefBackpressureSinkStage<TIn> : GraphStage<SinkShape<TIn>>
+    /// <typeparam name="TIn">The element type sent to the target actor.</typeparam>
+    internal sealed class ActorRefBackpressureSinkStage<TIn> : GraphStage<SinkShape<TIn>>
     {
         #region internal classes 
 
@@ -133,7 +133,7 @@ namespace Akka.Streams.Implementation
 
         #endregion
 
-        private readonly Inlet<TIn> _inlet = new Inlet<TIn>("ActorRefBackpressureSink.in");
+        private readonly Inlet<TIn> _inlet = new("ActorRefBackpressureSink.in");
 
         private readonly IActorRef _actorRef;
         private readonly object _onInitMessage;
@@ -142,13 +142,13 @@ namespace Akka.Streams.Implementation
         private readonly Func<Exception, object> _onFailureMessage;
 
         /// <summary>
-        /// TBD
+        /// Creates a sink stage that sends stream elements to an actor one at a time, waiting for an acknowledgement before sending the next buffered element.
         /// </summary>
-        /// <param name="actorRef">TBD</param>
-        /// <param name="onInitMessage">TBD</param>
-        /// <param name="ackMessage">TBD</param>
-        /// <param name="onCompleteMessage">TBD</param>
-        /// <param name="onFailureMessage">TBD</param>
+        /// <param name="actorRef">The actor that receives initialization, elements, and terminal notifications.</param>
+        /// <param name="onInitMessage">The message sent to the actor when the stage starts.</param>
+        /// <param name="ackMessage">The message type that acknowledges one sent element.</param>
+        /// <param name="onCompleteMessage">The message sent after upstream completes and all buffered elements have been sent.</param>
+        /// <param name="onFailureMessage">Creates the message used when upstream fails or the stage stops abruptly; abrupt termination sends it to the stage actor itself.</param>
         public ActorRefBackpressureSinkStage(IActorRef actorRef, object onInitMessage, object ackMessage,
             object onCompleteMessage, Func<Exception, object> onFailureMessage)
         {
@@ -162,21 +162,21 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Supplies the default attributes for this actor-backed sink.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = DefaultAttributes.ActorRefWithAck;
 
         /// <summary>
-        /// TBD
+        /// Gets the single-input sink shape.
         /// </summary>
         public override SinkShape<TIn> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates stage logic using the maximum input-buffer size from the inherited attributes.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes applied to this stage, including its input-buffer setting.</param>
+        /// <exception cref="ArgumentException">The configured maximum input-buffer size is zero or negative.</exception>
+        /// <returns>The logic that buffers input and sends elements in response to acknowledgements.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes)
         {
             var maxBuffer = inheritedAttributes.GetAttribute(new Attributes.InputBuffer(16, 16)).Max;

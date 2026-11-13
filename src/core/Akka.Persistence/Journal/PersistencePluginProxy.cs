@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="PersistencePluginProxy.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -16,41 +16,43 @@ using Akka.Util.Internal;
 namespace Akka.Persistence.Journal
 {
     /// <summary>
-    /// TBD
+    /// Proxy that forwards persistence plugin requests to a journal or snapshot store on a local or remote actor system.
     /// </summary>
-    public class PersistencePluginProxy : ActorBase, IWithUnboundedStash
+    public class PersistencePluginProxy : ActorBase, IWithUnboundedStash, IWithTimers
     {
+        private const string InitTimeoutTimerKey = nameof(InitTimeoutTimerKey);
+        
         /// <summary>
-        /// TBD
+        /// Message that supplies the remote address of the target persistence plugin.
         /// </summary>
         public sealed class TargetLocation
         {
             /// <summary>
-            /// TBD
+            /// Initializes the remote target location.
             /// </summary>
-            /// <param name="address">TBD</param>
+            /// <param name="address">Address of the actor system hosting the target plugin.</param>
             public TargetLocation(Address address)
             {
                 Address = address;
             }
 
             /// <summary>
-            /// TBD
+            /// Address of the actor system hosting the target plugin.
             /// </summary>
             public Address Address { get; private set; }
         }
 
         private sealed class InitTimeout
         {
-            public static readonly InitTimeout Instance = new InitTimeout();
+            public static readonly InitTimeout Instance = new();
             private InitTimeout() { }
         }
 
         /// <summary>
-        /// TBD
+        /// Sets the address used to locate the default journal and, when no custom snapshot plugin is configured, the default snapshot store.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <param name="address">TBD</param>
+        /// <param name="system">Actor system containing the persistence plugin proxies.</param>
+        /// <param name="address">Address of the actor system hosting the target plugin.</param>
         public static void SetTargetLocation(ActorSystem system, Address address)
         {
             var persistence = Persistence.Instance.Apply(system);
@@ -60,9 +62,9 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// TBD
+        /// Initializes the configured default journal and, when no custom snapshot plugin is configured, the default snapshot store.
         /// </summary>
-        /// <param name="system">TBD</param>
+        /// <param name="system">Actor system whose persistence plugins should be initialized.</param>
         public static void Start(ActorSystem system)
         {
             var persistence = Persistence.Instance.Apply(system);
@@ -123,12 +125,14 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// TBD
+        /// Stash used to hold requests while the proxy locates its target plugin.
         /// </summary>
-        public IStash Stash { get; set; }
+        public IStash Stash { get; set; } = null!;
+
+        public ITimerScheduler Timers { get; set; } = null!;
 
         /// <summary>
-        /// TBD
+        /// Starts the target plugin locally or begins locating it at the configured remote address.
         /// </summary>
         protected override void PreStart()
         {
@@ -168,7 +172,7 @@ namespace Akka.Persistence.Journal
                                 targetAddress);
                     }
                 }
-                Context.System.Scheduler.ScheduleTellOnce(_initTimeout, Self, InitTimeout.Instance, Self);
+                Timers.StartSingleTimer(InitTimeoutTimerKey, InitTimeout.Instance, _initTimeout, Self);
             }
             base.PreStart();
         }
@@ -181,10 +185,10 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// TBD
+        /// Handles target location and initialization timeout messages while the proxy is starting.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="message">Message received by the proxy.</param>
+        /// <returns>true because initialization handles or stashes every message received in this state.</returns>
         protected override bool Receive(object message)
         {
             return Init(message);
@@ -192,10 +196,10 @@ namespace Akka.Persistence.Journal
 
         private bool Init(object message)
         {
-            if (message is TargetLocation)
+            if (message is TargetLocation location)
             {
                 Context.SetReceiveTimeout(TimeSpan.FromSeconds(1)); // for retries
-                Context.Become(Identifying(((TargetLocation)message).Address));
+                Context.Become(Identifying(location.Address));
             }
             else if (message is InitTimeout)
             {
@@ -233,9 +237,8 @@ namespace Akka.Persistence.Journal
         {
             return message =>
             {
-                if (message is ActorIdentity)
+                if (message is ActorIdentity ai)
                 {
-                    var ai = (ActorIdentity)message;
                     if (_targetPluginId.Equals(ai.MessageId))
                     {
                         var target = ai.Subject;
@@ -265,16 +268,15 @@ namespace Akka.Persistence.Journal
         {
             return message =>
             {
-                if (message is TargetLocation)
+                if (message is TargetLocation location)
                 {
-                    var address = ((TargetLocation)message).Address;
+                    var address = location.Address;
                     if (targetAtThisNode && !address.Equals(_selfAddress))
                         BecomeIdentifying(address);
                 }
-                else if (message is Terminated)
+                else if (message is Terminated terminated)
                 {
-                    var t = (Terminated)message;
-                    if (t.ActorRef.Equals(targetJournal))
+                    if (terminated.ActorRef.Equals(targetJournal))
                     {
                         Context.Unwatch(targetJournal);
                         Context.Become(InitTimedOut());
@@ -316,44 +318,38 @@ namespace Akka.Persistence.Journal
                             }
                         }
                     }
-                    else if (message is ReplayMessages)
+                    else if (message is ReplayMessages messages)
                     {
-                        var r = (ReplayMessages)message;
-                        r.PersistentActor.Tell(new ReplayMessagesFailure(TimeoutException()));
+                        messages.PersistentActor.Tell(new ReplayMessagesFailure(TimeoutException()));
                     }
-                    else if (message is DeleteMessagesTo)
+                    else if (message is DeleteMessagesTo to)
                     {
-                        var d = (DeleteMessagesTo)message;
-                        d.PersistentActor.Tell(new DeleteMessagesFailure(TimeoutException(), d.ToSequenceNr));
+                        to.PersistentActor.Tell(new DeleteMessagesFailure(TimeoutException(), to.ToSequenceNr));
                     }
                 }
                 else if (message is ISnapshotRequest)
                 {
                     // exhaustive match
-                    if (message is LoadSnapshot)
+                    if (message is LoadSnapshot snapshot)
                     {
-                        var l = (LoadSnapshot)message;
                         Sender.Tell(new LoadSnapshotFailed(TimeoutException()));
                     }
-                    else if (message is SaveSnapshot)
+                    else if (message is SaveSnapshot saveSnapshot)
                     {
-                        var s = (SaveSnapshot)message;
-                        Sender.Tell(new SaveSnapshotFailure(s.Metadata, TimeoutException()));
+                        Sender.Tell(new SaveSnapshotFailure(saveSnapshot.Metadata, TimeoutException()));
                     }
-                    else if (message is DeleteSnapshot)
+                    else if (message is DeleteSnapshot deleteSnapshot)
                     {
-                        var d = (DeleteSnapshot)message;
-                        Sender.Tell(new DeleteSnapshotFailure(d.Metadata, TimeoutException()));
+                        Sender.Tell(new DeleteSnapshotFailure(deleteSnapshot.Metadata, TimeoutException()));
                     }
-                    else if (message is DeleteSnapshots)
+                    else if (message is DeleteSnapshots snapshots)
                     {
-                        var d = (DeleteSnapshots)message;
-                        Sender.Tell(new DeleteSnapshotsFailure(d.Criteria, TimeoutException()));
+                        Sender.Tell(new DeleteSnapshotsFailure(snapshots.Criteria, TimeoutException()));
                     }
                 }
-                else if (message is TargetLocation)
+                else if (message is TargetLocation location)
                 {
-                    BecomeIdentifying(((TargetLocation)message).Address);
+                    BecomeIdentifying(location.Address);
                 }
                 else if (message is Terminated)
                 {
@@ -377,19 +373,19 @@ namespace Akka.Persistence.Journal
     public class PersistencePluginProxyExtension : ExtensionIdProvider<PersistencePluginProxyExtension>, IExtension
     {
         /// <summary>
-        /// TBD
+        /// Initializes the proxy extension for an actor system.
         /// </summary>
-        /// <param name="system">TBD</param>
+        /// <param name="system">Actor system whose persistence plugins should be initialized.</param>
         public PersistencePluginProxyExtension(ActorSystem system)
         {
             PersistencePluginProxy.Start(system);
         }
 
         /// <summary>
-        /// TBD
+        /// Creates the persistence plugin proxy extension for an actor system.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">Actor system that owns the extension.</param>
+        /// <returns>The initialized persistence plugin proxy extension.</returns>
         public override PersistencePluginProxyExtension CreateExtension(ExtendedActorSystem system)
         {
             return new PersistencePluginProxyExtension(system);

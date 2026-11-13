@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="HoconTokenizer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -20,7 +20,7 @@ namespace Akka.Configuration.Hocon
     {
         private readonly string _text;
         private int _index;
-        private readonly Stack<int> _indexStack = new Stack<int>();
+        private readonly Stack<int> _indexStack = new();
 
         /// <summary>
         /// Adds the current index to the tokenizer's bookkeeping stack.
@@ -559,10 +559,10 @@ namespace Akka.Configuration.Hocon
         }
 
         /// <summary>
-        /// TBD
+        /// Reads an include directive and returns its quoted path as an include token.
         /// </summary>
         /// <exception cref="FormatException">This exception is thrown if an unknown escape code is encountered.</exception>
-        /// <returns>TBD</returns>
+        /// <returns>The include token containing the path from the directive.</returns>
         public Token PullInclude()
         {
             Take("include".Length);

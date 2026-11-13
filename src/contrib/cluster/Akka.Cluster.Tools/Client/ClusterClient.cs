@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterClient.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -14,278 +14,397 @@ using Akka.Event;
 using Akka.Remote;
 using Akka.Util.Internal;
 
-namespace Akka.Cluster.Tools.Client
+namespace Akka.Cluster.Tools.Client;
+
+/// <summary>
+/// Marker interface for all ClusterClient message types
+/// </summary>
+public interface IClusterClientProtocolMessage
 {
+}
+        
+/// <summary>
+/// This actor is intended to be used on an external node that is not member
+/// of the cluster. It acts like a gateway for sending messages to actors
+/// somewhere in the cluster. From the initial contact points it will establish
+/// a connection to a <see cref="ClusterReceptionist"/> somewhere in the cluster. It will
+/// monitor the connection to the receptionist and establish a new connection if
+/// the link goes down. When looking for a new receptionist it uses fresh contact
+/// points retrieved from previous establishment, or periodically refreshed
+/// contacts, i.e. not necessarily the initial contact points.
+/// </summary>
+public sealed class ClusterClient : ActorBase, IWithTimers
+{
+    #region Messages
+
     /// <summary>
-    /// This actor is intended to be used on an external node that is not member
-    /// of the cluster. It acts like a gateway for sending messages to actors
-    /// somewhere in the cluster. From the initial contact points it will establish
-    /// a connection to a <see cref="ClusterReceptionist"/> somewhere in the cluster. It will
-    /// monitor the connection to the receptionist and establish a new connection if
-    /// the link goes down. When looking for a new receptionist it uses fresh contact
-    /// points retrieved from previous establishment, or periodically refreshed
-    /// contacts, i.e. not necessarily the initial contact points.
+    /// Requests delivery through the receptionist to recipients registered under a matching path.
+    /// The receptionist applies its configured routing logic to the matching entries. Local affinity
+    /// can prefer an entry in the receptionist's actor system when one is available.
     /// </summary>
-    public sealed class ClusterClient : ActorBase
+    [Serializable]
+    public sealed class Send: IClusterClientProtocolMessage, IEquatable<Send>
     {
-        #region Messages
+        /// <summary>
+        /// Actor path used to find a matching recipient in the cluster.
+        /// </summary>
+        public string Path { get; }
+        /// <summary>
+        /// Message forwarded to the selected recipient.
+        /// </summary>
+        public object Message { get; }
+        /// <summary>
+        /// Whether to prefer a matching recipient in the receptionist's local actor system.
+        /// </summary>
+        public bool LocalAffinity { get; }
 
         /// <summary>
-        /// The message will be delivered to one recipient with a matching path, if any such
-        /// exists. If several entries match the path the message will be delivered
-        /// to one random destination. The sender of the message can specify that local
-        /// affinity is preferred, i.e. the message is sent to an actor in the same local actor
-        /// system as the used receptionist actor, if any such exists, otherwise random to any other
-        /// matching entry.
+        /// Creates a request to send a message to recipients registered under a matching cluster path.
         /// </summary>
-        [Serializable]
-        public sealed class Send
+        /// <param name="path">Actor path used by the receptionist to find matching registrations.</param>
+        /// <param name="message">Message to deliver.</param>
+        /// <param name="localAffinity">If <see langword="true"/>, prefer a matching recipient in the receptionist's local actor system.</param>
+        public Send(string path, object message, bool localAffinity = false)
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public string Path { get; }
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public object Message { get; }
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public bool LocalAffinity { get; }
+            Path = path;
+            Message = message;
+            LocalAffinity = localAffinity;
+        }
 
-            /// <summary>
-            /// TBD
-            /// </summary>
-            /// <param name="path">TBD</param>
-            /// <param name="message">TBD</param>
-            /// <param name="localAffinity">TBD</param>
-            public Send(string path, object message, bool localAffinity = false)
+        public bool Equals(Send other)
+        {
+            if (ReferenceEquals(null, other)) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Path == other.Path && Equals(Message, other.Message) && LocalAffinity == other.LocalAffinity;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return ReferenceEquals(this, obj) || obj is Send other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
             {
-                Path = path;
-                Message = message;
-                LocalAffinity = localAffinity;
+                var hashCode = (Path != null ? Path.GetHashCode() : 0);
+                hashCode = (hashCode * 397) ^ (Message != null ? Message.GetHashCode() : 0);
+                hashCode = (hashCode * 397) ^ LocalAffinity.GetHashCode();
+                return hashCode;
             }
         }
+    }
+
+    /// <summary>
+    /// The message will be delivered to all recipients with a matching path.
+    /// </summary>
+    [Serializable]
+    public sealed class SendToAll: IClusterClientProtocolMessage, IEquatable<SendToAll>
+    {
+        /// <summary>
+        /// Actor path used to find matching recipients in the cluster.
+        /// </summary>
+        public string Path { get; }
+        /// <summary>
+        /// Message forwarded to all matching recipients.
+        /// </summary>
+        public object Message { get; }
 
         /// <summary>
-        /// The message will be delivered to all recipients with a matching path.
+        /// Creates a request to send a message to every matching cluster recipient.
         /// </summary>
-        [Serializable]
-        public sealed class SendToAll
+        /// <param name="path">Actor path used to find matching recipients.</param>
+        /// <param name="message">Message to deliver.</param>
+        public SendToAll(string path, object message)
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public string Path { get; }
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public object Message { get; }
+            Path = path;
+            Message = message;
+        }
 
-            /// <summary>
-            /// TBD
-            /// </summary>
-            /// <param name="path">TBD</param>
-            /// <param name="message">TBD</param>
-            public SendToAll(string path, object message)
+        public bool Equals(SendToAll other)
+        {
+            if (ReferenceEquals(null, other)) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Path == other.Path && Equals(Message, other.Message);
+        }
+
+        public override bool Equals(object obj)
+        {
+            return ReferenceEquals(this, obj) || obj is SendToAll other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
             {
-                Path = path;
-                Message = message;
+                return ((Path != null ? Path.GetHashCode() : 0) * 397) ^ (Message != null ? Message.GetHashCode() : 0);
             }
         }
+    }
+
+    /// <summary>
+    /// The message will be delivered to all recipients Actors that have been registered as subscribers to
+    /// to the named topic.
+    /// </summary>
+    [Serializable]
+    public sealed class Publish: IClusterClientProtocolMessage, IEquatable<Publish>
+    {
+        /// <summary>
+        /// Topic to which the message is published.
+        /// </summary>
+        public string Topic { get; }
+        /// <summary>
+        /// Message published to subscribers of the topic.
+        /// </summary>
+        public object Message { get; }
 
         /// <summary>
-        /// The message will be delivered to all recipients Actors that have been registered as subscribers to
-        /// to the named topic.
+        /// Creates a request to publish a message to a cluster topic.
         /// </summary>
-        [Serializable]
-        public sealed class Publish
+        /// <param name="topic">Topic to publish to.</param>
+        /// <param name="message">Message to publish.</param>
+        public Publish(string topic, object message)
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public string Topic { get; }
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public object Message { get; }
+            Topic = topic;
+            Message = message;
+        }
 
-            /// <summary>
-            /// TBD
-            /// </summary>
-            /// <param name="topic">TBD</param>
-            /// <param name="message">TBD</param>
-            public Publish(string topic, object message)
+        public bool Equals(Publish other)
+        {
+            if (ReferenceEquals(null, other)) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Topic == other.Topic && Equals(Message, other.Message);
+        }
+
+        public override bool Equals(object obj)
+        {
+            return ReferenceEquals(this, obj) || obj is Publish other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
             {
-                Topic = topic;
-                Message = message;
+                return ((Topic != null ? Topic.GetHashCode() : 0) * 397) ^ (Message != null ? Message.GetHashCode() : 0);
             }
         }
+    }
 
+    /// <summary>
+    /// Internal tick used to refresh the contact points from cluster receptionists.
+    /// </summary>
+    [Serializable]
+    internal sealed class RefreshContactsTick: IClusterClientProtocolMessage, IEquatable<RefreshContactsTick>
+    {
         /// <summary>
-        /// TBD
+        /// Singleton refresh-contact tick message.
         /// </summary>
-        [Serializable]
-        internal sealed class RefreshContactsTick
+        public static RefreshContactsTick Instance { get; } = new();
+        private RefreshContactsTick() { }
+            
+        public bool Equals(RefreshContactsTick other) => other != null;
+
+        public override bool Equals(object obj)
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public static RefreshContactsTick Instance { get; } = new RefreshContactsTick();
-            private RefreshContactsTick() { }
+            return ReferenceEquals(this, obj) || obj is RefreshContactsTick;
         }
 
+        public override int GetHashCode() => 0;
+    }
+
+    /// <summary>
+    /// Internal tick used to check whether the selected receptionist is still responsive.
+    /// </summary>
+    [Serializable]
+    internal sealed class HeartbeatTick: IClusterClientProtocolMessage, IEquatable<HeartbeatTick>
+    {
         /// <summary>
-        /// TBD
+        /// Singleton heartbeat tick message.
         /// </summary>
-        [Serializable]
-        internal sealed class HeartbeatTick
+        public static HeartbeatTick Instance { get; } = new();
+        private HeartbeatTick() { }
+
+        public bool Equals(HeartbeatTick other) => other != null;
+
+        public override bool Equals(object obj)
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public static HeartbeatTick Instance { get; } = new HeartbeatTick();
-            private HeartbeatTick() { }
+            return ReferenceEquals(this, obj) || obj is HeartbeatTick;
         }
 
+        public override int GetHashCode() => 0;
+    }
+
+    /// <summary>
+    /// Internal tick that stops the client when it cannot reconnect before its configured deadline.
+    /// </summary>
+    [Serializable]
+    internal sealed class ReconnectTimeout: IClusterClientProtocolMessage, IEquatable<ReconnectTimeout>
+    {
         /// <summary>
-        /// TBD
+        /// Singleton reconnect-timeout message.
         /// </summary>
-        [Serializable]
-        internal sealed class ReconnectTimeout
+        public static ReconnectTimeout Instance { get; } = new();
+        private ReconnectTimeout() { }
+
+        public bool Equals(ReconnectTimeout other) => other != null;
+
+        public override bool Equals(object obj)
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public static ReconnectTimeout Instance { get; } = new ReconnectTimeout();
-            private ReconnectTimeout() { }
+            return ReferenceEquals(this, obj) || obj is ReconnectTimeout;
         }
 
-        #endregion
+        public override int GetHashCode() => 0;
+    }
 
-        /// <summary>
-        /// Factory method for <see cref="ClusterClient"/> <see cref="Actor.Props"/>.
-        /// </summary>
-        /// <param name="settings">TBD</param>
-        /// <exception cref="ArgumentNullException">
-        /// This exception is thrown when the specified <paramref name="settings"/> is undefined.
-        /// </exception>
-        /// <returns>TBD</returns>
-        public static Props Props(ClusterClientSettings settings)
+    #endregion
+
+    /// <summary>
+    /// Factory method for <see cref="ClusterClient"/> <see cref="Actor.Props"/>.
+    /// </summary>
+    /// <param name="settings">Settings that configure receptionist contact points, buffering, and reconnect behavior.</param>
+    /// <exception cref="ArgumentNullException">
+    /// This exception is thrown when the specified <paramref name="settings"/> is undefined.
+    /// </exception>
+    /// <returns>Props that create a local cluster client, using contact-point discovery when enabled.</returns>
+    public static Props Props(ClusterClientSettings settings)
+    {
+        if (settings == null)
+            throw new ArgumentNullException(nameof(settings));
+
+        return settings.UseInitialContactDiscovery 
+            ? Actor.Props.Create(() => new ClusterClientDiscovery(settings)).WithDeploy(Deploy.Local)
+            : Actor.Props.Create(() => new ClusterClient(settings)).WithDeploy(Deploy.Local);
+    }
+
+    private ILoggingAdapter _log = Context.GetLogger();
+    private readonly ClusterClientSettings _settings;
+    private readonly DeadlineFailureDetector _failureDetector;
+    private ImmutableHashSet<ActorPath> _contactPaths;
+    private readonly ActorSelection[] _initialContactsSelections;
+    private ActorSelection[] _contacts;
+    private ImmutableHashSet<ActorPath> _contactPathsPublished;
+    private ImmutableList<IActorRef> _subscribers;
+    private readonly Queue<(object, IActorRef)> _buffer;
+
+    // All three timers below are keyed. A key means StartSingleTimer/StartPeriodicTimer REPLACES
+    // any live timer under that key, so at most one of each can exist no matter where it is armed.
+    // The scheduler also cancels every timer when the actor stops or restarts, so there is no
+    // PostStop cleanup to forget.
+    private const string ReconnectTimerKey = "reconnect-timeout";
+    private const string HeartbeatTimerKey = "heartbeat";
+    private const string RefreshContactsTimerKey = "refresh-contacts";
+
+    /// <summary>
+    /// Injected by the actor cell after construction. Timers are armed in <see cref="PreStart"/>,
+    /// not in the constructor, because this is still null while the constructor runs.
+    /// </summary>
+    public ITimerScheduler Timers { get; set; }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ClusterClient" /> class.
+    /// </summary>
+    /// <param name="settings">The settings used to configure the client.</param>
+    /// <exception cref="ArgumentException">
+    /// This exception is thrown when the settings contains no initial contacts.
+    /// </exception>
+    public ClusterClient(ClusterClientSettings settings)
+    {
+        if (settings.InitialContacts.Count == 0)
         {
-            if (settings == null)
-                throw new ArgumentNullException(nameof(settings));
-
-            return Actor.Props.Create(() => new ClusterClient(settings)).WithDeploy(Deploy.Local);
+            throw new ArgumentException("Initial contacts for cluster client cannot be empty");
         }
 
-        private ILoggingAdapter _log = Context.GetLogger();
-        private readonly ClusterClientSettings _settings;
-        private readonly DeadlineFailureDetector _failureDetector;
-        private ImmutableHashSet<ActorPath> _contactPaths;
-        private readonly ActorSelection[] _initialContactsSelections;
-        private ActorSelection[] _contacts;
-        private ImmutableHashSet<ActorPath> _contactPathsPublished;
-        private ImmutableList<IActorRef> _subscribers;
-        private readonly ICancelable _heartbeatTask;
-        private ICancelable _refreshContactsCancelable;
-        private readonly Queue<(object, IActorRef)> _buffer;
+        _settings = settings;
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ClusterClient" /> class.
-        /// </summary>
-        /// <param name="settings">The settings used to configure the client.</param>
-        /// <exception cref="ArgumentException">
-        /// This exception is thrown when the settings contains no initial contacts.
-        /// </exception>
-        public ClusterClient(ClusterClientSettings settings)
+        if (_settings.UseLegacySerialization)
         {
-            if (settings.InitialContacts.Count == 0)
-            {
-                throw new ArgumentException("Initial contacts for cluster client cannot be empty");
-            }
-
-            _settings = settings;
-            _failureDetector = new DeadlineFailureDetector(_settings.AcceptableHeartbeatPause, _settings.HeartbeatInterval);
-
-            _contactPaths = settings.InitialContacts.ToImmutableHashSet();
-            _initialContactsSelections = _contactPaths.Select(Context.ActorSelection).ToArray();
-            _contacts = _initialContactsSelections;
-
-            SendGetContacts();
-
-            _contactPathsPublished = _contactPaths;
-            _subscribers = ImmutableList<IActorRef>.Empty;
-
-            _heartbeatTask = Context.System.Scheduler.ScheduleTellRepeatedlyCancelable(
-                settings.HeartbeatInterval,
-                settings.HeartbeatInterval,
-                Self,
-                HeartbeatTick.Instance,
-                Self);
-
-            _refreshContactsCancelable = null;
-            ScheduleRefreshContactsTick(settings.EstablishingGetContactsInterval);
-            Self.Tell(RefreshContactsTick.Instance);
-
-            _buffer = new Queue<(object, IActorRef)>();
+            Context.System.Serialization.RemoveSerializationMap(typeof(IClusterClientProtocolMessage));
         }
+            
+        _failureDetector = new DeadlineFailureDetector(_settings.AcceptableHeartbeatPause, _settings.HeartbeatInterval);
 
-        private void ScheduleRefreshContactsTick(TimeSpan interval)
+        _contactPaths = settings.InitialContacts.ToImmutableHashSet();
+        _initialContactsSelections = _contactPaths.Select(Context.ActorSelection).ToArray();
+        _contacts = _initialContactsSelections;
+
+        SendGetContacts();
+
+        _contactPathsPublished = _contactPaths;
+        _subscribers = ImmutableList<IActorRef>.Empty;
+
+        _buffer = new Queue<(object, IActorRef)>();
+    }
+
+    /// <summary>
+    /// Arms the timers and enters the initial establishing phase. This runs after the constructor,
+    /// which is the earliest point where <see cref="Timers"/> is available.
+    /// </summary>
+    protected override void PreStart()
+    {
+        base.PreStart();
+
+        Timers.StartPeriodicTimer(
+            HeartbeatTimerKey,
+            HeartbeatTick.Instance,
+            _settings.HeartbeatInterval,
+            _settings.HeartbeatInterval);
+
+        // Construction is the entry into the first establishing phase, so the reconnect deadline
+        // starts here.
+        ScheduleReconnectTimeout();
+        ScheduleRefreshContactsTick(_settings.EstablishingGetContactsInterval);
+        Self.Tell(RefreshContactsTick.Instance);
+    }
+
+    /// <summary>
+    /// Starts the deadline that stops this client if it cannot reach a receptionist in time.
+    /// </summary>
+    private void ScheduleReconnectTimeout()
+    {
+        // The deadline measures time spent in the CURRENT establishing phase, so it must be armed
+        // once per entry into that phase - never per message. Arming it per message was the bug in
+        // issue #8508: each message left another one-shot timer behind, only the last was ever
+        // cancelled, and a leftover firing after the client had gone back to establishing stopped a
+        // healthy client mid-reconnect.
+        //
+        // Two properties of a keyed timer make this safe. Starting the timer replaces any live one
+        // under the same key, so re-entering establishing cannot accumulate deadlines. And the
+        // scheduler discards messages from a cancelled or replaced timer even when they are already
+        // sitting in the mailbox - which a plain ICancelable cannot do, because Cancel() cannot
+        // recall a message that has already been queued.
+        //
+        // reconnect-timeout defaults to off, in which case no timer is armed at all.
+        if (_settings.ReconnectTimeout.HasValue)
         {
-            if (_refreshContactsCancelable != null)
-            {
-                _refreshContactsCancelable.Cancel();
-                _refreshContactsCancelable = null;
-            }
-
-            _refreshContactsCancelable = Context.System.Scheduler.ScheduleTellRepeatedlyCancelable(
-                interval,
-                interval,
-                Self,
-                RefreshContactsTick.Instance,
-                Self);
+            Timers.StartSingleTimer(ReconnectTimerKey, ReconnectTimeout.Instance, _settings.ReconnectTimeout.Value);
         }
+    }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        protected override void PostStop()
+    private void ScheduleRefreshContactsTick(TimeSpan interval)
+    {
+        // Keyed, so this replaces the timer running at the previous interval. A tick left over from
+        // the old cadence is discarded rather than delivered against the new one.
+        Timers.StartPeriodicTimer(RefreshContactsTimerKey, RefreshContactsTick.Instance, interval, interval);
+    }
+
+    /// <summary>
+    /// Handles messages while the client is establishing a receptionist connection.
+    /// </summary>
+    /// <param name="message">Message delivered to the client actor.</param>
+    /// <returns><see langword="true"/> when the message is handled; otherwise <see langword="false"/>.</returns>
+    protected override bool Receive(object message)
+    {
+        return Establishing(message);
+    }
+
+    private bool Establishing(object message)
+    {
+        // No timer work here. The reconnect deadline belongs to the phase, not to each message -
+        // see ScheduleReconnectTimeout. It is armed on entry (PreStart and Reestablish) and
+        // cancelled on the transition to Active.
+        switch (message)
         {
-            base.PostStop();
-            _heartbeatTask.Cancel();
-
-            if (_refreshContactsCancelable != null)
-            {
-                _refreshContactsCancelable.Cancel();
-                _refreshContactsCancelable = null;
-            }
-        }
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
-        protected override bool Receive(object message)
-        {
-            return Establishing(message);
-        }
-
-        private bool Establishing(object message)
-        {
-            ICancelable connectTimerCancelable = null;
-            if (_settings.ReconnectTimeout.HasValue)
-            {
-                connectTimerCancelable = Context.System.Scheduler.ScheduleTellOnceCancelable(
-                    _settings.ReconnectTimeout.Value,
-                    Self,
-                    ReconnectTimeout.Instance,
-                    Self);
-            }
-
-            if (message is ClusterReceptionist.Contacts contacts)
+            case ClusterReceptionist.Contacts contacts:
             {
                 if (contacts.ContactPoints.Count > 0)
                 {
@@ -295,8 +414,10 @@ namespace Akka.Cluster.Tools.Client
                 }
 
                 PublishContactPoints();
+                return true;
             }
-            else if (message is ActorIdentity actorIdentify)
+                
+            case ActorIdentity actorIdentify:
             {
                 var receptionist = actorIdentify.Subject;
 
@@ -306,7 +427,8 @@ namespace Akka.Cluster.Tools.Client
                     ScheduleRefreshContactsTick(_settings.RefreshContactsInterval);
                     SendBuffered(receptionist);
                     Context.Become(Active(receptionist));
-                    connectTimerCancelable?.Cancel();
+                    // Leaving the establishing phase, so the deadline no longer applies.
+                    Timers.Cancel(ReconnectTimerKey);
                     _failureDetector.HeartBeat();
                     Self.Tell(HeartbeatTick.Instance); // will register us as active client of the selected receptionist
                 }
@@ -314,81 +436,80 @@ namespace Akka.Cluster.Tools.Client
                 {
                     // ok, use another instead
                 }
+
+                return true;
             }
-            else if (message is HeartbeatTick)
-            {
+                
+            case HeartbeatTick:
                 _failureDetector.HeartBeat();
-            }
-            else if (message is RefreshContactsTick)
-            {
+                return true;
+                
+            case RefreshContactsTick:
                 SendGetContacts();
-            }
-            else if (message is Send send)
-            {
+                return true;
+                
+            case Send send:
                 Buffer(new PublishSubscribe.Send(send.Path, send.Message, send.LocalAffinity));
-            }
-            else if (message is SendToAll sendToAll)
-            {
+                return true;
+                
+            case SendToAll sendToAll:
                 Buffer(new PublishSubscribe.SendToAll(sendToAll.Path, sendToAll.Message));
-            }
-            else if (message is Publish publish)
-            {
+                return true;
+                
+            case Publish publish:
                 Buffer(new PublishSubscribe.Publish(publish.Topic, publish.Message));
-            }
-            else if (message is ReconnectTimeout)
-            {
+                return true;
+                
+            case ReconnectTimeout:
                 _log.Warning("Receptionist reconnect not successful within {0} stopping cluster client", _settings.ReconnectTimeout);
                 Context.Stop(Self);
-            }
-            else if(message is ClusterReceptionist.ReceptionistShutdown)
-            {
+                return true;
+                
+            case ClusterReceptionist.ReceptionistShutdown:
                 // ok, haven't chosen a receptionist yet
-            }
-            else
-            {
+                return true;
+                
+            default:
                 return ContactPointMessages(message);
-            }
-
-            return true;
         }
+    }
 
-        private Receive Active(IActorRef receptionist)
+    private Receive Active(IActorRef receptionist)
+    {
+        return message =>
         {
-            return message =>
+            switch (message)
             {
-                if (message is Send send)
-                {
+                case Send send:
                     receptionist.Forward(new PublishSubscribe.Send(send.Path, send.Message, send.LocalAffinity));
-                }
-                else if (message is SendToAll sendToAll)
-                {
+                    return true;
+                    
+                case SendToAll sendToAll:
                     receptionist.Forward(new PublishSubscribe.SendToAll(sendToAll.Path, sendToAll.Message));
-                }
-                else if (message is Publish publish)
-                {
+                    return true;
+                    
+                case Publish publish:
                     receptionist.Forward(new PublishSubscribe.Publish(publish.Topic, publish.Message));
-                }
-                else if (message is HeartbeatTick)
-                {
-                    if (!_failureDetector.IsAvailable)
-                    {
-                        _log.Info("Lost contact with [{0}], reestablishing connection", receptionist);
-                        Reestablish();
-                    }
-                    else
-                    {
-                        receptionist.Tell(ClusterReceptionist.Heartbeat.Instance);
-                    }
-                }
-                else if (message is ClusterReceptionist.HeartbeatRsp)
-                {
+                    return true;
+                    
+                case HeartbeatTick when !_failureDetector.IsAvailable:
+                    _log.Info("Lost contact with [{0}], reestablishing connection", receptionist);
+                    Reestablish();
+                    return true;
+                    
+                case HeartbeatTick:
+                    receptionist.Tell(ClusterReceptionist.Heartbeat.Instance);
+                    return true;
+                    
+                case ClusterReceptionist.HeartbeatRsp:
                     _failureDetector.HeartBeat();
-                }
-                else if (message is RefreshContactsTick)
-                {
+                    return true;
+                    
+                case RefreshContactsTick:
                     receptionist.Tell(ClusterReceptionist.GetContacts.Instance);
-                }
-                else if (message is ClusterReceptionist.Contacts contacts)
+                    return true;
+                    
+                case ClusterReceptionist.Contacts contacts:
                 {
                     // refresh of contacts
                     if (contacts.ContactPoints.Count > 0)
@@ -397,267 +518,275 @@ namespace Akka.Cluster.Tools.Client
                         _contacts = _contactPaths.Select(Context.ActorSelection).ToArray();
                     }
                     PublishContactPoints();
+                    return true;
                 }
-                else if (message is ActorIdentity)
-                {
+                    
+                case ActorIdentity:
                     // ok, from previous establish, already handled
-                }
-                else if (message is ClusterReceptionist.ReceptionistShutdown)
+                    return true;
+                    
+                case ClusterReceptionist.ReceptionistShutdown:
                 {
                     if (receptionist.Equals(Sender))
                     {
                         _log.Info("Receptionist [{0}] is shutting down, reestablishing connection", receptionist);
                         Reestablish();
                     }
+
+                    return true;
                 }
-                else
-                {
+                    
+                default:
                     return ContactPointMessages(message);
-                }
+            }
+        };
+    }
 
-                return true;
-            };
-        }
+    private void Reestablish()
+    {
+        SendGetContacts();
+        ScheduleRefreshContactsTick(_settings.EstablishingGetContactsInterval);
+        Context.Become(Establishing);
+        // Entering a new establishing phase, so the deadline restarts from now.
+        ScheduleReconnectTimeout();
+        _failureDetector.HeartBeat();
+    }
 
-        private void Reestablish()
+    private bool ContactPointMessages(object message)
+    {
+        switch (message)
         {
-            SendGetContacts();
-            ScheduleRefreshContactsTick(_settings.EstablishingGetContactsInterval);
-            Context.Become(Establishing);
-            _failureDetector.HeartBeat();
-        }
-
-        private bool ContactPointMessages(object message)
-        {
-            if (message is SubscribeContactPoints)
+            case SubscribeContactPoints:
             {
                 var subscriber = Sender;
                 subscriber.Tell(new ContactPoints(_contactPaths));
                 _subscribers = _subscribers.Add(subscriber);
                 Context.Watch(subscriber);
+                return true;
             }
-            else if (message is UnsubscribeContactPoints)
+                
+            case UnsubscribeContactPoints:
             {
                 var subscriber = Sender;
                 _subscribers = _subscribers.Where(c => !c.Equals(subscriber)).ToImmutableList();
+                return true;
             }
-            else if (message is Terminated terminated)
-            {
+                
+            case Terminated terminated:
                 Self.Tell(UnsubscribeContactPoints.Instance, terminated.ActorRef);
-            }
-            else if (message is GetContactPoints)
-            {
+                return true;
+                
+            case GetContactPoints:
                 Sender.Tell(new ContactPoints(_contactPaths));
-            }
-            else return false;
-
-            return true;
+                return true;
+                
+            default:
+                return false;
         }
+    }
 
-        private void SendGetContacts()
+    private void SendGetContacts()
+    {
+        var sendTo = _contacts.Length switch
         {
-            ActorSelection[] sendTo;
-            if (_contacts.Length == 0)
-                sendTo = _initialContactsSelections;
-            else if (_contacts.Length == 1)
-                sendTo = _initialContactsSelections.Union(_contacts).ToArray();
-            else
-                sendTo = _contacts;
+            0 => _initialContactsSelections,
+            1 => _initialContactsSelections.Union(_contacts).ToArray(),
+            _ => _contacts
+        };
 
-            if (_log.IsDebugEnabled)
-                _log.Debug("Sending GetContacts to [{0}]", string.Join(", ", sendTo.AsEnumerable()));
+        if (_log.IsDebugEnabled)
+            _log.Debug("Sending GetContacts to [{0}]", string.Join(", ", sendTo.AsEnumerable()));
 
-            sendTo.ForEach(c => c.Tell(ClusterReceptionist.GetContacts.Instance));
+        sendTo.ForEach(c => c.Tell(ClusterReceptionist.GetContacts.Instance));
+    }
+
+    private void Buffer(object message)
+    {
+        if (_settings.BufferSize == 0)
+        {
+            _log.Warning("Receptionist not available and buffering is disabled, dropping message [{0}]", message.GetType().Name);
         }
-
-        private void Buffer(object message)
+        else if (_buffer.Count == _settings.BufferSize)
         {
-            if (_settings.BufferSize == 0)
+            var m = _buffer.Dequeue();
+            _log.Warning("Receptionist not available, buffer is full, dropping first message [{0}]", m.Item1.GetType().Name);
+            _buffer.Enqueue((message, Sender));
+        }
+        else
+        {
+            if(_log.IsDebugEnabled) // don't invoke reflection call on message type if we don't have to
+                _log.Debug("Receptionist not available, buffering message type [{0}]", message.GetType().Name);
+            _buffer.Enqueue((message, Sender));
+        }
+    }
+
+    private void SendBuffered(IActorRef receptionist)
+    {
+        _log.Debug("Sending buffered messages to receptionist");
+        while (_buffer.Count != 0)
+        {
+            var t = _buffer.Dequeue();
+            receptionist.Tell(t.Item1, t.Item2);
+        }
+    }
+
+    private void PublishContactPoints()
+    {
+        foreach (var cp in _contactPaths)
+        {
+            if (!_contactPathsPublished.Contains(cp))
             {
-                _log.Warning("Receptionist not available and buffering is disabled, dropping message [{0}]", message.GetType().Name);
-            }
-            else if (_buffer.Count == _settings.BufferSize)
-            {
-                var m = _buffer.Dequeue();
-                _log.Warning("Receptionist not available, buffer is full, dropping first message [{0}]", m.Item1.GetType().Name);
-                _buffer.Enqueue((message, Sender));
-            }
-            else
-            {
-                if(_log.IsDebugEnabled) // don't invoke reflection call on message type if we don't have to
-                    _log.Debug("Receptionist not available, buffering message type [{0}]", message.GetType().Name);
-                _buffer.Enqueue((message, Sender));
+                var contactPointAdded = new ContactPointAdded(cp);
+                _subscribers.ForEach(s => s.Tell(contactPointAdded));
             }
         }
 
-        private void SendBuffered(IActorRef receptionist)
+        foreach (var cp in _contactPathsPublished)
         {
-            _log.Debug("Sending buffered messages to receptionist");
-            while (_buffer.Count != 0)
+            if (!_contactPaths.Contains(cp))
             {
-                var t = _buffer.Dequeue();
-                receptionist.Tell(t.Item1, t.Item2);
+                var contactPointRemoved = new ContactPointRemoved(cp);
+                _subscribers.ForEach(s => s.Tell(contactPointRemoved));
             }
         }
 
-        private void PublishContactPoints()
-        {
-            foreach (var cp in _contactPaths)
-            {
-                if (!_contactPathsPublished.Contains(cp))
-                {
-                    var contactPointAdded = new ContactPointAdded(cp);
-                    _subscribers.ForEach(s => s.Tell(contactPointAdded));
-                }
-            }
+        _contactPathsPublished = _contactPaths;
+    }
+}
 
-            foreach (var cp in _contactPathsPublished)
-            {
-                if (!_contactPaths.Contains(cp))
-                {
-                    var contactPointRemoved = new ContactPointRemoved(cp);
-                    _subscribers.ForEach(s => s.Tell(contactPointRemoved));
-                }
-            }
+/// <summary>
+/// Declares a super type for all events emitted by the `ClusterClient`
+/// in relation to contact points being added or removed.
+/// </summary>
+public interface IContactPointChange
+{
+    /// <summary>
+    /// Actor path for a receptionist contact point that was added or removed.
+    /// </summary>
+    ActorPath ContactPoint { get; }
+}
 
-            _contactPathsPublished = _contactPaths;
-        }
+/// <summary>
+/// Emitted to a subscriber when contact points have been
+/// received by the <see cref="ClusterClient"/> and a new one has been added.
+/// </summary>
+public sealed class ContactPointAdded : IContactPointChange
+{
+    /// <summary>
+    /// Creates a notification that a receptionist contact point was added.
+    /// </summary>
+    /// <param name="contactPoint">Actor path of the added contact point.</param>
+    public ContactPointAdded(ActorPath contactPoint)
+    {
+        ContactPoint = contactPoint;
     }
 
     /// <summary>
-    /// Declares a super type for all events emitted by the `ClusterClient`
-    /// in relation to contact points being added or removed.
+    /// Actor path of the added contact point.
     /// </summary>
-    public interface IContactPointChange
+    public ActorPath ContactPoint { get; }
+}
+
+/// <summary>
+/// Emitted to a subscriber when contact points have been
+/// received by the <see cref="ClusterClient"/> and a new one has been added.
+/// </summary>
+public sealed class ContactPointRemoved : IContactPointChange
+{
+    /// <summary>
+    /// Creates a notification that a receptionist contact point was removed.
+    /// </summary>
+    /// <param name="contactPoint">Actor path of the removed contact point.</param>
+    public ContactPointRemoved(ActorPath contactPoint)
     {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        ActorPath ContactPoint { get; }
+        ContactPoint = contactPoint;
     }
 
     /// <summary>
-    /// Emitted to a subscriber when contact points have been
-    /// received by the <see cref="ClusterClient"/> and a new one has been added.
+    /// Actor path of the removed contact point.
     /// </summary>
-    public sealed class ContactPointAdded : IContactPointChange
-    {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="contactPoint">TBD</param>
-        public ContactPointAdded(ActorPath contactPoint)
-        {
-            ContactPoint = contactPoint;
-        }
+    public ActorPath ContactPoint { get; }
+}
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public ActorPath ContactPoint { get; }
+/// <summary>
+/// Marker interface for messages that subscribe to cluster client contact point changes.
+/// </summary>
+public interface ISubscribeContactPoints
+{
+}
+
+/// <summary>
+/// Subscribe to a cluster client's contact point changes where
+/// it is guaranteed that a sender receives the initial state
+/// of contact points prior to any events in relation to them
+/// changing.
+/// The sender will automatically become unsubscribed when it
+/// terminates.
+/// </summary>
+public sealed class SubscribeContactPoints : ISubscribeContactPoints
+{
+    /// <summary>
+    /// Singleton instance of the subscribe request.
+    /// </summary>
+    public static readonly SubscribeContactPoints Instance = new();
+    private SubscribeContactPoints() { }
+}
+
+/// <summary>
+/// Marker interface for a request to unsubscribe from contact point change events.
+/// </summary>
+public interface IUnsubscribeContactPoints
+{
+}
+
+/// <summary>
+/// Explicitly unsubscribe from contact point change events.
+/// </summary>
+public sealed class UnsubscribeContactPoints : IUnsubscribeContactPoints
+{
+    /// <summary>
+    /// Singleton instance of the unsubscribe request.
+    /// </summary>
+    public static readonly UnsubscribeContactPoints Instance = new();
+    private UnsubscribeContactPoints() { }
+}
+
+/// <summary>
+/// Marker interface for a request to retrieve the contact points known to a cluster client.
+/// </summary>
+public interface IGetContactPoints
+{
+}
+
+/// <summary>
+/// Get the contact points known to this client. A <see cref="ContactPoints"/> message
+/// will be replied.
+/// </summary>
+public sealed class GetContactPoints : IGetContactPoints
+{
+    /// <summary>
+    /// The singleton instance of this message.
+    /// </summary>
+    public static readonly GetContactPoints Instance = new();
+    private GetContactPoints() { }
+}
+
+/// <summary>
+/// The reply to <see cref="GetContactPoints"/>.
+/// </summary>
+public sealed class ContactPoints
+{
+    /// <summary>
+    /// Creates a reply containing the contact points currently known to the client.
+    /// </summary>
+    /// <param name="contactPoints">Actor paths of the contact points known to the client.</param>
+    public ContactPoints(IImmutableSet<ActorPath> contactPoints)
+    {
+        ContactPointsList = contactPoints;
     }
 
     /// <summary>
-    /// Emitted to a subscriber when contact points have been
-    /// received by the <see cref="ClusterClient"/> and a new one has been added.
+    /// The set of actor paths contacted by this <see cref="ClusterClient"/>.
     /// </summary>
-    public sealed class ContactPointRemoved : IContactPointChange
-    {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="contactPoint">TBD</param>
-        public ContactPointRemoved(ActorPath contactPoint)
-        {
-            ContactPoint = contactPoint;
-        }
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public ActorPath ContactPoint { get; }
-    }
-
-    /// <summary>
-    /// TBD
-    /// </summary>
-    public interface ISubscribeContactPoints
-    {
-    }
-
-    /// <summary>
-    /// Subscribe to a cluster client's contact point changes where
-    /// it is guaranteed that a sender receives the initial state
-    /// of contact points prior to any events in relation to them
-    /// changing.
-    /// The sender will automatically become unsubscribed when it
-    /// terminates.
-    /// </summary>
-    public sealed class SubscribeContactPoints : ISubscribeContactPoints
-    {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public static readonly SubscribeContactPoints Instance = new SubscribeContactPoints();
-        private SubscribeContactPoints() { }
-    }
-
-    /// <summary>
-    /// TBD
-    /// </summary>
-    public interface IUnsubscribeContactPoints
-    {
-    }
-
-    /// <summary>
-    /// Explicitly unsubscribe from contact point change events.
-    /// </summary>
-    public sealed class UnsubscribeContactPoints : IUnsubscribeContactPoints
-    {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public static readonly UnsubscribeContactPoints Instance = new UnsubscribeContactPoints();
-        private UnsubscribeContactPoints() { }
-    }
-
-    /// <summary>
-    /// TBD
-    /// </summary>
-    public interface IGetContactPoints
-    {
-    }
-
-    /// <summary>
-    /// Get the contact points known to this client. A <see cref="ContactPoints"/> message
-    /// will be replied.
-    /// </summary>
-    public sealed class GetContactPoints : IGetContactPoints
-    {
-        /// <summary>
-        /// The singleton instance of this message.
-        /// </summary>
-        public static readonly GetContactPoints Instance = new GetContactPoints();
-        private GetContactPoints() { }
-    }
-
-    /// <summary>
-    /// The reply to <see cref="GetContactPoints"/>.
-    /// </summary>
-    public sealed class ContactPoints
-    {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="contactPoints">TBD</param>
-        public ContactPoints(IImmutableSet<ActorPath> contactPoints)
-        {
-            ContactPointsList = contactPoints;
-        }
-
-        /// <summary>
-        /// The set of actor paths contacted by this <see cref="ClusterClient"/>.
-        /// </summary>
-        public IImmutableSet<ActorPath> ContactPointsList { get; }
-    }
+    public IImmutableSet<ActorPath> ContactPointsList { get; }
 }

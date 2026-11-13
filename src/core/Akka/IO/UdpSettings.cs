@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UdpSettings.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -31,14 +31,14 @@ namespace Akka.IO
         /// Creates a new instance of <see cref="UdpSettings"/> class 
         /// and fills it with values parsed from provided HOCON config.
         /// </summary>
-        /// <param name="config">TBD</param>
+        /// <param name="config">The HOCON configuration to parse UDP settings from.</param>
         public static UdpSettings Create(Config config)
         {
             if (config.IsNullOrEmpty())
                 throw ConfigurationException.NullOrEmptyConfig<UdpSettings>();
 
             return new UdpSettings(
-                bufferPoolConfigPath: config.GetString("buffer-pool", null),
+                bufferPoolConfigPath: null,
                 traceLogging: config.GetBoolean("trace-logging", false),
                 initialSocketAsyncEventArgs: config.GetInt("nr-of-socket-async-event-args", 32),
                 batchReceiveLimit: config.GetInt("receive-throughput", 0),
@@ -46,30 +46,11 @@ namespace Akka.IO
                 fileIoDispatcher: config.GetString("file-io-dispatcher", "akka.actor.default-dispatcher"));
         }
         
-        // directBufferSize and maxDirectBufferPoolSize parameter are byterot, remove this in v1.5
-        [Obsolete("Please the constructor without directBufferSize and maxDirectBufferPoolSize parameter")]
-        public UdpSettings(
-            string bufferPoolConfigPath, 
-            bool traceLogging,
-            int initialSocketAsyncEventArgs,
-            int directBufferSize,
-            int maxDirectBufferPoolSize,
-            int batchReceiveLimit,
-            string managementDispatcher,
-            string fileIoDispatcher) 
-            : this(
-                bufferPoolConfigPath,
-                traceLogging,
-                initialSocketAsyncEventArgs,
-                batchReceiveLimit,
-                managementDispatcher,
-                fileIoDispatcher)
-        {
-        }
-
         public UdpSettings(string bufferPoolConfigPath, bool traceLogging, int initialSocketAsyncEventArgs, int batchReceiveLimit, string managementDispatcher, string fileIoDispatcher)
         {
+#pragma warning disable CS0618 // set here so the ctor can still accept a caller-supplied value
             BufferPoolConfigPath = bufferPoolConfigPath;
+#pragma warning restore CS0618
             TraceLogging = traceLogging;
             InitialSocketAsyncEventArgs = initialSocketAsyncEventArgs;
             BatchReceiveLimit = batchReceiveLimit;
@@ -79,9 +60,8 @@ namespace Akka.IO
 
         /// <summary>
         /// A config path to the section defining which byte buffer pool to use.
-        /// Buffer pools are used to mitigate GC-pressure made by potentiall allocation
-        /// and deallocation of byte buffers used for writing/receiving data from sockets.
         /// </summary>
+        [Obsolete("Obsolete since v1.6.0; UDP always uses the disabled buffer pool")]
         public string BufferPoolConfigPath { get; }
 
         /// <summary>
@@ -98,7 +78,9 @@ namespace Akka.IO
         public int InitialSocketAsyncEventArgs { get; }
 
         /// <summary>
-        /// TBD
+        /// The maximum number of datagrams to receive in a single batch read cycle before
+        /// yielding back to the dispatcher. Higher values decrease latency; lower values
+        /// increase fairness on the worker dispatcher.
         /// </summary>
         public int BatchReceiveLimit { get; }
 

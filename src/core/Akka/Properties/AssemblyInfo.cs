@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AssemblyInfo.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -22,27 +22,46 @@ using System.Runtime.InteropServices;
 // The following GUID is for the ID of the typelib if this project is exposed to COM
 
 [assembly: Guid("1a5cab08-b032-49ca-8db3-9428c5a9db14")]
+[assembly: InternalsVisibleTo("Akka.Docs.Tests")]
 [assembly: InternalsVisibleTo("Akka.Tests")]
+[assembly: InternalsVisibleTo("Akka.API.Tests")]
 [assembly: InternalsVisibleTo("Akka.Tests.Performance")]
 [assembly: InternalsVisibleTo("Akka.TestKit")]
 [assembly: InternalsVisibleTo("Akka.TestKit.Tests")]
+[assembly: InternalsVisibleTo("Akka.TestKit.Xunit")]
+[assembly: InternalsVisibleTo("Akka.TestKit.Xunit2")]
 [assembly: InternalsVisibleTo("Akka.Remote")]
+[assembly: InternalsVisibleTo("Akka.Serialization.V2")]
+[assembly: InternalsVisibleTo("Akka.Remote.TestKit")]
 [assembly: InternalsVisibleTo("Akka.Remote.Tests")]
 [assembly: InternalsVisibleTo("Akka.Remote.Tests.MultiNode")]
 [assembly: InternalsVisibleTo("Akka.Remote.TestKit.Tests")]
+[assembly: InternalsVisibleTo("Akka.Remote.TestKit.Xunit2.Tests")]
 [assembly: InternalsVisibleTo("Akka.Cluster")]
 [assembly: InternalsVisibleTo("Akka.Cluster.Sharding")]
+[assembly: InternalsVisibleTo("Akka.Cluster.Sharding.Tests")]
+[assembly: InternalsVisibleTo("Akka.Cluster.Sharding.Tests.MultiNode")]
 [assembly: InternalsVisibleTo("Akka.Cluster.Tools")]
+[assembly: InternalsVisibleTo("Akka.Cluster.Tools.Tests")]
+[assembly: InternalsVisibleTo("Akka.Cluster.Metrics")]
 [assembly: InternalsVisibleTo("Akka.Cluster.Tests")]
 [assembly: InternalsVisibleTo("Akka.MultiNodeTestRunner.Shared.Tests")]
 [assembly: InternalsVisibleTo("Akka.Cluster.Tests.MultiNode")]
 [assembly: InternalsVisibleTo("Akka.Cluster.TestKit")]
+[assembly: InternalsVisibleTo("Akka.Cluster.TestKit.Xunit2")]
 [assembly: InternalsVisibleTo("Akka.Cluster.Tools")]
 [assembly: InternalsVisibleTo("Akka.DistributedData")]
+[assembly: InternalsVisibleTo("Akka.DistributedData.Tests")]
 [assembly: InternalsVisibleTo("Akka.Persistence")]
+[assembly: InternalsVisibleTo("Akka.Persistence.Query")]
+[assembly: InternalsVisibleTo("Akka.Persistence.Sql.TestKit")]
+[assembly: InternalsVisibleTo("Akka.Persistence.Tests")]
 [assembly: InternalsVisibleTo("Akka.Streams")]
 [assembly: InternalsVisibleTo("Akka.Streams.Tests")]
 [assembly: InternalsVisibleTo("Akka.Benchmarks")]
 [assembly: InternalsVisibleTo("Akka.Persistence.TCK")]
+[assembly: InternalsVisibleTo("Akka.Persistence.TCK.Xunit2")]
 [assembly: InternalsVisibleTo("Akka.DistributedData")]
 [assembly: InternalsVisibleTo("Akka.DependencyInjection")]
+[assembly: InternalsVisibleTo("Akka.DependencyInjection.Tests")]
+[assembly: InternalsVisibleTo("Akka.Cluster.Metrics.Tests")]

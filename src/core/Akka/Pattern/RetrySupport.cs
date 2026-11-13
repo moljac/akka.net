@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RetrySupport.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2020 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2020 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -26,8 +26,8 @@ namespace Akka.Pattern
         /// </para>
         /// If attempts are exhausted the returned Task is simply the result of invoking attempt.
         /// </summary>
-        /// <param name="attempt">TBD</param>
-        /// <param name="attempts">TBD</param>
+        /// <param name="attempt">A function that produces the <see cref="Task{T}"/> to execute on each try.</param>
+        /// <param name="attempts">Maximum number of attempts to make before giving up.</param>
         public static Task<T> Retry<T>(Func<Task<T>> attempt, int attempts) =>
             Retry(attempt, attempts, attempted: 0);
 
@@ -39,18 +39,18 @@ namespace Akka.Pattern
         /// </para>
         /// If attempts are exhausted the returned Task is simply the result of invoking attempt.
         /// </summary>
-        /// <param name="attempt">TBD</param>
-        /// <param name="attempts">TBD</param>
+        /// <param name="attempt">A function that produces the <see cref="Task{T}"/> to execute on each try.</param>
+        /// <param name="attempts">Maximum number of attempts to make before giving up.</param>
         /// <param name="minBackoff">minimum (initial) duration until the child actor will started again, if it is terminated.</param>
         /// <param name="maxBackoff">the exponential back-off is capped to this duration.</param>
         /// <param name="randomFactor">after calculation of the exponential back-off an additional random delay based on this factor is added, e.g. `0.2` adds up to `20%` delay. In order to skip this additional delay pass in `0`.</param>
         /// <param name="scheduler">The scheduler instance to use.</param>
-        public static Task<T> Retry<T>(Func<Task<T>> attempt, int attempts, TimeSpan minBackoff, TimeSpan maxBackoff, int randomFactor, IScheduler scheduler)
+        public static Task<T> Retry<T>(Func<Task<T>> attempt, int attempts, TimeSpan minBackoff, TimeSpan maxBackoff, double randomFactor, IScheduler scheduler)
         {
-            if (attempt == null) throw new ArgumentNullException("Parameter attempt should not be null.");
-            if (minBackoff <= TimeSpan.Zero) throw new ArgumentException("Parameter minBackoff must be > 0");
-            if (maxBackoff < minBackoff) throw new ArgumentException("Parameter maxBackoff must be >= minBackoff");
-            if (randomFactor < 0.0 || randomFactor > 1.0) throw new ArgumentException("RandomFactor must be between 0.0 and 1.0");
+            if (attempt == null) throw new ArgumentNullException(nameof(attempt), "Parameter attempt should not be null.");
+            if (minBackoff <= TimeSpan.Zero) throw new ArgumentException("Parameter minBackoff must be > 0", nameof(minBackoff));
+            if (maxBackoff < minBackoff) throw new ArgumentException("Parameter maxBackoff must be >= minBackoff", nameof(maxBackoff));
+            if (randomFactor is < 0.0 or > 1.0) throw new ArgumentException("RandomFactor must be between 0.0 and 1.0", nameof(randomFactor));
 
             return Retry(attempt, attempts, attempted => BackoffSupervisor.CalculateDelay(attempted, minBackoff, maxBackoff, randomFactor), scheduler);
         }
@@ -63,9 +63,9 @@ namespace Akka.Pattern
         /// </para>
         /// If attempts are exhausted the returned future is simply the result of invoking attempt.
         /// </summary>
-        /// <param name="attempt">TBD</param>
-        /// <param name="attempts">TBD</param>
-        /// <param name="delay">TBD</param>
+        /// <param name="attempt">A function that produces the <see cref="Task{T}"/> to execute on each try.</param>
+        /// <param name="attempts">Maximum number of attempts to make before giving up.</param>
+        /// <param name="delay">The fixed duration to wait between retry attempts.</param>
         /// <param name="scheduler">The scheduler instance to use.</param>
         public static Task<T> Retry<T>(Func<Task<T>> attempt, int attempts, TimeSpan delay, IScheduler scheduler) =>
             Retry(attempt, attempts, _ => delay, scheduler);
@@ -82,9 +82,9 @@ namespace Akka.Pattern
         /// </para>
         /// If attempts are exhausted the returned Task is simply the result of invoking attempt.
         /// </summary>
-        /// <param name="attempt">TBD</param>
-        /// <param name="attempts">TBD</param>
-        /// <param name="delayFunction">TBD</param>
+        /// <param name="attempt">A function that produces the <see cref="Task{T}"/> to execute on each try.</param>
+        /// <param name="attempts">Maximum number of attempts to make before giving up.</param>
+        /// <param name="delayFunction">A function that receives the next attempt number (starting from 1) and returns an <see cref="Option{TimeSpan}"/> delay before that attempt. Return <see cref="Option{TimeSpan}.None"/> for no delay.</param>
         /// <param name="scheduler">The scheduler instance to use.</param>
         public static Task<T> Retry<T>(Func<Task<T>> attempt, int attempts, Func<int, Option<TimeSpan>> delayFunction, IScheduler scheduler) =>
             Retry(attempt, attempts, delayFunction, attempted: 0, scheduler);
@@ -118,14 +118,12 @@ namespace Akka.Pattern
                         var nextAttempt = attempted + 1;
                         switch (delayFunction(nextAttempt))
                         {
-                            case Option<TimeSpan> delay when delay.HasValue:
+                            case { HasValue: true } delay:
                                 return delay.Value.Ticks < 1
                                     ? Retry(attempt, maxAttempts, delayFunction, nextAttempt, scheduler)
                                     : After(delay.Value, scheduler, () => Retry(attempt, maxAttempts, delayFunction, nextAttempt, scheduler));
-                            case Option<TimeSpan> _:
-                                return Retry(attempt, maxAttempts, delayFunction, nextAttempt, scheduler);
                             default:
-                                throw new InvalidOperationException("The delayFunction of Retry should not return null.");
+                                return Retry(attempt, maxAttempts, delayFunction, nextAttempt, scheduler);
                         }
                     }
                     return t;

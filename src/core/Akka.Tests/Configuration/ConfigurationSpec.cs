@@ -1,22 +1,22 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ConfigurationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
-
+#if !CORECLR
 using System;
 using System.IO;
 using Akka.Configuration.Hocon;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Dispatch;
 using Akka.Event;
 using Akka.TestKit;
 using Xunit;
-using Xunit.Abstractions;
 using FluentAssertions;
 using ConfigurationFactory = Akka.Configuration.ConfigurationFactory;
 
@@ -45,11 +45,14 @@ namespace Akka.Tests.Configuration
             settings.StdoutLogger.Should().NotBeNull();
             settings.StdoutLogger.Should().BeOfType<StandardOutLogger>();
             settings.LogConfigOnStart.ShouldBeFalse();
+            settings.LogSerializerOverrideOnStart.ShouldBeTrue();
             settings.LogDeadLetters.ShouldBe(10);
             settings.LogDeadLettersDuringShutdown.ShouldBeFalse();
             settings.LogDeadLettersSuspendDuration.ShouldBe(TimeSpan.FromMinutes(5));
+            settings.LogFormatter.Should().BeOfType<SemanticLogMessageFormatter>();
 
-            settings.ProviderClass.ShouldBe(typeof (LocalActorRefProvider).FullName);
+            // the default provider resolves to ProviderSelection.Local, so ProviderClass reports the assembly-qualified name
+            settings.ProviderClass.ShouldBe(ProviderSelection.Local.Instance.Fqn);
             settings.SupervisorStrategyClass.ShouldBe(typeof (DefaultSupervisorStrategy).FullName);
             settings.CreationTimeout.Seconds.ShouldBe(20);
             settings.AskTimeout.ShouldBe(Timeout.InfiniteTimeSpan);
@@ -72,32 +75,26 @@ namespace Akka.Tests.Configuration
         [Fact]
         public void Deserializes_hocon_configuration_from_net_config_file()
         {
-#if !CORECLR
+
             var section = (AkkaConfigurationSection)System.Configuration.ConfigurationManager.GetSection("akka");
             Assert.NotNull(section);
             Assert.False(string.IsNullOrEmpty(section.Hocon.Content));
             var akkaConfig = section.AkkaConfig;
             Assert.NotNull(akkaConfig);
-#else
-            // Skip this test for Linux targets
-            Output.WriteLine("This test is skipped.");
-#endif
         }
 
         // unit test for bug #4330
         [Fact]
-        public void Should_load_config_from_app_config_file()
+        public async Task Should_load_config_from_app_config_file()
         {
-#if !CORECLR
+
             var system = ActorSystem.Create(Guid.NewGuid().ToString());
             system.Settings.Config.GetBoolean("nonsense.entry").ShouldBeTrue();
-            system.Terminate();
-#else
+            await system.Terminate();
+
             // Skip this test for Linux targets
             Output.WriteLine("This test is skipped.");
-#endif
         }
-
     }
-
 }
+#endif

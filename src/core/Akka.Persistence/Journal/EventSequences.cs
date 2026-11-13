@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="EventSequences.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,109 +12,139 @@ using System.Linq;
 namespace Akka.Persistence.Journal
 {
     /// <summary>
-    /// TBD
+    /// Represents zero or more events produced by an event adapter.
     /// </summary>
     public interface IEventSequence
     {
         /// <summary>
-        /// TBD
+        /// Events in this sequence, in order.
         /// </summary>
         IEnumerable<object> Events { get; }
     }
 
     /// <summary>
-    /// TBD
+    /// Marker interface for an event sequence containing no events.
     /// </summary>
     public interface IEmptyEventSequence : IEventSequence { }
 
     /// <summary>
-    /// TBD
+    /// An event sequence containing no events.
     /// </summary>
     [Serializable]
     public sealed class EmptyEventSequence : IEmptyEventSequence, IEquatable<IEventSequence>
     {
         /// <summary>
-        /// TBD
+        /// The singleton empty event sequence.
         /// </summary>
-        public static readonly EmptyEventSequence Instance = new EmptyEventSequence();
+        public static readonly EmptyEventSequence Instance = new();
 
         private EmptyEventSequence() { }
 
         /// <summary>
-        /// TBD
+        /// An empty sequence of events.
         /// </summary>
         public IEnumerable<object> Events => Enumerable.Empty<object>();
 
-        /// <inheritdoc/>
+       
         public bool Equals(IEventSequence other)
         {
             return other is EmptyEventSequence;
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as IEventSequence);
         }
+
+        /// <summary>
+        /// Returns a hash code for this instance.
+        /// </summary>
+        /// <returns>
+        /// A hash code for this instance, suitable for use in hashing algorithms and data structures like a hash table.
+        /// </returns>
+        public override int GetHashCode()
+        {
+            return typeof(EmptyEventSequence).GetHashCode();
+        }
     }
 
     /// <summary>
-    /// TBD
+    /// An event sequence containing zero or more supplied events.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">Generic type argument for this sequence type; it does not constrain the event objects exposed through <see cref="Events"/>.</typeparam>
     [Serializable]
     public class EventSequence<T> : IEventSequence, IEquatable<IEventSequence>
     {
         private readonly IList<object> _events;
         /// <summary>
-        /// TBD
+        /// Creates an event sequence from the supplied events.
         /// </summary>
-        /// <param name="events">TBD</param>
+        /// <param name="events">Events to include in the sequence, in order.</param>
         public EventSequence(IEnumerable<object> events)
         {
             _events = events.ToList();
         }
 
         /// <summary>
-        /// TBD
+        /// Events in this sequence, in order.
         /// </summary>
         public IEnumerable<object> Events => _events;
 
-        /// <inheritdoc/>
+        
         public bool Equals(IEventSequence other)
         {
             return other != null && _events.SequenceEqual(other.Events);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             return Equals(obj as IEventSequence);
         }
+
+        /// <summary>
+        /// Returns a hash code for this instance.
+        /// </summary>
+        /// <returns>
+        /// A hash code for this instance, suitable for use in hashing algorithms and data structures like a hash table.
+        /// </returns>
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = 17;
+                foreach (var item in _events)
+                {
+                    hash = hash * 23 + (item?.GetHashCode() ?? 0);
+                }
+                return hash;
+            }
+        }
     }
 
     /// <summary>
-    /// TBD
+    /// An event sequence containing exactly one event.
     /// </summary>
     [Serializable]
     public struct SingleEventSequence : IEventSequence, IEquatable<IEventSequence>
     {
         private readonly object[] _events;
         /// <summary>
-        /// TBD
+        /// Creates an event sequence containing one event.
         /// </summary>
-        /// <param name="e">TBD</param>
+        /// <param name="e">Event to include in the sequence.</param>
         public SingleEventSequence(object e) : this()
         {
             _events = new[] { e };
         }
 
         /// <summary>
-        /// TBD
+        /// The single event in this sequence.
         /// </summary>
         public IEnumerable<object> Events => _events;
 
-        /// <inheritdoc/>
+        
         public bool Equals(IEventSequence other)
         {
             if (other == null) return false;
@@ -122,48 +152,59 @@ namespace Akka.Persistence.Journal
             return e != null && e.Equals(_events[0]) && other.Events.Count() == 1;
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             return Equals(obj as IEventSequence);
         }
+
+        /// <summary>
+        /// Returns a hash code for this instance.
+        /// </summary>
+        /// <returns>
+        /// A hash code for this instance, suitable for use in hashing algorithms and data structures like a hash table.
+        /// </returns>
+        public override int GetHashCode()
+        {
+            return _events[0]?.GetHashCode() ?? 0;
+        }
     }
 
     /// <summary>
-    /// TBD
+    /// Factory methods for creating event sequences.
     /// </summary>
     public static class EventSequence
     {
         /// <summary>
-        /// TBD
+        /// The singleton empty event sequence.
         /// </summary>
         public static IEventSequence Empty = EmptyEventSequence.Instance;
 
         /// <summary>
-        /// TBD
+        /// Creates a sequence containing one event.
         /// </summary>
-        /// <param name="e">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="e">Event to include in the sequence.</param>
+        /// <returns>An event sequence containing <paramref name="e"/>.</returns>
         public static IEventSequence Single(object e)
         {
             return new SingleEventSequence(e);
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a sequence from the supplied events.
         /// </summary>
-        /// <param name="events">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="events">Events to include in the sequence, in order.</param>
+        /// <returns>An event sequence containing the supplied events.</returns>
         public static IEventSequence Create(params object[] events)
         {
             return new EventSequence<object>(events);
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a sequence from the supplied events.
         /// </summary>
-        /// <param name="events">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="events">Events to include in the sequence, in order.</param>
+        /// <returns>An event sequence containing the supplied events.</returns>
         public static IEventSequence Create(IEnumerable<object> events)
         {
             return new EventSequence<object>(events);

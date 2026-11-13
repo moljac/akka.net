@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ConsistentHashingRouterSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -74,6 +74,19 @@ namespace Akka.Tests.Routing
             public object Key { get; private set; }
         }
 
+        /// <summary>
+        /// A minimal <see cref="Routee"/> whose <see cref="ToString"/> we control, so a test can force
+        /// two routees whose virtual nodes collide in the 32-bit ring (see #8031).
+        /// </summary>
+        public sealed class NamedRoutee : Routee
+        {
+            private readonly string _name;
+
+            public NamedRoutee(string name) => _name = name;
+
+            public override string ToString() => _name;
+        }
+
         #endregion
 
         private readonly IActorRef _router1;
@@ -119,26 +132,26 @@ namespace Akka.Tests.Routing
         }
 
         [Fact]
-        public void Consistent_hashing_pool_router_must_select_destination_based_on_consistent_hash_key_of_message()
+        public async Task Consistent_hashing_pool_router_must_select_destination_based_on_consistent_hash_key_of_message()
         {
             _router1.Tell(new Msg("a", "A"));
-            var destinationA = ExpectMsg<IActorRef>();
+            var destinationA = await ExpectMsgAsync<IActorRef>();
             _router1.Tell(new ConsistentHashableEnvelope("AA", "a"));
-            ExpectMsg(destinationA);
+            await ExpectMsgAsync(destinationA);
 
             _router1.Tell(new Msg(17, "A"));
-            var destinationB = ExpectMsg<IActorRef>();
+            var destinationB = await ExpectMsgAsync<IActorRef>();
             _router1.Tell(new ConsistentHashableEnvelope("BB", 17));
-            ExpectMsg(destinationB);
+            await ExpectMsgAsync(destinationB);
 
             _router1.Tell(new Msg(new MsgKey("c"), "C"));
-            var destinationC = ExpectMsg<IActorRef>();
+            var destinationC = await ExpectMsgAsync<IActorRef>();
             _router1.Tell(new ConsistentHashableEnvelope("CC", new MsgKey("c")));
-            ExpectMsg(destinationC);
+            await ExpectMsgAsync(destinationC);
         }
 
         [Fact]
-        public void Consistent_hashing_pool_router_must_select_destination_with_defined_hash_mapping()
+        public async Task Consistent_hashing_pool_router_must_select_destination_with_defined_hash_mapping()
         {
             ConsistentHashMapping hashMapping = msg =>
             {
@@ -153,19 +166,19 @@ namespace Akka.Tests.Routing
             var router2 = Sys.ActorOf(new ConsistentHashingPool(1, hashMapping).Props(Props.Create<Echo>()), "router2");
 
             router2.Tell(new Msg2("a", "A"));
-            var destinationA = ExpectMsg<IActorRef>();
+            var destinationA = await ExpectMsgAsync<IActorRef>();
             router2.Tell(new ConsistentHashableEnvelope("AA", "a"));
-            ExpectMsg(destinationA);
+            await ExpectMsgAsync(destinationA);
 
             router2.Tell(new Msg2(17, "A"));
-            var destinationB = ExpectMsg<IActorRef>();
+            var destinationB = await ExpectMsgAsync<IActorRef>();
             router2.Tell(new ConsistentHashableEnvelope("BB", 17));
-            ExpectMsg(destinationB);
+            await ExpectMsgAsync(destinationB);
 
             router2.Tell(new Msg2(new MsgKey("c"), "C"));
-            var destinationC = ExpectMsg<IActorRef>();
+            var destinationC = await ExpectMsgAsync<IActorRef>();
             router2.Tell(new ConsistentHashableEnvelope("CC", new MsgKey("c")));
-            ExpectMsg(destinationC);
+            await ExpectMsgAsync(destinationC);
         }
 
         [Fact]
@@ -176,26 +189,26 @@ namespace Akka.Tests.Routing
         }
 
         [Fact]
-        public void Consistent_hashing_group_router_must_select_destination_based_on_consistent_hash_key_of_message()
+        public async Task Consistent_hashing_group_router_must_select_destination_based_on_consistent_hash_key_of_message()
         {
             _router3.Tell(new Msg("a", "A"));
-            var destinationA = ExpectMsg<IActorRef>();
+            var destinationA = await ExpectMsgAsync<IActorRef>();
             _router3.Tell(new ConsistentHashableEnvelope("AA", "a"));
-            ExpectMsg(destinationA);
+            await ExpectMsgAsync(destinationA);
 
             _router3.Tell(new Msg(17, "A"));
-            var destinationB = ExpectMsg<IActorRef>();
+            var destinationB = await ExpectMsgAsync<IActorRef>();
             _router3.Tell(new ConsistentHashableEnvelope("BB", 17));
-            ExpectMsg(destinationB);
+            await ExpectMsgAsync(destinationB);
 
             _router3.Tell(new Msg(new MsgKey("c"), "C"));
-            var destinationC = ExpectMsg<IActorRef>();
+            var destinationC = await ExpectMsgAsync<IActorRef>();
             _router3.Tell(new ConsistentHashableEnvelope("CC", new MsgKey("c")));
-            ExpectMsg(destinationC);
+            await ExpectMsgAsync(destinationC);
         }
 
         [Fact]
-        public void Consistent_hashing_group_router_must_select_destination_with_defined_hash_mapping()
+        public async Task Consistent_hashing_group_router_must_select_destination_with_defined_hash_mapping()
         {
             ConsistentHashMapping hashMapping = msg =>
             {
@@ -212,19 +225,37 @@ namespace Akka.Tests.Routing
             var router4 = Sys.ActorOf(new ConsistentHashingGroup(paths, hashMapping).Props(), "router4");
 
             router4.Tell(new Msg2("a", "A"));
-            var destinationA = ExpectMsg<IActorRef>();
+            var destinationA = await ExpectMsgAsync<IActorRef>();
             router4.Tell(new ConsistentHashableEnvelope("AA", "a"));
-            ExpectMsg(destinationA);
+            await ExpectMsgAsync(destinationA);
 
             router4.Tell(new Msg2(17, "A"));
-            var destinationB = ExpectMsg<IActorRef>();
+            var destinationB = await ExpectMsgAsync<IActorRef>();
             router4.Tell(new ConsistentHashableEnvelope("BB", 17));
-            ExpectMsg(destinationB);
+            await ExpectMsgAsync(destinationB);
 
             router4.Tell(new Msg2(new MsgKey("c"), "C"));
-            var destinationC = ExpectMsg<IActorRef>();
+            var destinationC = await ExpectMsgAsync<IActorRef>();
             router4.Tell(new ConsistentHashableEnvelope("CC", new MsgKey("c")));
-            ExpectMsg(destinationC);
+            await ExpectMsgAsync(destinationC);
+        }
+
+        [Fact]
+        public void Consistent_hashing_routing_logic_must_not_wedge_when_routees_collide_in_the_ring()
+        {
+            // "2842" and "7681" have colliding virtual nodes at virtual-nodes-factor 10. Before #8031
+            // this threw inside ConsistentHash.Create, was swallowed by Select, and every message
+            // routed to NoRoutee cluster-wide until a manual restart. The ring now probes past the
+            // collision, so Select must resolve to one of the real routees.
+            var routeeA = new NamedRoutee("2842");
+            var routeeB = new NamedRoutee("7681");
+            var routees = new Routee[] { routeeA, routeeB };
+            var logic = new ConsistentHashingRoutingLogic(Sys, 10, ConsistentHashingRouter.EmptyConsistentHashMapping);
+
+            var selected = logic.Select(new ConsistentHashableEnvelope("payload", "some-key"), routees);
+
+            selected.Should().NotBeSameAs(Routee.NoRoutee, "a 32-bit collision must no longer wedge the router");
+            selected.Should().Match<Routee>(r => ReferenceEquals(r, routeeA) || ReferenceEquals(r, routeeB));
         }
     }
 }

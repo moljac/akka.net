@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AsyncWriteProxyEx.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -9,15 +9,13 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Runtime.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
-using System.Runtime.Serialization;
-using Akka.Event;
-using Akka.Persistence.Journal;
-using Akka.Persistence;
-using System.Threading;
-using Akka.Util.Internal;
 using Akka.Actor.Internal;
+using Akka.Persistence;
+using Akka.Persistence.Journal;
 
 namespace Akka.Cluster.Sharding.Tests
 {
@@ -55,28 +53,23 @@ namespace Akka.Cluster.Sharding.Tests
     }
 
     /// <summary>
-    /// TBD
+    /// Message that supplies the actor used by the proxy as its journal store.
     /// </summary>
     [Serializable]
     public sealed class SetStore
     {
         /// <summary>
-        /// TBD
+        /// Creates a message containing the target journal-store actor.
         /// </summary>
-        /// <param name="store">TBD</param>
+        /// <param name="store">The actor that handles journal protocol messages.</param>
         /// <exception cref="ArgumentNullException">
         /// This exception is thrown when the specified <paramref name="store"/> is undefined.
         /// </exception>
-        public SetStore(IActorRef store)
-        {
-            if (store == null)
-                throw new ArgumentNullException(nameof(store), "SetStore requires non-null reference to store actor");
-
-            Store = store;
-        }
+        public SetStore(IActorRef store) =>
+            Store = store ?? throw new ArgumentNullException(nameof(store), "SetStore requires non-null reference to store actor");
 
         /// <summary>
-        /// TBD
+        /// The journal-store actor supplied to the proxy.
         /// </summary>
         public readonly IActorRef Store;
     }
@@ -84,14 +77,22 @@ namespace Akka.Cluster.Sharding.Tests
     /// <summary>
     /// A journal that delegates actual storage to a target actor. For testing only.
     /// </summary>
-    public abstract class AsyncWriteProxyEx : AsyncWriteJournal, IWithUnboundedStash
+    public abstract class AsyncWriteProxyEx : AsyncWriteJournal, IWithUnboundedStash, IWithTimers
     {
+        private const string InitTimeoutTimerKey = nameof(InitTimeoutTimerKey);
+        
+        private class InitTimeout
+        {
+            public static readonly InitTimeout Instance = new();
+            private InitTimeout() { }
+        }
+
         private bool _isInitialized;
         private bool _isInitTimedOut;
         private IActorRef _store;
 
         /// <summary>
-        /// TBD
+        /// Initializes the journal proxy and prepares a timeout while it waits for its store actor.
         /// </summary>
         protected AsyncWriteProxyEx()
         {
@@ -101,103 +102,89 @@ namespace Akka.Cluster.Sharding.Tests
         }
 
         /// <summary>
-        /// TBD
+        /// The maximum wait before the proxy stops stashing messages for store initialization.
         /// </summary>
         public abstract TimeSpan Timeout { get; }
 
         /// <summary>
-        /// TBD
+        /// Starts the initialization timeout before the journal's base startup logic runs.
         /// </summary>
         public override void AroundPreStart()
         {
-            Context.System.Scheduler.ScheduleTellOnce(Timeout, Self, InitTimeout.Instance, Self);
+            Timers.StartSingleTimer(InitTimeoutTimerKey, InitTimeout.Instance, Timeout, Self);
             base.AroundPreStart();
         }
 
         /// <summary>
-        /// TBD
+        /// Stashes messages until a store is supplied or the initialization timeout expires, then delegates normal handling.
         /// </summary>
-        /// <param name="receive">TBD</param>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
-        protected override bool AroundReceive(Receive receive, object message)
+        /// <param name="receive">The journal's receive handler.</param>
+        /// <param name="message">The incoming message to process or stash.</param>
+        /// <returns><c>true</c> when initialization handling consumes the message; otherwise, the base journal result.</returns>
+        protected internal override bool AroundReceive(Receive receive, object message)
         {
             if (_isInitialized)
             {
-                if (!(message is InitTimeout))
+                if (message is not InitTimeout)
                     return base.AroundReceive(receive, message);
             }
-            else if (message is SetStore msg)
+            else switch (message)
             {
-                _store = msg.Store;
-                Stash.UnstashAll();
-                _isInitialized = true;
+                case SetStore msg:
+                    _store = msg.Store;
+                    Stash.UnstashAll();
+                    _isInitialized = true;
+                    break;
+                case InitTimeout:
+                    _isInitTimedOut = true;
+                    Stash.UnstashAll(); // will trigger appropriate failures
+                    break;
+                default:
+                {
+                    if (_isInitTimedOut)
+                    {
+                        return base.AroundReceive(receive, message);
+                    }
+                    else Stash.Stash();
+
+                    break;
+                }
             }
-            else if (message is InitTimeout)
-            {
-                _isInitTimedOut = true;
-                Stash.UnstashAll(); // will trigger appropriate failures
-            }
-            else if (_isInitTimedOut)
-            {
-                return base.AroundReceive(receive, message);
-            }
-            else Stash.Stash();
             return true;
         }
 
-
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="messages">TBD</param>
-        /// <exception cref="TimeoutException">
-        /// This exception is thrown when the store has not been initialized.
-        /// </exception>
-        /// <returns>TBD</returns>
-        protected override Task<IImmutableList<Exception>> WriteMessagesAsync(IEnumerable<AtomicWrite> messages)
+        protected override Task<IImmutableList<Exception>> WriteMessagesAsync(IEnumerable<AtomicWrite> messages, CancellationToken cancellationToken)
         {
+            var trueMsgs = messages.ToArray();
+            
             if (_store == null)
                 return StoreNotInitialized<IImmutableList<Exception>>();
 
-            return _store.Ask<object>(sender => new WriteMessages(messages, sender, 1), Timeout, CancellationToken.None)
+            return _store.Ask<object>(sender => new WriteMessages(trueMsgs, sender, 1), Timeout, cancellationToken)
                 .ContinueWith(r =>
                 {
                     if (r.IsCanceled)
-                        return (IImmutableList<Exception>)messages.Select(i => (Exception)new TimeoutException()).ToImmutableList();
+                        return (IImmutableList<Exception>)trueMsgs.Select(_ => (Exception)new TimeoutException()).ToImmutableList();
                     if (r.IsFaulted)
-                        return messages.Select(i => (Exception)r.Exception).ToImmutableList();
+                        return trueMsgs.Select(_ => (Exception)r.Exception).ToImmutableList();
 
-                    if (r.Result is WriteMessageSuccess wms)
+                    return r.Result switch
                     {
-                        return messages.Select(i => (Exception)null).ToImmutableList();
-                    }
-                    if (r.Result is WriteMessageFailure wmf)
-                    {
-                        return messages.Select(i => wmf.Cause).ToImmutableList();
-                    }
-                    return null;
+                        WriteMessageSuccess wms => trueMsgs.Select(_ => (Exception)null).ToImmutableList(),
+                        WriteMessageFailure wmf => trueMsgs.Select(_ => wmf.Cause).ToImmutableList(),
+                        _ => null
+                    };
                 }, TaskContinuationOptions.ExecuteSynchronously);
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="persistenceId">TBD</param>
-        /// <param name="toSequenceNr">TBD</param>
-        /// <exception cref="TimeoutException">
-        /// This exception is thrown when the store has not been initialized.
-        /// </exception>
-        /// <returns>TBD</returns>
-        protected override Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
+        protected override Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr, CancellationToken cancellationToken)
         {
             if (_store == null)
                 return StoreNotInitialized<object>();
 
             var result = new TaskCompletionSource<object>();
 
-            _store.Ask<object>(sender => new DeleteMessagesTo(persistenceId, toSequenceNr, sender), Timeout, CancellationToken.None).ContinueWith(r =>
+            _store.Ask<object>(sender => new DeleteMessagesTo(persistenceId, toSequenceNr, sender), Timeout, cancellationToken).ContinueWith(r =>
             {
                 if (r.IsFaulted)
                     result.TrySetException(r.Exception);
@@ -211,18 +198,18 @@ namespace Akka.Cluster.Sharding.Tests
         }
 
         /// <summary>
-        /// TBD
+        /// Replays messages from the configured store through a mediator that invokes the recovery callback and completes the replay task.
         /// </summary>
-        /// <param name="context">TBD</param>
-        /// <param name="persistenceId">TBD</param>
-        /// <param name="fromSequenceNr">TBD</param>
-        /// <param name="toSequenceNr">TBD</param>
-        /// <param name="max">TBD</param>
-        /// <param name="recoveryCallback">TBD</param>
+        /// <param name="context">The actor context used to create a local replay mediator.</param>
+        /// <param name="persistenceId">The persistence identifier being recovered.</param>
+        /// <param name="fromSequenceNr">The first sequence number to replay.</param>
+        /// <param name="toSequenceNr">The last sequence number to replay.</param>
+        /// <param name="max">The maximum number of messages to replay.</param>
+        /// <param name="recoveryCallback">The callback invoked for each replayed persistent representation.</param>
         /// <exception cref="TimeoutException">
         /// This exception is thrown when the store has not been initialized.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>A task that completes when replay succeeds and faults when the store reports failure or the local inactivity timeout elapses.</returns>
         public override Task ReplayMessagesAsync(IActorContext context, string persistenceId, long fromSequenceNr, long toSequenceNr, long max, Action<IPersistentRepresentation> recoveryCallback)
         {
             if (_store == null)
@@ -236,23 +223,14 @@ namespace Akka.Cluster.Sharding.Tests
             return replayCompletionPromise.Task;
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="persistenceId">TBD</param>
-        /// <param name="fromSequenceNr">TBD</param>
-        /// <exception cref="TimeoutException">
-        /// This exception is thrown when the store has not been initialized.
-        /// </exception>
-        /// <returns>TBD</returns>
-        public override Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
+        public override Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr, CancellationToken cancellationToken)
         {
             if (_store == null)
                 return StoreNotInitialized<long>();
 
             var result = new TaskCompletionSource<long>();
 
-            _store.Ask<object>(sender => new ReplayMessages(0, 0, 0, persistenceId, sender), Timeout, CancellationToken.None)
+            _store.Ask<object>(sender => new ReplayMessages(0, 0, 0, persistenceId, sender), Timeout, cancellationToken)
                 .ContinueWith(t =>
                 {
                     if (t.IsFaulted)
@@ -275,34 +253,15 @@ namespace Akka.Cluster.Sharding.Tests
         }
 
         /// <summary>
-        /// TBD
+        /// The stash used while waiting for the store actor to be set.
         /// </summary>
         public IStash Stash { get; set; }
 
-        // sent to self only
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public class InitTimeout
-        {
-            private InitTimeout() { }
-            private static readonly InitTimeout _instance = new InitTimeout();
-
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public static InitTimeout Instance
-            {
-                get
-                {
-                    return _instance;
-                }
-            }
-        }
+        public ITimerScheduler Timers { get; set; }
     }
 
     /// <summary>
-    /// TBD
+    /// Receives replay messages from the journal store, invokes the recovery callback, and completes or times out the replay request.
     /// </summary>
     internal class ReplayMediator : ActorBase
     {
@@ -311,11 +270,11 @@ namespace Akka.Cluster.Sharding.Tests
         private readonly TimeSpan _replayTimeout;
 
         /// <summary>
-        /// TBD
+        /// Creates a mediator for one journal replay request.
         /// </summary>
-        /// <param name="replayCallback">TBD</param>
-        /// <param name="replayCompletionPromise">TBD</param>
-        /// <param name="replayTimeout">TBD</param>
+        /// <param name="replayCallback">The callback invoked for each replayed persistent representation.</param>
+        /// <param name="replayCompletionPromise">The task completion source completed when replay succeeds or fails.</param>
+        /// <param name="replayTimeout">The inactivity timeout for receiving replay messages.</param>
         public ReplayMediator(Action<IPersistentRepresentation> replayCallback, TaskCompletionSource<object> replayCompletionPromise, TimeSpan replayTimeout)
         {
             _replayCallback = replayCallback;
@@ -326,19 +285,18 @@ namespace Akka.Cluster.Sharding.Tests
         }
 
         /// <summary>
-        /// TBD
+        /// Processes replayed records, completion or failure notifications, and replay inactivity timeouts.
         /// </summary>
-        /// <param name="message">TBD</param>
+        /// <param name="message">A replay protocol message or receive-timeout notification.</param>
         /// <exception cref="AsyncReplayTimeoutException">
         /// This exception is thrown when the replay timed out due to inactivity.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns><c>true</c> for replay protocol messages and timeouts handled here; otherwise, <c>false</c>.</returns>
         protected override bool Receive(object message)
         {
             switch (message)
             {
                 case ReplayedMessage rm:
-                    //rm.Persistent
                     _replayCallback(rm.Persistent);
                     return true;
                 case RecoverySuccess _:

@@ -1,15 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Metric.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
-using System.ComponentModel;
 using Akka.Annotations;
 using Akka.Cluster.Metrics.Helpers;
-using Akka.Dispatch.SysMsg;
 using Akka.Util;
 
 namespace Akka.Cluster.Metrics.Serialization
@@ -23,7 +21,7 @@ namespace Akka.Cluster.Metrics.Serialization
             ///
             /// Equality of Metric is based on its name index.
             /// </summary>
-            public sealed partial class Metric
+            public sealed class Metric: IEquatable<Metric>
             {
                 /// <summary>
                 /// Metric average value
@@ -79,7 +77,6 @@ namespace Akka.Cluster.Metrics.Serialization
                     Name = name;
                     Value = value;
                     Average = average;
-                    ewma_ = average.HasValue ? average.Value : default(EWMA);
                 }
 
                 /// <summary>
@@ -170,18 +167,23 @@ namespace Akka.Cluster.Metrics.Serialization
                  */
 
 
-                /// <inheritdoc />
-                public bool Equals(Metric other)
+                
+                public bool Equals(Metric? other)
                 {
                     if (ReferenceEquals(null, other)) return false;
                     if (ReferenceEquals(this, other)) return true;
                     return Name == other.Name;
                 }
 
-                /// <inheritdoc />
+                
                 public override int GetHashCode()
                 {
-                    return (Name != null ? Name.GetHashCode() : 0);
+                    return Name.GetHashCode();
+                }
+
+                public override bool Equals(object? obj)
+                {
+                    return Equals(obj as Metric);
                 }
             }
         }

@@ -1,16 +1,18 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="StreamLayout.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.Serialization;
 using Akka.Annotations;
+using Akka.Event;
 using Akka.Pattern;
 using Akka.Streams.Dsl;
 using Akka.Streams.Implementation.Fusing;
@@ -22,48 +24,48 @@ using Reactive.Streams;
 namespace Akka.Streams.Implementation
 {
     /// <summary>
-    /// TBD
+    /// Helper functions for managing the layout of a stream graph.
     /// </summary>
     public static class StreamLayout
     {
         /// <summary>
-        /// TBD
+        /// Elided at runtime, but useful for debugging.
         /// </summary>
-        public static readonly bool IsDebug = false;
+        public const bool IsDebug = false;
 
         #region Materialized Value Node types
 
         /// <summary>
-        /// TBD
+        /// Represents one node in the graph used to compute a materialized value.
         /// </summary>
         public interface IMaterializedValueNode
         {
         }
 
         /// <summary>
-        /// TBD
+        /// Represents the combination of two materialized values.
         /// </summary>
         public sealed class Combine : IMaterializedValueNode
         {
             /// <summary>
-            /// TBD
+            /// The function applied to the materialized values of the left and right nodes.
             /// </summary>
             public readonly Func<object, object, object> Combinator;
             /// <summary>
-            /// TBD
+            /// The left input to the combination.
             /// </summary>
             public readonly IMaterializedValueNode Left;
             /// <summary>
-            /// TBD
+            /// The right input to the combination.
             /// </summary>
             public readonly IMaterializedValueNode Right;
 
             /// <summary>
-            /// TBD
+            /// Creates a combination node from two child nodes and their value combinator.
             /// </summary>
-            /// <param name="combinator">TBD</param>
-            /// <param name="left">TBD</param>
-            /// <param name="right">TBD</param>
+            /// <param name="combinator">Combines the values produced by <paramref name="left"/> and <paramref name="right"/>.</param>
+            /// <param name="left">The node producing the first input value.</param>
+            /// <param name="right">The node producing the second input value.</param>
             public Combine(Func<object, object, object> combinator, IMaterializedValueNode left,
                 IMaterializedValueNode right)
             {
@@ -73,58 +75,58 @@ namespace Akka.Streams.Implementation
             }
 
             /// <summary>
-            /// TBD
+            /// Returns a diagnostic representation of this node and its children.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>A string identifying the left and right materialized-value nodes.</returns>
             public override string ToString() => $"Combine({Left}, {Right})";
         }
 
         /// <summary>
-        /// TBD
+        /// Represents the materialized value produced by an atomic module.
         /// </summary>
         public sealed class Atomic : IMaterializedValueNode
         {
             /// <summary>
-            /// TBD
+            /// The module whose materialized value this node represents.
             /// </summary>
             public readonly IModule Module;
 
             /// <summary>
-            /// TBD
+            /// Creates a node for the materialized value of a module.
             /// </summary>
-            /// <param name="module">TBD</param>
+            /// <param name="module">The module that produces the value.</param>
             public Atomic(IModule module)
             {
                 Module = module;
             }
 
             /// <summary>
-            /// TBD
+            /// Returns a diagnostic representation containing the module name and identity.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>A string identifying the module that produces this value.</returns>
             public override string ToString()
                 => $"Atomic({Module.Attributes.GetNameOrDefault(Module.GetType().Name)}[{Module.GetHashCode()}])";
         }
 
         /// <summary>
-        /// TBD
+        /// Represents a transformation applied to a child node's materialized value.
         /// </summary>
         public sealed class Transform : IMaterializedValueNode
         {
             /// <summary>
-            /// TBD
+            /// The function applied to the child node's materialized value.
             /// </summary>
             public readonly Func<object, object> Transformator;
             /// <summary>
-            /// TBD
+            /// The node whose value is transformed.
             /// </summary>
             public readonly IMaterializedValueNode Node;
 
             /// <summary>
-            /// TBD
+            /// Creates a node that transforms the value produced by another node.
             /// </summary>
-            /// <param name="transformator">TBD</param>
-            /// <param name="node">TBD</param>
+            /// <param name="transformator">The function that transforms the value.</param>
+            /// <param name="node">The node that produces the input value.</param>
             public Transform(Func<object, object> transformator, IMaterializedValueNode node)
             {
                 Transformator = transformator;
@@ -132,43 +134,43 @@ namespace Akka.Streams.Implementation
             }
 
             /// <summary>
-            /// TBD
+            /// Returns a diagnostic representation of this transformation and its child node.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>A string identifying the transformed node.</returns>
             public override string ToString() => $"Transform({Node})";
         }
 
         /// <summary>
-        /// TBD
+        /// Represents a materialized value that is intentionally ignored.
         /// </summary>
         public sealed class Ignore : IMaterializedValueNode
         {
             /// <summary>
-            /// TBD
+            /// Gets the singleton marker for an ignored materialized value.
             /// </summary>
-            public static readonly Ignore Instance = new Ignore();
+            public static readonly Ignore Instance = new();
 
             private Ignore()
             {
             }
 
             /// <summary>
-            /// TBD
+            /// Returns the diagnostic name of the ignored-value node.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns><c>Ignore</c>.</returns>
             public override string ToString() => "Ignore";
         }
 
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Checks a module's shape, ports, connections, submodules, and materialized-value references for consistency.
         /// </summary>
-        /// <param name="module">TBD</param>
-        /// <param name="level">TBD</param>
-        /// <param name="shouldPrint">TBD</param>
-        /// <param name="idMap">TBD</param>
-        /// <exception cref="IllegalStateException">TBD</exception>
+        /// <param name="module">The module to validate.</param>
+        /// <param name="level">The nesting depth used to indent diagnostic output.</param>
+        /// <param name="shouldPrint">If <c>true</c>, prints the module layout even when it is consistent.</param>
+        /// <param name="idMap">An optional map used to share diagnostic IDs for ports across nested validation calls.</param>
+        /// <exception cref="IllegalStateException">The module or any nested module has inconsistent layout data and diagnostics were not requested.</exception>
         public static void Validate(IModule module, int level = 0, bool shouldPrint = false,
             IDictionary<object, int> idMap = null)
         {
@@ -226,10 +228,10 @@ namespace Akka.Streams.Implementation
             if (!downs.SetEquals(ups2))
                 problems.Add($"inconsistent maps: ups {pairs(ups2.Except(inter))} downs {pairs(downs.Except(inter))}");
 
-            var allInBuilder = ImmutableHashSet<InPort>.Empty.ToBuilder();
-            var duplicateInBuilder = ImmutableHashSet<InPort>.Empty.ToBuilder();
-            var allOutBuilder = ImmutableHashSet<OutPort>.Empty.ToBuilder();
-            var duplicateOutBuilder = ImmutableHashSet<OutPort>.Empty.ToBuilder();
+            var allInBuilder = ImmutableHashSet.CreateBuilder<InPort>();
+            var duplicateInBuilder = ImmutableHashSet.CreateBuilder<InPort>();
+            var allOutBuilder = ImmutableHashSet.CreateBuilder<OutPort>();
+            var duplicateOutBuilder = ImmutableHashSet.CreateBuilder<OutPort>();
 
             foreach (var subModule in module.SubModules)
             {
@@ -266,7 +268,7 @@ namespace Akka.Streams.Implementation
             var atomics = Atomics(module.MaterializedValueComputation);
             var graphValues =
                 module.SubModules.SelectMany(
-                    m => m is GraphModule ? ((GraphModule) m).MaterializedValueIds : Enumerable.Empty<IModule>());
+                    m => m is GraphModule graphModule ? graphModule.MaterializedValueIds : Enumerable.Empty<IModule>());
             var nonExistent = atomics.Except(module.SubModules).Except(graphValues).Except(new[] {module});
             if (nonExistent.Any())
                 problems.Add("computation refers to non-existent modules " + string.Join(", ", nonExistent));
@@ -276,7 +278,7 @@ namespace Akka.Streams.Implementation
             if (print)
             {
                 var indent = string.Empty.PadLeft(level*2);
-                Console.Out.WriteLine("{0}{1}({2}): {3} {4}", indent, typeof(StreamLayout).Name, shape, ins(inPorts),
+                Console.Out.WriteLine("{0}{1}({2}): {3} {4}", indent, nameof(StreamLayout), shape, ins(inPorts),
                     outs(outPorts));
                 foreach (var downstream in module.Downstreams)
                     Console.Out.WriteLine("{0}    {1} -> {2}", indent, outPort(downstream.Key), inPort(downstream.Value));
@@ -294,12 +296,15 @@ namespace Akka.Streams.Implementation
 
         private static ImmutableHashSet<IModule> Atomics(IMaterializedValueNode node)
         {
-            if (node is Ignore)
-                return ImmutableHashSet<IModule>.Empty;
-            if (node is Transform)
-                return Atomics(((Transform) node).Node);
-            if (node is Atomic)
-                return ImmutableHashSet.Create(((Atomic) node).Module);
+            switch (node)
+            {
+                case Ignore:
+                    return ImmutableHashSet<IModule>.Empty;
+                case Transform transform:
+                    return Atomics(transform.Node);
+                case Atomic atomic:
+                    return ImmutableHashSet.Create(atomic.Module);
+            }
 
             Combine c;
             if ((c = node as Combine) != null)
@@ -309,55 +314,62 @@ namespace Akka.Streams.Implementation
     }
 
     /// <summary>
-    /// TBD
+    /// Determines whether a module's materialized-value computation has no observable work.
     /// </summary>
     public static class IgnorableMaterializedValueComposites
     {
         /// <summary>
-        /// TBD
+        /// Returns whether a materialized-value computation can be ignored.
         /// </summary>
-        /// <param name="composition">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="composition">The computation tree to inspect.</param>
+        /// <returns><c>true</c> for an ignored value or an atomic module whose computation can be ignored.</returns>
         public static bool Apply(StreamLayout.IMaterializedValueNode composition)
         {
-            if (composition is StreamLayout.Combine || composition is StreamLayout.Transform)
-                return false;
-            if (composition is StreamLayout.Ignore)
-                return true;
-
-            var atomic = composition as StreamLayout.Atomic;
-            return atomic != null && Apply(atomic.Module);
+            switch (composition)
+            {
+                case StreamLayout.Combine or StreamLayout.Transform:
+                    return false;
+                case StreamLayout.Ignore:
+                    return true;
+                default:
+                {
+                    var atomic = composition as StreamLayout.Atomic;
+                    return atomic != null && Apply(atomic.Module);
+                }
+            }
         }
 
         /// <summary>
-        /// TBD
+        /// Returns whether a module's materialized-value computation can be ignored.
         /// </summary>
-        /// <param name="module">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="module">The module to inspect.</param>
+        /// <returns><c>true</c> for atomic or empty modules, or for copied, composite, or fused modules whose computation is ignorable.</returns>
         public static bool Apply(IModule module)
         {
-            if (module is AtomicModule || module is EmptyModule)
-                return true;
-            var copied = module as CopiedModule;
-            if (copied != null)
-                return Apply(copied.CopyOf);
-
-            var composite = module as CompositeModule;
-            if(composite != null)
-                return Apply(composite.MaterializedValueComputation);
-
-            var fused = module as FusedModule;
-            return fused != null && Apply(fused.MaterializedValueComputation);
+            switch (module)
+            {
+                case AtomicModule or EmptyModule:
+                    return true;
+                case CopiedModule copied:
+                    return Apply(copied.CopyOf);
+                case CompositeModule composite:
+                    return Apply(composite.MaterializedValueComputation);
+                default:
+                {
+                    var fused = module as FusedModule;
+                    return fused != null && Apply(fused.MaterializedValueComputation);
+                }
+            }
         }
     }
 
     /// <summary>
-    /// TBD
+    /// Describes a stream module, including its ports, connections, nested modules, attributes, and materialized-value computation.
     /// </summary>
     public interface IModule : IComparable<IModule>
     {
         /// <summary>
-        /// TBD
+        /// Gets the shape and its exposed ports.
         /// </summary>
         Shape Shape { get; }
 
@@ -365,45 +377,45 @@ namespace Akka.Streams.Implementation
         /// Verify that the given Shape has the same ports and return a new module with that shape.
         /// Concrete implementations may throw UnsupportedOperationException where applicable.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The replacement shape, which must expose the same ports.</param>
+        /// <returns>A module with the supplied shape.</returns>
         IModule ReplaceShape(Shape shape);
 
         /// <summary>
-        /// TBD
+        /// Gets the inlet ports exposed by this module.
         /// </summary>
         IImmutableSet<InPort> InPorts { get; }
         /// <summary>
-        /// TBD
+        /// Gets the outlet ports exposed by this module.
         /// </summary>
         IImmutableSet<OutPort> OutPorts { get; }
         /// <summary>
-        /// TBD
+        /// Gets whether this module can be materialized as a runnable graph.
         /// </summary>
         bool IsRunnable { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module has a sink shape.
         /// </summary>
         bool IsSink { get; }
         /// <summary>
-        /// TBD
+        /// Gets whether this module has a source shape.
         /// </summary>
         bool IsSource { get; }
         /// <summary>
-        /// TBD
+        /// Gets whether this module has a flow shape.
         /// </summary>
         bool IsFlow { get; }
         /// <summary>
-        /// TBD
+        /// Gets whether this module has a bidirectional flow shape.
         /// </summary>
         bool IsBidiFlow { get; }
         /// <summary>
-        /// TBD
+        /// Gets whether this module represents an atomic stage.
         /// </summary>
         bool IsAtomic { get; }
         /// <summary>
-        /// TBD
+        /// Gets whether this module is a copy of another module.
         /// </summary>
         bool IsCopied { get; }
 
@@ -421,9 +433,9 @@ namespace Akka.Streams.Implementation
         /// Fuses this Module to <paramref name="that"/> Module by wiring together <paramref name="from"/> and <paramref name="to"/>,
         /// retaining the materialized value of `this` in the result, using the provided function <paramref name="matFunc"/>.
         /// </summary>
-        /// <typeparam name="T1">TBD</typeparam>
-        /// <typeparam name="T2">TBD</typeparam>
-        /// <typeparam name="T3">TBD</typeparam>
+        /// <typeparam name="T1">The materialized value type of this module.</typeparam>
+        /// <typeparam name="T2">The materialized value type of <paramref name="that"/>.</typeparam>
+        /// <typeparam name="T3">The type returned by <paramref name="matFunc"/>.</typeparam>
         /// <param name="that">A module to fuse with</param>
         /// <param name="from">The data source to wire</param>
         /// <param name="to">The data sink to wire</param>
@@ -440,12 +452,12 @@ namespace Akka.Streams.Implementation
         IModule Wire(OutPort from, InPort to);
 
         /// <summary>
-        /// TBD
+        /// Transforms this module's materialized value.
         /// </summary>
-        /// <typeparam name="TMat">TBD</typeparam>
-        /// <typeparam name="TMat2">TBD</typeparam>
-        /// <param name="mapFunc">TBD</param>
-        /// <returns>TBD</returns>
+        /// <typeparam name="TMat">The current materialized value type.</typeparam>
+        /// <typeparam name="TMat2">The transformed materialized value type.</typeparam>
+        /// <param name="mapFunc">Transforms this module's materialized value.</param>
+        /// <returns>A module whose materialized value is produced by <paramref name="mapFunc"/>.</returns>
         IModule TransformMaterializedValue<TMat, TMat2>(Func<TMat, TMat2> mapFunc);
 
         /// <summary>
@@ -485,57 +497,59 @@ namespace Akka.Streams.Implementation
         /// <summary>
         /// Creates a new Module which contains this Module
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A new module that contains this module.</returns>
         IModule Nest();
 
         // this cannot be set, since sets are changing ordering of modules
         // which must be kept for fusing to work
         /// <summary>
-        /// TBD
+        /// Gets the modules directly contained by this module, in layout order.
         /// </summary>
         ImmutableArray<IModule> SubModules { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets whether composition keeps this module as a single unit. A module is sealed when it is atomic, copied,
+        /// fused, or has attributes.
         /// </summary>
         bool IsSealed { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the map from each connected outlet to its downstream inlet.
         /// </summary>
         IImmutableDictionary<OutPort, InPort> Downstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the map from each connected inlet to its upstream outlet.
         /// </summary>
         IImmutableDictionary<InPort, OutPort> Upstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the computation tree for this module's materialized value.
         /// </summary>
         StreamLayout.IMaterializedValueNode MaterializedValueComputation { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a carbon copy of this module's layout and exposed shape. Implementations may retain contained
+        /// modules or runtime dependencies from the original.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A module with copied layout ports; contained modules and runtime dependencies may be shared.</returns>
         IModule CarbonCopy();
 
         /// <summary>
-        /// TBD
+        /// Gets the attributes applied to this module.
         /// </summary>
         Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Returns a copy of this module with the supplied attributes.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply.</param>
+        /// <returns>A module with the supplied attributes.</returns>
         IModule WithAttributes(Attributes attributes);
     }
 
     /// <summary>
-    /// TBD
+    /// Base implementation for a stream module and its ports, connections, submodules, and materialized-value computation.
     /// </summary>
     public abstract class Module : IModule
     {
@@ -543,7 +557,7 @@ namespace Akka.Streams.Implementation
         private readonly Lazy<IImmutableSet<OutPort>> _outports;
 
         /// <summary>
-        /// TBD
+        /// Initializes the port sets from the module's shape.
         /// </summary>
         protected Module()
         {
@@ -553,90 +567,92 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the set of inlet ports declared by this module's shape.
         /// </summary>
         public IImmutableSet<InPort> InPorts => _inports.Value;
 
         /// <summary>
-        /// TBD
+        /// Gets the set of outlet ports declared by this module's shape.
         /// </summary>
         public IImmutableSet<OutPort> OutPorts => _outports.Value;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module has no input or output ports.
         /// </summary>
         public virtual bool IsRunnable => InPorts.Count == 0 && OutPorts.Count == 0;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module has exactly one inlet and no outlets.
         /// </summary>
         public virtual bool IsSink => InPorts.Count == 1 && OutPorts.Count == 0;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module has no inlets and exactly one outlet.
         /// </summary>
         public virtual bool IsSource => InPorts.Count == 0 && OutPorts.Count == 1;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module has exactly one inlet and one outlet.
         /// </summary>
         public virtual bool IsFlow => InPorts.Count == 1 && OutPorts.Count == 1;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module has exactly two inlets and two outlets.
         /// </summary>
         public virtual bool IsBidiFlow => InPorts.Count == 2 && OutPorts.Count == 2;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module contains no submodules.
         /// </summary>
         public virtual bool IsAtomic => !SubModules.Any();
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module is a copied module; the base implementation returns <c>false</c>.
         /// </summary>
         public virtual bool IsCopied => false;
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module is fused; the base implementation returns <c>false</c>.
         /// </summary>
         public virtual bool IsFused => false;
 
         /// <summary>
-        /// TBD
+        /// Fuses this module with another by connecting the specified outlet and inlet, retaining this module's materialized value.
         /// </summary>
-        /// <param name="other">TBD</param>
-        /// <param name="from">TBD</param>
-        /// <param name="to">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="other">The module to fuse with this module.</param>
+        /// <param name="from">The outlet in this module to connect.</param>
+        /// <param name="to">The inlet in <paramref name="other"/> to connect.</param>
+        /// <returns>A module representing the fused layout with this module's materialized value.</returns>
         public virtual IModule Fuse(IModule other, OutPort from, InPort to)
             => Fuse<object, object, object>(other, from, to, Keep.Left);
 
         /// <summary>
-        /// TBD
+        /// Fuses this module with another and combines their materialized values while connecting the specified ports.
         /// </summary>
-        /// <typeparam name="T1">TBD</typeparam>
-        /// <typeparam name="T2">TBD</typeparam>
-        /// <typeparam name="T3">TBD</typeparam>
-        /// <param name="other">TBD</param>
-        /// <param name="from">TBD</param>
-        /// <param name="to">TBD</param>
-        /// <param name="matFunc">TBD</param>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T1">The materialized value type of this module.</typeparam>
+        /// <typeparam name="T2">The materialized value type of <paramref name="other"/>.</typeparam>
+        /// <typeparam name="T3">The type returned by <paramref name="matFunc"/>.</typeparam>
+        /// <param name="other">The module to fuse with this module.</param>
+        /// <param name="from">The outlet in this module to connect.</param>
+        /// <param name="to">The inlet in <paramref name="other"/> to connect.</param>
+        /// <param name="matFunc">Combines the two materialized values.</param>
+        /// <returns>A module representing the fused layout and combined materialized value.</returns>
         public virtual IModule Fuse<T1, T2, T3>(IModule other, OutPort from, InPort to, Func<T1, T2, T3> matFunc)
             => Compose(other, matFunc).Wire(from, to);
 
         /// <summary>
-        /// TBD
+        /// Connects one of this module's outlets to one of its inlets.
         /// </summary>
-        /// <param name="from">TBD</param>
-        /// <param name="to">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="from">The outlet to connect.</param>
+        /// <param name="to">The inlet to connect.</param>
+        /// <exception cref="ArgumentException">Either port is already connected or is not part of this module.</exception>
+        /// <returns>A composite module with the specified connection and the connected ports removed from its exposed shape.</returns>
         public virtual IModule Wire(OutPort from, InPort to)
         {
             if (StreamLayout.IsDebug)
+#pragma warning disable CS0162 // Unreachable code detected
                 StreamLayout.Validate(this);
+#pragma warning restore CS0162 // Unreachable code detected
 
             if (!OutPorts.Contains(from))
             {
@@ -666,16 +682,18 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Transforms this module's materialized value while retaining its stream layout.
         /// </summary>
-        /// <typeparam name="TMat">TBD</typeparam>
-        /// <typeparam name="TMat2">TBD</typeparam>
-        /// <param name="mapFunc">TBD</param>
-        /// <returns>TBD</returns>
+        /// <typeparam name="TMat">The current materialized value type.</typeparam>
+        /// <typeparam name="TMat2">The transformed materialized value type.</typeparam>
+        /// <param name="mapFunc">Transforms the current materialized value.</param>
+        /// <returns>A module whose materialized value is produced by <paramref name="mapFunc"/>.</returns>
         public virtual IModule TransformMaterializedValue<TMat, TMat2>(Func<TMat, TMat2> mapFunc)
         {
             if (StreamLayout.IsDebug)
+#pragma warning disable CS0162 // Unreachable code detected
                 StreamLayout.Validate(this);
+#pragma warning restore CS0162 // Unreachable code detected
 
             return new CompositeModule(
                 subModules: IsSealed ? ImmutableArray.Create(this as IModule) : SubModules,
@@ -689,26 +707,28 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Composes this module with another, retaining this module's materialized value.
         /// </summary>
-        /// <param name="other">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="other">The module to compose with this one.</param>
+        /// <returns>A composite module whose materialized value is this module's value.</returns>
         public virtual IModule Compose(IModule other) => Compose<object, object, object>(other, Keep.Left);
 
         /// <summary>
-        /// TBD
+        /// Composes this module with another and combines their materialized values.
         /// </summary>
-        /// <typeparam name="T1">TBD</typeparam>
-        /// <typeparam name="T2">TBD</typeparam>
-        /// <typeparam name="T3">TBD</typeparam>
-        /// <param name="other">TBD</param>
-        /// <param name="matFunc">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T1">The materialized value type of this module.</typeparam>
+        /// <typeparam name="T2">The materialized value type of <paramref name="other"/>.</typeparam>
+        /// <typeparam name="T3">The type returned by <paramref name="matFunc"/>.</typeparam>
+        /// <param name="other">The module to compose with this one.</param>
+        /// <param name="matFunc">Combines the current and other module's materialized values, in that order.</param>
+        /// <exception cref="ArgumentException">The other module is this module or is already contained as one of its submodules.</exception>
+        /// <returns>A composite module whose materialized value is produced by <paramref name="matFunc"/>.</returns>
         public virtual IModule Compose<T1, T2, T3>(IModule other, Func<T1, T2, T3> matFunc)
         {
             if (StreamLayout.IsDebug)
+#pragma warning disable CS0162 // Unreachable code detected
                 StreamLayout.Validate(this);
+#pragma warning restore CS0162 // Unreachable code detected
 
             if (Equals(other, this))
                 throw new ArgumentException(
@@ -744,10 +764,10 @@ namespace Akka.Streams.Implementation
 
         private bool IsIgnorable(StreamLayout.IMaterializedValueNode computation)
         {
-            if (computation is StreamLayout.Atomic)
-                return IsIgnorable(((StreamLayout.Atomic) computation).Module);
+            if (computation is StreamLayout.Atomic atomic)
+                return IsIgnorable(atomic.Module);
 
-            if (computation is StreamLayout.Combine || computation is StreamLayout.Transform)
+            if (computation is StreamLayout.Combine or StreamLayout.Transform)
                 return false;
 
             return computation is StreamLayout.Ignore;
@@ -755,24 +775,29 @@ namespace Akka.Streams.Implementation
 
         private bool IsIgnorable(IModule module)
         {
-            if (module is AtomicModule || module is EmptyModule) return true;
-            if (module is CopiedModule) return IsIgnorable(((CopiedModule) module).CopyOf);
-            if (module is CompositeModule) return IsIgnorable(((CompositeModule) module).MaterializedValueComputation);
-            if (module is FusedModule) return IsIgnorable(((FusedModule) module).MaterializedValueComputation);
-
-            throw new NotSupportedException($"Module of type {module.GetType()} is not supported by this method");
+            return module switch
+            {
+                AtomicModule or EmptyModule => true,
+                CopiedModule copiedModule => IsIgnorable(copiedModule.CopyOf),
+                CompositeModule compositeModule => IsIgnorable(compositeModule.MaterializedValueComputation),
+                FusedModule fusedModule => IsIgnorable(fusedModule.MaterializedValueComputation),
+                _ => throw new NotSupportedException(
+                    $"Module of type {module.GetType()} is not supported by this method")
+            };
         }
 
         /// <summary>
-        /// TBD
+        /// Composes this module with another without evaluating the other module's materialized-value computation.
         /// </summary>
-        /// <param name="that">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="that">The module to compose with this one; its materialized value is not computed.</param>
+        /// <exception cref="ArgumentException">The other module is this module or is already contained as one of its submodules.</exception>
+        /// <returns>A composite module whose materialized value is this module's value.</returns>
         public IModule ComposeNoMaterialized(IModule that)
         {
             if (StreamLayout.IsDebug)
+#pragma warning disable CS0162 // Unreachable code detected
                 StreamLayout.Validate(this);
+#pragma warning restore CS0162 // Unreachable code detected
 
             if (ReferenceEquals(this, that))
                 throw new ArgumentException(
@@ -798,9 +823,9 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Wraps this module in a composite module, treating its materialized-value computation as one atomic value.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A composite module containing this module.</returns>
         public virtual IModule Nest()
         {
             return new CompositeModule(
@@ -823,104 +848,105 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Gets whether this module is represented as a single unit when it is composed with another module.
         /// </summary>
         public bool IsSealed => IsAtomic || IsCopied || IsFused || Attributes.AttributeList.Count() != 0;
 
         /// <summary>
-        /// TBD
+        /// Gets the outlet-to-inlet connections; the base implementation has no connections.
         /// </summary>
         public virtual IImmutableDictionary<OutPort, InPort> Downstreams => ImmutableDictionary<OutPort, InPort>.Empty;
 
         /// <summary>
-        /// TBD
+        /// Gets the inlet-to-outlet connections; the base implementation has no connections.
         /// </summary>
         public virtual IImmutableDictionary<InPort, OutPort> Upstreams => ImmutableDictionary<InPort, OutPort>.Empty;
 
         /// <summary>
-        /// TBD
+        /// Gets the materialized-value computation for this module, represented as an atomic value by default.
         /// </summary>
         public virtual StreamLayout.IMaterializedValueNode MaterializedValueComputation => new StreamLayout.Atomic(this);
 
         /// <summary>
-        /// TBD
+        /// Gets the shape exposed by this module.
         /// </summary>
         public abstract Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Replaces the exposed shape.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The shape to expose.</param>
+        /// <returns>A module with the replacement shape, when supported by the implementation.</returns>
         public abstract IModule ReplaceShape(Shape shape);
 
         /// <summary>
-        /// TBD
+        /// Gets the modules directly contained by this module.
         /// </summary>
         public abstract ImmutableArray<IModule> SubModules { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a copy of this module's layout and exposed shape. The implementation may retain contained modules
+        /// or runtime dependencies from the original.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A module with copied layout ports; contained modules and runtime dependencies may be shared.</returns>
         public abstract IModule CarbonCopy();
 
         /// <summary>
-        /// TBD
+        /// Gets the attributes applied to this module.
         /// </summary>
         public abstract Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Returns a copy of this module with the supplied attributes.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply to the copied module.</param>
+        /// <returns>A module with the supplied attributes.</returns>
         public abstract IModule WithAttributes(Attributes attributes);
 
-        /// <inheritdoc/>
+       
         public int CompareTo(IModule other) => GetHashCode().CompareTo(other.GetHashCode());
     }
 
     /// <summary>
-    /// TBD
+    /// The empty module singleton, with a closed shape and no materialized value.
     /// </summary>
     public sealed class EmptyModule : Module
     {
         /// <summary>
-        /// TBD
+        /// Gets the singleton empty module.
         /// </summary>
-        public static readonly EmptyModule Instance = new EmptyModule();
+        public static readonly EmptyModule Instance = new();
 
         private EmptyModule()
         {
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the closed shape, which exposes no ports.
         /// </summary>
         public override Shape Shape => ClosedShape.Instance;
 
         /// <summary>
-        /// TBD
+        /// Gets <c>false</c> because the empty module is not an atomic stage.
         /// </summary>
         public override bool IsAtomic => false;
 
         /// <summary>
-        /// TBD
+        /// Gets <c>false</c> because the empty module cannot be materialized as a runnable graph.
         /// </summary>
         public override bool IsRunnable => false;
 
         /// <summary>
-        /// TBD
+        /// Gets the marker indicating that this module has no materialized value.
         /// </summary>
         public override StreamLayout.IMaterializedValueNode MaterializedValueComputation => StreamLayout.Ignore.Instance;
 
         /// <summary>
-        /// TBD
+        /// Replaces the shape if the supplied shape is closed.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <exception cref="NotSupportedException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The shape to use.</param>
+        /// <exception cref="NotSupportedException">The supplied shape is not a <see cref="ClosedShape"/>.</exception>
+        /// <returns>This module.</returns>
         public override IModule ReplaceShape(Shape shape)
         {
             if (shape is ClosedShape)
@@ -930,22 +956,22 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Composes the empty module with another module using left-value retention.
         /// </summary>
-        /// <param name="other">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="other">The module to compose with the empty module.</param>
+        /// <returns>The composition with the materialized value behavior defined for an empty left module.</returns>
         public override IModule Compose(IModule other) => Compose<object,object,object>(other, Keep.Left);
 
         /// <summary>
-        /// TBD
+        /// Composes the empty module with another module using a supported materialized-value combiner.
         /// </summary>
-        /// <typeparam name="T1">TBD</typeparam>
-        /// <typeparam name="T2">TBD</typeparam>
-        /// <typeparam name="T3">TBD</typeparam>
-        /// <param name="other">TBD</param>
-        /// <param name="matFunc">TBD</param>
-        /// <exception cref="NotSupportedException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T1">The materialized value type of the empty module.</typeparam>
+        /// <typeparam name="T2">The materialized value type of <paramref name="other"/>.</typeparam>
+        /// <typeparam name="T3">The type returned by <paramref name="matFunc"/>.</typeparam>
+        /// <param name="other">The module to compose with the empty module.</param>
+        /// <param name="matFunc">Combines the empty module's and other module's values; only left and right retention are supported.</param>
+        /// <exception cref="NotSupportedException">The combiner is neither <see cref="Keep.Left{TLeft,TRight}"/> nor <see cref="Keep.Right{TLeft,TRight}"/>.</exception>
+        /// <returns>The other module or a composite that retains any observable materialization side effect.</returns>
         public override IModule Compose<T1, T2, T3>(IModule other, Func<T1, T2, T3> matFunc)
         {
             if (Keep.IsRight(matFunc))
@@ -969,33 +995,33 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Returns this module because the empty module has no nested structure to wrap.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>This module.</returns>
         public override IModule Nest() => this;
 
         /// <summary>
-        /// TBD
+        /// Gets an empty list because this module contains no submodules.
         /// </summary>
         public override ImmutableArray<IModule> SubModules { get; } = ImmutableArray<IModule>.Empty;
 
         /// <summary>
-        /// TBD
+        /// Returns this singleton because copying the empty layout requires no new module.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>This module.</returns>
         public override IModule CarbonCopy() => this;
 
         /// <summary>
-        /// TBD
+        /// Gets the empty attribute set.
         /// </summary>
         public override Attributes Attributes => Attributes.None;
 
         /// <summary>
-        /// TBD
+        /// Throws because the empty module cannot carry attributes.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <exception cref="NotSupportedException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes that cannot be applied.</param>
+        /// <exception cref="NotSupportedException">The empty module does not support attributes.</exception>
+        /// <returns>This method does not return.</returns>
         public override IModule WithAttributes(Attributes attributes)
         {
             throw new NotSupportedException("EmptyModule cannot carry attributes");
@@ -1003,16 +1029,16 @@ namespace Akka.Streams.Implementation
     }
 
     /// <summary>
-    /// TBD
+    /// A module that represents a copied graph module while retaining a reference to the original module.
     /// </summary>
     public sealed class CopiedModule : Module
     {
         /// <summary>
-        /// TBD
+        /// Creates a module copy with its exposed shape, attributes, and original module.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <param name="attributes">TBD</param>
-        /// <param name="copyOf">TBD</param>
+        /// <param name="shape">The copied shape exposed by this module.</param>
+        /// <param name="attributes">The attributes applied to the copy.</param>
+        /// <param name="copyOf">The module represented by this copy.</param>
         public CopiedModule(Shape shape, Attributes attributes, IModule copyOf)
         {
             Shape = shape;
@@ -1022,42 +1048,42 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the original module as the copied module's sole submodule.
         /// </summary>
         public override ImmutableArray<IModule> SubModules { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the attributes applied to this copy.
         /// </summary>
         public override Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the original module represented by this copy.
         /// </summary>
         public IModule CopyOf { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the shape exposed by this copy.
         /// </summary>
         public override Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets <c>true</c> because this module represents a copy of another module.
         /// </summary>
         public override bool IsCopied => true;
 
         /// <summary>
-        /// TBD
+        /// Gets the materialized-value node that refers to the original module.
         /// </summary>
         public override StreamLayout.IMaterializedValueNode MaterializedValueComputation
             => new StreamLayout.Atomic(CopyOf);
 
         /// <summary>
-        /// TBD
+        /// Replaces the shape when the new shape has the same ports.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The shape to expose.</param>
+        /// <exception cref="ArgumentException">The supplied shape does not have the same ports.</exception>
+        /// <returns>This module when the shape reference is unchanged, or a composite module with the replacement shape.</returns>
         public override IModule ReplaceShape(Shape shape)
         {
             if (!ReferenceEquals(shape, Shape))
@@ -1070,16 +1096,16 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a copy with a carbon-copied shape and the same original module.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A new copied module.</returns>
         public override IModule CarbonCopy() => new CopiedModule(Shape.DeepCopy(), Attributes, CopyOf);
 
         /// <summary>
-        /// TBD
+        /// Returns this module with the supplied attributes.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply.</param>
+        /// <returns>This module if the attributes reference is unchanged; otherwise, a copied module with the new attributes.</returns>
         public override IModule WithAttributes(Attributes attributes)
         {
             if (!ReferenceEquals(attributes, Attributes))
@@ -1087,24 +1113,24 @@ namespace Akka.Streams.Implementation
             return this;
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"{GetHashCode()} copy of {CopyOf}";
     }
 
     /// <summary>
-    /// TBD
+    /// A module composed of submodules, exposed ports, connections, and materialized-value computation.
     /// </summary>
     public sealed class CompositeModule : Module
     {
         /// <summary>
-        /// TBD
+        /// Creates a composite module from its layout and materialized-value computation.
         /// </summary>
-        /// <param name="subModules">TBD</param>
-        /// <param name="shape">TBD</param>
-        /// <param name="downstreams">TBD</param>
-        /// <param name="upstreams">TBD</param>
-        /// <param name="materializedValueComputation">TBD</param>
-        /// <param name="attributes">TBD</param>
+        /// <param name="subModules">The modules contained by this composition.</param>
+        /// <param name="shape">The ports exposed by the composition.</param>
+        /// <param name="downstreams">Connections from outlets to inlets.</param>
+        /// <param name="upstreams">The inverse inlet-to-outlet connection map.</param>
+        /// <param name="materializedValueComputation">The computation that produces the composite materialized value.</param>
+        /// <param name="attributes">Attributes applied to the composite.</param>
         public CompositeModule(ImmutableArray<IModule> subModules,
             Shape shape,
             IImmutableDictionary<OutPort, InPort> downstreams,
@@ -1121,41 +1147,41 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the upstream outlet for each connected inlet.
         /// </summary>
         public override IImmutableDictionary<InPort, OutPort> Upstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the downstream inlet for each connected outlet.
         /// </summary>
         public override IImmutableDictionary<OutPort, InPort> Downstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the ports exposed by this composition.
         /// </summary>
         public override Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the attributes applied to this composition.
         /// </summary>
         public override Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the contained modules in composition order.
         /// </summary>
         public override ImmutableArray<IModule> SubModules { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the computation that produces this composite's materialized value.
         /// </summary>
         public override StreamLayout.IMaterializedValueNode MaterializedValueComputation { get; }
 
         /// <summary>
-        /// TBD
+        /// Replaces the exposed shape when it has the same ports.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The shape to expose.</param>
+        /// <exception cref="ArgumentException">The supplied shape does not have the same ports.</exception>
+        /// <returns>This module when the shape reference is unchanged; otherwise, a composite with the replacement shape.</returns>
         public override IModule ReplaceShape(Shape shape)
         {
             if (!ReferenceEquals(shape, Shape))
@@ -1171,25 +1197,25 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a copied module representing this composite.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A copied module with a copied shape and this composite as its original.</returns>
         public override IModule CarbonCopy() => new CopiedModule(Shape.DeepCopy(), Attributes, this);
 
         /// <summary>
-        /// TBD
+        /// Returns this composition with the supplied attributes.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply.</param>
+        /// <returns>A new composite module with the supplied attributes.</returns>
         public override IModule WithAttributes(Attributes attributes)
             => new CompositeModule(SubModules, Shape, Downstreams, Upstreams, MaterializedValueComputation, attributes);
 
         /// <summary>
-        /// TBD
+        /// Creates a composite module around one module using the supplied exposed shape.
         /// </summary>
-        /// <param name="module">TBD</param>
-        /// <param name="shape">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="module">The module to contain.</param>
+        /// <param name="shape">The shape exposed by the composite.</param>
+        /// <returns>A composite with empty connection maps and an atomic materialized-value node for <paramref name="module"/>.</returns>
         public static CompositeModule Create(Module module, Shape shape)
         {
             return new CompositeModule(
@@ -1202,7 +1228,7 @@ namespace Akka.Streams.Implementation
                 );
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString()
         {
             return $"\n  CompositeModule [{GetHashCode()}%08x]" +
@@ -1225,17 +1251,17 @@ namespace Akka.Streams.Implementation
     public sealed class StructuralInfoModule : Module
     {
         /// <summary>
-        /// TBD
+        /// Creates a structural view of the modules, port ownership, connections, and materialized values in a fused graph.
         /// </summary>
-        /// <param name="subModules">TBD</param>
-        /// <param name="shape">TBD</param>
-        /// <param name="downstreams">TBD</param>
-        /// <param name="upstreams">TBD</param>
-        /// <param name="inOwners">TBD</param>
-        /// <param name="outOwners">TBD</param>
-        /// <param name="materializedValues">TBD</param>
-        /// <param name="materializedValueComputation">TBD</param>
-        /// <param name="attributes">TBD</param>
+        /// <param name="subModules">The modules represented in the structural view.</param>
+        /// <param name="shape">The ports exposed by this view.</param>
+        /// <param name="downstreams">Connections from outlets to inlets.</param>
+        /// <param name="upstreams">The inverse inlet-to-outlet connection map.</param>
+        /// <param name="inOwners">The module that owns each inlet.</param>
+        /// <param name="outOwners">The module that owns each outlet.</param>
+        /// <param name="materializedValues">The materialized-value node associated with each module.</param>
+        /// <param name="materializedValueComputation">The computation for the whole view's materialized value.</param>
+        /// <param name="attributes">Attributes applied to the structural view.</param>
         public StructuralInfoModule(ImmutableArray<IModule> subModules,
             Shape shape,
             IImmutableDictionary<OutPort, InPort> downstreams,
@@ -1259,57 +1285,57 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the materialized-value computation for the whole structural view.
         /// </summary>
         public override StreamLayout.IMaterializedValueNode MaterializedValueComputation { get; }
         
         /// <summary>
-        /// TBD
+        /// Gets the downstream inlet for each connected outlet.
         /// </summary>
         public override IImmutableDictionary<OutPort, InPort> Downstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the upstream outlet for each connected inlet.
         /// </summary>
         public override IImmutableDictionary<InPort, OutPort> Upstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets <c>false</c> because this is structural metadata, not a fused executable module.
         /// </summary>
         public override bool IsFused { get; } = false;
 
         /// <summary>
-        /// TBD
+        /// Gets the exposed shape of the structural view.
         /// </summary>
         public override Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the modules represented in this structural view.
         /// </summary>
         public override ImmutableArray<IModule> SubModules { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the attributes applied to this structural view.
         /// </summary>
         public override Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the module that owns each inlet.
         /// </summary>
         public IImmutableDictionary<InPort, IModule> InOwners { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the module that owns each outlet.
         /// </summary>
         public IImmutableDictionary<OutPort, IModule> OutOwners { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the materialized-value node associated with each module.
         /// </summary>
         public IImmutableList<(IModule, StreamLayout.IMaterializedValueNode)> MaterializedValues { get; }
 
         /// <summary>
-        /// TBD
+        /// Replaces the exposed shape when it has the same ports.
         /// </summary>
         public override IModule ReplaceShape(Shape shape)
         {
@@ -1325,12 +1351,12 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a copied module representing this structural view.
         /// </summary>
         public override IModule CarbonCopy() => new CopiedModule(Shape.DeepCopy(), Attributes, this);
 
         /// <summary>
-        /// TBD
+        /// Returns this structural view with the supplied attributes.
         /// </summary>
         public override IModule WithAttributes(Attributes attributes)
         {
@@ -1340,20 +1366,20 @@ namespace Akka.Streams.Implementation
     }
 
     /// <summary>
-    /// TBD
+    /// A module whose contained stages and connections have been fused for execution.
     /// </summary>
     public sealed class FusedModule : Module
     {
         /// <summary>
-        /// TBD
+        /// Creates a fused module with its structural layout and materialized-value computation.
         /// </summary>
-        /// <param name="subModules">TBD</param>
-        /// <param name="shape">TBD</param>
-        /// <param name="downstreams">TBD</param>
-        /// <param name="upstreams">TBD</param>
-        /// <param name="materializedValueComputation">TBD</param>
-        /// <param name="attributes">TBD</param>
-        /// <param name="info">TBD</param>
+        /// <param name="subModules">The modules represented by the fused module.</param>
+        /// <param name="shape">The ports exposed by the fused module.</param>
+        /// <param name="downstreams">Connections from outlets to inlets.</param>
+        /// <param name="upstreams">The inverse inlet-to-outlet connection map.</param>
+        /// <param name="materializedValueComputation">The computation for the fused module's materialized value.</param>
+        /// <param name="attributes">Attributes applied to the fused module.</param>
+        /// <param name="info">The structural information used to inspect the fused layout.</param>
         public FusedModule(
             ImmutableArray<IModule> subModules,
             Shape shape,
@@ -1374,51 +1400,51 @@ namespace Akka.Streams.Implementation
 
 
         /// <summary>
-        /// TBD
+        /// Gets the structural information associated with this fused module.
         /// </summary>
         public StructuralInfoModule Info { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets <c>true</c> because this module represents a fused layout.
         /// </summary>
         public override bool IsFused => true;
 
         /// <summary>
-        /// TBD
+        /// Gets the downstream inlet for each connected outlet.
         /// </summary>
         public override IImmutableDictionary<OutPort, InPort> Downstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the upstream outlet for each connected inlet.
         /// </summary>
         public override IImmutableDictionary<InPort, OutPort> Upstreams { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the materialized-value computation for this fused module.
         /// </summary>
         public override StreamLayout.IMaterializedValueNode MaterializedValueComputation { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the ports exposed by the fused module.
         /// </summary>
         public override Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the modules represented in the fused layout.
         /// </summary>
         public override ImmutableArray<IModule> SubModules { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the attributes applied to this fused module.
         /// </summary>
         public override Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Replaces the exposed shape when it has the same ports and shape structure.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The shape to expose.</param>
+        /// <exception cref="ArgumentException">The supplied shape does not match the existing ports and shape structure.</exception>
+        /// <returns>This module when the shape reference is unchanged; otherwise, a fused module with the replacement shape.</returns>
         public override IModule ReplaceShape(Shape shape)
         {
             if (!ReferenceEquals(shape, Shape))
@@ -1433,22 +1459,22 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a copied module representing this fused module.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A copied module with a copied shape and this fused module as its original.</returns>
         public override IModule CarbonCopy() => new CopiedModule(Shape.DeepCopy(), Attributes, this);
 
         /// <summary>
-        /// TBD
+        /// Returns this fused module with the supplied attributes.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply.</param>
+        /// <returns>A new fused module with the supplied attributes.</returns>
         public override IModule WithAttributes(Attributes attributes)
             =>
                 new FusedModule(SubModules, Shape, Downstreams, Upstreams, MaterializedValueComputation, attributes,
                     Info);
 
-        /// <inheritdoc/>
+        
         public override string ToString()
         {
             return $"\n  Name: {Attributes.GetNameOrDefault("unnamed")}" +
@@ -1468,15 +1494,15 @@ namespace Akka.Streams.Implementation
     public abstract class AtomicModule : Module
     {
         /// <summary>
-        /// TBD
+        /// Gets an empty list because atomic modules contain no child modules.
         /// </summary>
         public sealed override ImmutableArray<IModule> SubModules => ImmutableArray<IModule>.Empty;
         /// <summary>
-        /// TBD
+        /// Gets the empty downstream map inherited from the base module.
         /// </summary>
         public sealed override IImmutableDictionary<OutPort, InPort> Downstreams => base.Downstreams;
         /// <summary>
-        /// TBD
+        /// Gets the empty upstream map inherited from the base module.
         /// </summary>
         public sealed override IImmutableDictionary<InPort, OutPort> Upstreams => base.Upstreams;
     }
@@ -1490,21 +1516,27 @@ namespace Akka.Streams.Implementation
     /// little like this:
     /// 
     /// <![CDATA[
-    ///            +--------------+      (2)    +------------+
-    ///            |     null     | ----------> | Subscriber |
-    ///            +--------------+             +------------+
-    ///                   |                           |
-    ///               (1) |                           | (1)
-    ///                  \|/                         \|/
-    ///            +--------------+      (2)    +------------+ --\
-    ///            | Subscription | ----------> |    Both    |    | (4)
-    ///            +--------------+             +------------+ <-/
-    ///                   |                           |
-    ///               (3) |                           | (3)
-    ///                  \|/                         \|/
-    ///            +--------------+      (2)    +------------+ --\
-    ///            |   Publisher  | ----------> |   Inert    |    | (4, *)
-    ///            +--------------+             +------------+ <-/
+    ///            +--------+     (2)     +---------------+
+    ///            |  null  +------------>+   Subscriber  |
+    ///            +---+----+             +-----+---------+
+    ///                |                        |
+    ///             (1)|                        | (1)
+    ///                v                        v
+    ///            +---+----------+  (2)  +-----+---------+
+    ///            | Subscription +------>+  Establishing |
+    ///            +---+----------+       +-----+---------+
+    ///                |                        |
+    ///                |                        |  (4)
+    ///                |                        v
+    ///                |                  +-----+---------+ ---
+    ///                | (3)              |    Both       |    | (5)
+    ///                |                  +-----+---------+ <--
+    ///                |                        |
+    ///                |                        |
+    ///                v                        v
+    ///            +---+----------+  (2)  +-----+---------+ ---
+    ///            |  Publisher   +-----> |    Inert      |    | (5, *)
+    ///            +--------------+       +---------------+ <--
     /// ]]>
     /// The idea is to keep the major state in only one atomic reference. The actions
     /// that can happen are:
@@ -1512,7 +1544,8 @@ namespace Akka.Streams.Implementation
     ///  (1) onSubscribe
     ///  (2) subscribe
     ///  (3) onError / onComplete
-    ///  (4) onNext
+    ///  (4) establishing subscription completes
+    ///  (5) onNext
     ///      (*) Inert can be reached also by cancellation after which onNext is still fine
     ///          so we just silently ignore possible spec violations here
     /// 
@@ -1535,22 +1568,29 @@ namespace Akka.Streams.Implementation
     [InternalApi]
     public sealed class VirtualProcessor<T> : AtomicReference<object>, IProcessor<T, T>
     {
+        public const bool IsDebug = true;
         private const string NoDemand = "spec violation: OnNext was signaled from upstream without demand";
+        private readonly string _hashCode;
 
         #region internal classes
 
+        private interface IHasActualSubscriber
+        {
+            ISubscriber<T> Subscriber { get; }
+        } 
+        
         private sealed class Inert
         {
             public static readonly ISubscriber<T> Subscriber = new CancellingSubscriber<T>();
 
-            public static readonly Inert Instance = new Inert();
+            public static readonly Inert Instance = new();
 
             private Inert()
             {
             }
         }
 
-        private sealed class Both
+        private sealed class Both: IHasActualSubscriber
         {
             public Both(ISubscriber<T> subscriber)
             {
@@ -1561,79 +1601,160 @@ namespace Akka.Streams.Implementation
 
         }
 
+        private sealed class Establishing: IHasActualSubscriber
+        {
+            public Establishing(ISubscriber<T> subscriber, bool onCompleteBuffered = false, Exception onErrorBuffered = null)
+            {
+                Subscriber = subscriber;
+                OnCompleteBuffered = onCompleteBuffered;
+                OnErrorBuffered = onErrorBuffered;
+            }
+
+            public ISubscriber<T> Subscriber { get; }
+            public bool OnCompleteBuffered { get; }
+            public Exception OnErrorBuffered { get; }
+
+            public Establishing Copy(
+                ISubscriber<T> subscriber = null,
+                bool? onCompleteBuffered = null,
+                Exception onErrorBuffered = null)
+                => new(
+                    subscriber ?? Subscriber,
+                    onCompleteBuffered ?? OnCompleteBuffered,
+                    onErrorBuffered ?? OnErrorBuffered);
+        }
+        
         #endregion
 
+        public VirtualProcessor()
+        {
+            _hashCode = GetHashCode().ToString();
+            PrintDebug($"Created: {this}");
+        }
+
+        public override string ToString() => $"VirtualProcessor({_hashCode})";
+        
+        [Conditional("DEBUG")]
+        private static void PrintDebug(string msg)
+        {
+            if(IsDebug)
+                Console.WriteLine(msg);
+        }
+        
         /// <summary>
-        /// TBD
+        /// Connects the processor's downstream subscriber to its upstream publisher. The first subscriber is accepted;
+        /// subsequent subscribers are rejected according to Reactive Streams subscriber rules.
         /// </summary>
-        /// <param name="subscriber">TBD</param>
-        /// <exception cref="Exception">TBD</exception>
+        /// <param name="subscriber">The downstream subscriber to connect.</param>
+        /// <exception cref="ArgumentNullException">The subscriber is <c>null</c>.</exception>
         public void Subscribe(ISubscriber<T> subscriber)
         {
+            void Rec(ISubscriber<T> sub)
+            {
+                switch (Value)
+                {
+                    case null:
+                        PrintDebug($"VirtualProcessor#{_hashCode}(null).Subscribe.Rec({subscriber}) -> sub");
+                        if (!CompareAndSet(null, subscriber))
+                            Rec(sub);
+                        return;
+                
+                    case ISubscription subscription:
+                        PrintDebug($"VirtualProcessor#{_hashCode}({subscription}).Subscribe.Rec({subscriber}) -> Establishing(sub)");
+                        var establishing = new Establishing(sub);
+                        if(CompareAndSet(subscription, establishing))
+                            EstablishSubscription(establishing, subscription);
+                        else
+                            Rec(sub);
+                        return;
+                
+                    case IPublisher<T> publisher:
+                        PrintDebug($"VirtualProcessor#{_hashCode}({publisher}).Subscribe.Rec({subscriber}) -> Inert");
+                        if (CompareAndSet(publisher, Inert.Instance))
+                            publisher.Subscribe(sub);
+                        else
+                            Rec(sub);
+                        return;
+                
+                    case var other:
+                        PrintDebug($"VirtualProcessor#{_hashCode}({other}).Subscribe.Rec({subscriber}): RejectAdditionalSubscriber");
+                        ReactiveStreamsCompliance.RejectAdditionalSubscriber(sub, "VirtualProcessor");
+                        break;
+                }
+            }
+
             if (subscriber == null)
             {
-                var ex = ReactiveStreamsCompliance.SubscriberMustNotBeNullException;
                 try
                 {
-                    TrySubscribe(Inert.Subscriber);
+                    Rec(Inert.Subscriber);
                 }
                 finally
                 {
                     // must throw ArgumentNullEx, rule 2:13
-                    throw ex;
+                    throw ReactiveStreamsCompliance.SubscriberMustNotBeNullException;
                 }
             }
 
-            TrySubscribe(subscriber);
-        }
-
-        private void TrySubscribe(ISubscriber<T> subscriber)
-        {
-            if (Value == null)
-            {
-                if (!CompareAndSet(null, subscriber))
-                    TrySubscribe(subscriber);
-                return;
-            }
-
-            var subscription = Value as ISubscription;
-            if (subscription != null)
-            {
-                if (CompareAndSet(subscription, new Both(subscriber)))
-                    EstablishSubscription(subscriber, subscription);
-                else
-                    TrySubscribe(subscriber);
-
-                return;
-            }
-
-            var publisher = Value as IPublisher<T>;
-            if (publisher != null)
-            {
-                if (CompareAndSet(publisher, Inert.Instance))
-                    publisher.Subscribe(subscriber);
-                else
-                    TrySubscribe(subscriber);
-
-                return;
-            }
-
-            ReactiveStreamsCompliance.RejectAdditionalSubscriber(subscriber, "VirtualProcessor");
+            Rec(subscriber);
         }
 
         /// <summary>
-        /// TBD
+        /// Supplies the processor's upstream subscription and connects it to a previously registered downstream
+        /// subscriber when possible. A null subscription is reported to the downstream side and then rejected.
         /// </summary>
-        /// <param name="subscription">TBD</param>
-        /// <exception cref="Exception">TBD</exception>
+        /// <param name="subscription">The upstream subscription.</param>
+        /// <exception cref="ArgumentNullException">The subscription is <c>null</c>.</exception>
         public void OnSubscribe(ISubscription subscription)
         {
+            void Rec(object obj)
+            {
+                while (true)
+                {
+                    switch (Value)
+                    {
+                        case null:
+                            PrintDebug($"VirtualProcessor#{_hashCode}({null}).OnSubscribe.Rec({obj}) -> {obj.GetType()}");
+                            if (!CompareAndSet(null, obj)) 
+                                continue;
+                            return;
+                        case ISubscriber<T> subscriber:
+                            switch (obj)
+                            {
+                                case ISubscription sub:
+                                    PrintDebug($"VirtualProcessor#{_hashCode}({subscriber}).OnSubscribe.Rec({obj}) -> Establishing");
+                                    var establishing = new Establishing(subscriber);
+                                    if (CompareAndSet(subscriber, establishing))
+                                        EstablishSubscription(establishing, sub);
+                                    else
+                                        continue;
+                                    return;
+
+                                case IPublisher<T> publisher:
+                                    PrintDebug($"VirtualProcessor#{_hashCode}({publisher}).OnSubscribe.Rec({obj}) -> Inert");
+                                    var inert = GetAndSet(Inert.Instance);
+                                    if (inert != Inert.Instance) publisher.Subscribe(subscriber);
+                                    return;
+
+                                case var other:
+                                    throw new IllegalStateException($"Unexpected state in VirtualProcessor: {other}");
+                            }
+
+                        case var state:
+                            PrintDebug($"VirtualProcessor#{_hashCode}({state}).OnSubscribe.Rec({obj}): Spec violation.");
+                            // spec violation
+                            ReactiveStreamsCompliance.TryCancel(subscription, new IllegalStateException($"Spec violation: VirtualProcessor in wrong state [{state.GetType()}]."));
+                            return;
+                    }
+                }
+            }
+            
             if (subscription == null)
             {
                 var ex = ReactiveStreamsCompliance.SubscriptionMustNotBeNullException;
                 try
                 {
-                    TryOnSubscribe(new ErrorPublisher<T>(ex, "failed-VirtualProcessor"), subscription);
+                    Rec(new ErrorPublisher<T>(ex, "failed-VirtualProcessor"));
                 }
                 finally
                 {
@@ -1641,72 +1762,71 @@ namespace Akka.Streams.Implementation
                     throw ex;
                 }
             }
-
-            TryOnSubscribe(subscription, subscription);
+            
+            Rec(subscription);
         }
 
-        private void TryOnSubscribe(object obj, ISubscription s)
-        {
-            if (Value == null)
-            {
-                if (!CompareAndSet(null, obj))
-                    TryOnSubscribe(obj, s);
-                return;
-            }
-
-            var subscriber = Value as ISubscriber<T>;
-            if (subscriber != null)
-            {
-                var subscription = obj as ISubscription;
-                if (subscription != null)
-                {
-                    if (CompareAndSet(subscriber, new Both(subscriber)))
-                        EstablishSubscription(subscriber, subscription);
-                    else
-                        TryOnSubscribe(obj, s);
-
-                    return;
-                }
-
-                var publisher = Value as IPublisher<T>;
-                if (publisher != null)
-                {
-                    var inert = GetAndSet(Inert.Instance);
-                    if (inert != Inert.Instance)
-                        publisher.Subscribe(subscriber);
-                    return;
-                }
-
-                return;
-            }
-
-            // spec violation
-            ReactiveStreamsCompliance.TryCancel(s);
-        }
-
-        private void EstablishSubscription(ISubscriber<T> subscriber, ISubscription subscription)
+        private void EstablishSubscription(Establishing establishing, ISubscription subscription)
         {
             var wrapped = new WrappedSubscription(subscription, this);
             try
             {
-                subscriber.OnSubscribe(wrapped);
-                // Requests will be only allowed once onSubscribe has returned to avoid reentering on an onNext before
-                // onSubscribe completed
-                wrapped.UngateDemandAndRequestBuffered();
+                PrintDebug($"VirtualProcessor#{_hashCode}.EstablishSubscription({wrapped})");
+                establishing.Subscriber.OnSubscribe(wrapped);
+                
+                // while we were establishing some stuff could have happened
+                // most likely case, nobody changed it while we where establishing
+                PrintDebug($"VirtualProcessor#{_hashCode}.EstablishSubscription.Rec({establishing}) -> Both");
+                if (CompareAndSet(establishing, new Both(establishing.Subscriber)))
+                {
+                    // cas won - life is good
+                    // Requests will be only allowed once onSubscribe has returned to avoid reentering on an onNext before
+                    // onSubscribe completed
+                    wrapped.UngateDemandAndRequestBuffered();
+                }
+                else
+                {
+                    // changed by someone else
+                    switch (Value)
+                    {
+                        case Establishing { OnErrorBuffered: { } } est:
+                            // there was an onError while establishing
+                            PrintDebug($"VirtualProcessor#{_hashCode}.EstablishSubscription.Rec(Establishing(OnErrorBuffered)) -> Inert");
+                            ReactiveStreamsCompliance.TryOnError(est.Subscriber, est.OnErrorBuffered);
+                            Value = Inert.Instance;
+                            break;
+                        
+                        case Establishing { OnCompleteBuffered: true } est:
+                            // there was on onComplete while we were establishing
+                            PrintDebug($"VirtualProcessor#{_hashCode}.EstablishSubscription.Rec(Establishing(OnCompleteBuffered)) -> Inert");
+                            ReactiveStreamsCompliance.TryOnComplete(est.Subscriber);
+                            Value = Inert.Instance;
+                            break;
+                        
+                        case Inert _:
+                            ReactiveStreamsCompliance.TryCancel(subscription, new IllegalStateException("VirtualProcessor was already subscribed to."));
+                            break;
+                        
+                        default:
+                            throw new IllegalStateException(
+                                $"Unexpected state while establishing: [{Value}], if this ever happens it is a bug.");
+                    }
+                }
             }
             catch (Exception ex)
             {
                 Value = Inert.Instance;
-                ReactiveStreamsCompliance.TryCancel(subscription);
-                ReactiveStreamsCompliance.TryOnError(subscriber, ex);
+                ReactiveStreamsCompliance.TryCancel(subscription, ex);
+                ReactiveStreamsCompliance.TryOnError(establishing.Subscriber, ex);
             }
         }
 
         /// <summary>
-        /// TBD
+        /// Signals a terminal failure to the connected subscriber, or retains the failure until the processor's
+        /// publisher side is connected. Calls made after termination or during an incompatible state are ignored.
         /// </summary>
-        /// <param name="cause">TBD</param>
-        /// <exception cref="Exception">TBD</exception>
+        /// <param name="cause">The failure to signal.</param>
+        /// <exception cref="ArgumentNullException">The cause is <c>null</c>; the null failure is also reported through the processor when possible.</exception>
         public void OnError(Exception cause)
         {
             /*
@@ -1714,205 +1834,220 @@ namespace Akka.Streams.Implementation
             * but if `t` was `null` then the spec requires us to throw an NPE (which `ex`
             * will be in this case).
             */
-            var ex = cause ?? ReactiveStreamsCompliance.ExceptionMustNotBeNullException;
-
-            while (true)
+            void Rec(Exception ex)
             {
-                if (Value == null)
+                while (true)
                 {
-                    if (!CompareAndSet(null, new ErrorPublisher<T>(ex, "failed-VirtualProcessor")))
-                        continue;
-                    if (cause == null)
-                        throw ex;
-                    return;
-                }
-
-                var subscription = Value as ISubscription;
-                if (subscription != null)
-                {
-                    if (!CompareAndSet(subscription, new ErrorPublisher<T>(ex, "failed-VirtualProcessor")))
-                        continue;
-                    if (cause == null)
-                        throw ex;
-                    return;
-                }
-
-                var both = Value as Both;
-                if (both != null)
-                {
-                    Value = Inert.Instance;
-                    try
+                    switch (Value)
                     {
-                        ReactiveStreamsCompliance.TryOnError(both.Subscriber, ex);
+                        case null:
+                            PrintDebug($"VirtualProcessor#{_hashCode}(null).OnError({ex.Message}) -> ErrorPublisher");
+                            if (!CompareAndSet(null, new ErrorPublisher<T>(ex, "failed-VirtualProcessor"))) 
+                                continue;
+                            return;
+
+                        case ISubscription s:
+                            PrintDebug($"VirtualProcessor#{_hashCode}({s}).OnError({ex.Message}) -> ErrorPublisher");
+                            if (!CompareAndSet(s, new ErrorPublisher<T>(ex, "failed-VirtualProcessor"))) 
+                                continue;
+                            return;
+
+                        case Both both:
+                            PrintDebug($"VirtualProcessor#{_hashCode}(Both({both.Subscriber})).OnError({ex.Message}) -> ErrorPublisher");
+                            Value = Inert.Instance;
+                            ReactiveStreamsCompliance.TryOnError(both.Subscriber, ex);
+                            return;
+
+                        case ISubscriber<T> s:
+                            // spec violation
+                            PrintDebug($"VirtualProcessor#{_hashCode}({s}).OnError({ex.Message}) -> Inert: Spec violation.");
+                            var inert = GetAndSet(Inert.Instance);
+                            if (inert != Inert.Instance) new ErrorPublisher<T>(ex, "failed-VirtualProcessor").Subscribe(s);
+                            return;
+
+                        case Establishing { OnCompleteBuffered: false, OnErrorBuffered: null } est:
+                            PrintDebug($"VirtualProcessor#{_hashCode}({est}).OnError({ex.Message}) -> loop");
+                            if (!CompareAndSet(est, est.Copy(onErrorBuffered: ex))) 
+                                continue;
+                            return;
+
+                        case var other:
+                            // spec violation or cancellation race, but nothing we can do
+                            PrintDebug($"VirtualProcessor#{_hashCode}({other}).OnError({ex.Message}): Spec violation or cancellation race");
+                            return;
                     }
-                    finally
-                    {
-                        // must throw ArgumentNullEx, rule 2:13
-                        if (cause == null)
-                            throw ex;
-                    }
-
-                    return;
                 }
+            }
 
-                var subscriber = Value as ISubscriber<T>;
-                if (subscriber != null)
-                {
-                    // spec violation
-                    var inert = GetAndSet(Inert.Instance);
-                    if (inert != Inert.Instance)
-                        new ErrorPublisher<T>(ex, "failed-VirtualProcessor").Subscribe(subscriber);
-
-                    return;
-                }
-
-                // spec violation or cancellation race, but nothing we can do
-                return;
+            var ex = cause ?? ReactiveStreamsCompliance.ExceptionMustNotBeNullException;
+            try
+            {
+                Rec(ex);
+            }
+            finally
+            {
+                // must throw NPE, rule 2.13
+                if (cause == null)
+                    throw ex;
             }
         }
 
         /// <summary>
-        /// TBD
+        /// Completes the processor's downstream side, immediately when connected or after the pending connection is
+        /// established. Completion received in an incompatible or already terminated state is ignored.
         /// </summary>
         public void OnComplete()
         {
             while (true)
             {
-                if (Value == null)
+                switch (Value)
                 {
-                    if (!CompareAndSet(null, EmptyPublisher<T>.Instance))
-                        continue;
-
-                    return;
+                    case null: 
+                        PrintDebug($"VirtualProcessor#{_hashCode}(null).OnComplete() -> EmptyPublisher");
+                        if(!CompareAndSet(null, EmptyPublisher<T>.Instance))
+                            continue;
+                        return;
+                    case ISubscription subscription:
+                        PrintDebug($"VirtualProcessor#{_hashCode}({subscription}).OnComplete() -> EmptyPublisher");
+                        if(!CompareAndSet(subscription, EmptyPublisher<T>.Instance))
+                            continue;
+                        return;
+                    case Both both:
+                        PrintDebug($"VirtualProcessor#{_hashCode}(Both({both.Subscriber})).OnComplete() -> Inert");
+                        Value = Inert.Instance;
+                        ReactiveStreamsCompliance.TryOnComplete(both.Subscriber);
+                        return;
+                    case ISubscriber<T> subscriber:
+                        // spec violation
+                        PrintDebug($"VirtualProcessor#{_hashCode}({subscriber}).OnComplete() -> Inert: Spec Violation");
+                        Value = Inert.Instance;
+                        EmptyPublisher<T>.Instance.Subscribe(subscriber);
+                        return;
+                    case Establishing { OnCompleteBuffered: false, OnErrorBuffered: null } est:
+                        PrintDebug($"VirtualProcessor#{_hashCode}({est}).OnComplete() -> Establishing(OnCompleteBuffered)");
+                        if(!est.OnCompleteBuffered && !CompareAndSet(est, est.Copy(onCompleteBuffered: true)))
+                            continue;
+                        return;
+                    case var other:
+                        // spec violation or cancellation race, but nothing we can do
+                        PrintDebug($"VirtualProcessor#{_hashCode}({other}).OnComplete(): Spec violation");
+                        return;
                 }
-
-                var subscription = Value as ISubscription;
-                if (subscription != null)
-                {
-                    if (!CompareAndSet(subscription, EmptyPublisher<T>.Instance))
-                        continue;
-
-                    return;
-                }
-
-                var both = Value as Both;
-                if (both != null)
-                {
-                    Value = Inert.Instance;
-                    ReactiveStreamsCompliance.TryOnComplete(both.Subscriber);
-                    return;
-                }
-
-                var subscriber = Value as ISubscriber<T>;
-                if (subscriber != null)
-                {
-                    // spec violation
-                    Value = Inert.Instance;
-                    EmptyPublisher<T>.Instance.Subscribe(subscriber);
-                    return;
-                }
-
-                // spec violation or cancellation race, but nothing we can do
-                return;
             }
         }
 
         /// <summary>
-        /// TBD
+        /// Forwards an element to the connected downstream subscriber. The processor does not buffer elements while
+        /// its downstream connection is being established.
         /// </summary>
-        /// <param name="element">TBD</param>
-        /// <exception cref="Exception">TBD</exception>
-        /// <exception cref="IllegalStateException">TBD</exception>
+        /// <param name="element">The element to forward.</param>
+        /// <exception cref="ArgumentNullException">The element is <c>null</c>.</exception>
+        /// <exception cref="IllegalStateException">The upstream calls this method without downstream demand, or the downstream subscriber throws from a signal callback.</exception>
         public void OnNext(T element)
         {
             if (element == null)
             {
                 var ex = ReactiveStreamsCompliance.ElementMustNotBeNullException;
+                PrintDebug($"VirtualProcessor#{_hashCode}.OnNext(null)");
 
-                while (true)
+                void Rec()
                 {
-                    if (Value == null || Value is ISubscription)
+                    while (true)
                     {
-                        if (!CompareAndSet(Value, new ErrorPublisher<T>(ex, "failed-VirtualProcessor")))
-                            continue;
-
-                        break;
-                    }
-
-                    var subscriber = Value as ISubscriber<T>;
-                    if (subscriber != null)
-                    {
-                        try
+                        switch (Value)
                         {
-                            subscriber.OnError(ex);
-                        }
-                        finally
-                        {
-                            Value = Inert.Instance;
-                        }
-                        break;
-                    }
+                            case null:
+                            case ISubscription _:
+                                if (!CompareAndSet(Value, new ErrorPublisher<T>(ex, "failed-VirtualProcessor"))) continue;
+                                return;
 
-                    var both = Value as Both;
-                    if (both != null)
-                    {
-                        try
-                        {
-                            both.Subscriber.OnError(ex);
+                            case ISubscriber<T> subscriber:
+                                try
+                                {
+                                    subscriber.OnError(ex);
+                                }
+                                finally
+                                {
+                                    Value = Inert.Instance;
+                                }
+                                return;
+
+                            case Both both:
+                                try
+                                {
+                                    both.Subscriber.OnError(ex);
+                                }
+                                finally
+                                {
+                                    Value = Inert.Instance;
+                                }
+                                return;
+
+                            default:
+                                // spec violation or cancellation race, but nothing we can do
+                                return;
                         }
-                        finally
-                        {
-                            Value = Inert.Instance;
-                        }
-                    }
-
-                    // spec violation or cancellation race, but nothing we can do
-                    break;
-                }
-
-                // must throw ArgumentNullEx, rule 2:13
-                throw ex;
-            }
-
-            while (true)
-            {
-                var both = Value as Both;
-                if (both != null)
-                {
-                    try
-                    {
-                        both.Subscriber.OnNext(element);
-                        return;
-                    }
-                    catch (Exception e)
-                    {
-                        Value = Inert.Instance;
-                        throw new IllegalStateException(
-                            "Subscriber threw exception, this is in violation of rule 2:13", e);
                     }
                 }
 
-                var subscriber = Value as ISubscriber<T>;
-                if (subscriber != null)
+                try
                 {
-                    // spec violation
-                    var ex = new IllegalStateException(NoDemand);
-                    var inert = GetAndSet(Inert.Instance);
-                    if (inert != Inert.Instance)
-                        new ErrorPublisher<T>(ex, "failed-VirtualProcessor").Subscribe(subscriber);
+                    Rec();
+                }
+                finally
+                {
+                    // must throw ArgumentNullEx, rule 2:13
                     throw ex;
                 }
-
-                if (Value == Inert.Instance || Value is IPublisher<T>)
+            }
+            else
+            {
+                void Rec()
                 {
-                    // nothing to be done
-                    return;
+                    while (true)
+                    {
+                        switch (Value)
+                        {
+                            case IHasActualSubscriber h:
+                                var s = h.Subscriber;
+                                try
+                                {
+                                    PrintDebug($"VirtualProcessor#{_hashCode}({h.GetType()}({s})).OnNext({element}).Rec()");
+                                    s.OnNext(element);
+                                }
+                                catch (Exception e)
+                                {
+                                    PrintDebug($"VirtualProcessor#{_hashCode}({h.GetType()}({s})).OnNext({element}) threw {e.Message} -> Inert. Spec violation");
+                                    Value = Inert.Instance;
+                                    throw new IllegalStateException("Subscriber threw exception, this is in violation of rule 2:13", e);
+                                }
+                                return;
+
+                            case ISubscriber<T> subscriber:
+                                // spec violation
+                                PrintDebug($"VirtualProcessor#{_hashCode}({subscriber}).OnNext({element}).Rec() -> Inert: Spec violation");
+                                var ex = new IllegalStateException(NoDemand);
+                                var inert = GetAndSet(Inert.Instance);
+                                if (inert != Inert.Instance) new ErrorPublisher<T>(ex, "failed-VirtualProcessor").Subscribe(subscriber);
+                                throw ex;
+
+                            case Inert _:
+                            case IPublisher<T> _:
+                                // nothing to be done
+                                PrintDebug($"VirtualProcessor#{_hashCode}(Inert|Publisher).OnNext({element}).Rec(): noop");
+                                return;
+
+                            case var other:
+                                PrintDebug($"VirtualProcessor#{_hashCode}({other}).OnNext({element}).Rec() -> ErrorPublisher");
+                                var publisher = new ErrorPublisher<T>(new IllegalStateException(NoDemand), "failed-VirtualPublisher");
+                                if (!CompareAndSet(other, publisher))
+                                    continue;
+                                throw publisher.Cause;
+                        }
+                    }
                 }
 
-                var publisher = new ErrorPublisher<T>(new IllegalStateException(NoDemand), "failed-VirtualPublisher");
-                if (!CompareAndSet(Value, publisher))
-                    continue;
-                throw publisher.Cause;
+                Rec();
             }
         }
 
@@ -1923,7 +2058,7 @@ namespace Akka.Streams.Implementation
 
         private sealed class PassThrough : ISubscriptionState
         {
-            public static PassThrough Instance { get; } = new PassThrough();
+            public static PassThrough Instance { get; } = new();
 
             private PassThrough() { }
 
@@ -1942,7 +2077,7 @@ namespace Akka.Streams.Implementation
 
         private sealed class WrappedSubscription : AtomicReference<ISubscriptionState>, ISubscription
         {
-            private static readonly Buffering NoBufferedDemand = new Buffering(0);
+            private static readonly Buffering NoBufferedDemand = new(0);
             private readonly ISubscription _real;
             private readonly VirtualProcessor<T> _processor;
             
@@ -1956,18 +2091,23 @@ namespace Akka.Streams.Implementation
             {
                 if (n < 1)
                 {
-                    ReactiveStreamsCompliance.TryCancel(_real);
+                    PrintDebug($"VirtualProcessor#{_processor._hashCode}.WrappedSubscription({_real}.Request({n})");
+                    ReactiveStreamsCompliance.TryCancel(_real, new IllegalStateException($"Demand must not be < 1. Was: {n}"));
                     var value = _processor.GetAndSet(Inert.Instance);
-                    var both = value as Both;
-                    if (both != null)
-                        ReactiveStreamsCompliance.RejectDueToNonPositiveDemand(both.Subscriber);
-                    else if (value == Inert.Instance)
+                    switch (value)
                     {
-                        // another failure has won the race
-                    }
-                    else
-                    {
-                        // this cannot possibly happen, but signaling errors is impossible at this point
+                        case Both both:
+                            ReactiveStreamsCompliance.RejectDueToNonPositiveDemand(both.Subscriber);
+                            break;
+                        case Establishing est:
+                            ReactiveStreamsCompliance.RejectDueToNonPositiveDemand(est.Subscriber);
+                            break;
+                        case Inert _:
+                            // another failure has won the race
+                            break;
+                        default:
+                            // this cannot possibly happen, but signaling errors is impossible at this point
+                            break;
                     }
                 }
                 else
@@ -1983,11 +2123,17 @@ namespace Akka.Streams.Implementation
                         var current = Value;
                         if (current == PassThrough.Instance)
                         {
+                            PrintDebug($"VirtualProcessor#{_processor._hashCode}.WrappedSubscription({_real}.BufferDemand({n}) PassThrough");
                             _real.Request(n);
-                            break;
+                            return;
                         }
+
                         if (!CompareAndSet(current, new Buffering(current.Demand + n)))
+                        {
+                            PrintDebug($"VirtualProcessor#{_processor._hashCode}.WrappedSubscription({_real}.BufferDemand({n}) buffering");
                             continue;
+                        }
+
                         break;
                     }
                 }
@@ -1995,6 +2141,7 @@ namespace Akka.Streams.Implementation
 
             public void Cancel()
             {
+                PrintDebug($"VirtualProcessor#{_processor._hashCode}.WrappedSubscription({_real}.Cancel() -> Inert");
                 _processor.Value = Inert.Instance;
                 _real.Cancel();
             }
@@ -2002,6 +2149,7 @@ namespace Akka.Streams.Implementation
             public void UngateDemandAndRequestBuffered()
             {
                 // Ungate demand
+                PrintDebug($"VirtualProcessor#{_processor._hashCode}.WrappedSubscription({_real}.UngateDemandAndRequestBuffered()");
                 var requests = GetAndSet(PassThrough.Instance).Demand;
                 // And request buffered demand
                 if(requests > 0)
@@ -2036,7 +2184,7 @@ namespace Akka.Streams.Implementation
         {
             public static readonly ISubscriber<T> Subscriber = new CancellingSubscriber<T>();
 
-            public static readonly Inert Instance = new Inert();
+            public static readonly Inert Instance = new();
 
             private Inert()
             {
@@ -2046,35 +2194,31 @@ namespace Akka.Streams.Implementation
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Registers the sole downstream subscriber, or connects it immediately if the publisher has already been
+        /// registered. The publisher does not retain the subscriber after connecting them.
         /// </summary>
-        /// <param name="subscriber">TBD</param>
+        /// <param name="subscriber">The subscriber to connect.</param>
         public void Subscribe(ISubscriber<T> subscriber)
         {
             ReactiveStreamsCompliance.RequireNonNullSubscriber(subscriber);
 
             while (true)
             {
-                if (Value == null)
+                switch (Value)
                 {
-                    if (!CompareAndSet(null, subscriber))
+                    case null when !CompareAndSet(null, subscriber):
                         continue;
-                    return;
-                }
-
-                var publisher = Value as IPublisher<T>;
-                if (publisher != null)
-                {
-                    if (CompareAndSet(publisher, Inert.Subscriber))
-                    {
+                    case null:
+                        return;
+                    case IPublisher<T> publisher when CompareAndSet(publisher, Inert.Subscriber):
                         publisher.Subscribe(subscriber);
                         return;
-                    }
-                    continue;
+                    case IPublisher<T> publisher:
+                        continue;
+                    default:
+                        ReactiveStreamsCompliance.RejectAdditionalSubscriber(subscriber, "Sink.AsPublisher(fanout = false)");
+                        return;
                 }
-
-                ReactiveStreamsCompliance.RejectAdditionalSubscriber(subscriber, "Sink.AsPublisher(fanout = false)");
-                return;
             }
         }
 
@@ -2082,37 +2226,41 @@ namespace Akka.Streams.Implementation
             => Subscribe(UntypedSubscriber.ToTyped<T>(subscriber));
 
         /// <summary>
-        /// TBD
+        /// Registers the publisher using the typed adapter for this virtual publisher's element type.
         /// </summary>
-        /// <param name="publisher">TBD</param>
+        /// <param name="publisher">The publisher to register.</param>
         public void RegisterPublisher(IUntypedPublisher publisher)
             => RegisterPublisher(UntypedPublisher.ToTyped<T>(publisher));
 
+        void IUntypedVirtualPublisher.RegisterErrorPublisher(Exception cause)
+            => RegisterPublisher(new ErrorPublisher<T>(cause, string.Empty));
+
         /// <summary>
-        /// TBD
+        /// Registers the publisher and connects it to a pending subscriber, if present. Registration is valid only
+        /// once; a prior publisher registration or a terminal state is an internal materialization error. A subscriber
+        /// registered before the publisher is accepted and connected.
         /// </summary>
-        /// <param name="publisher">TBD</param>
-        /// <exception cref="IllegalStateException">TBD</exception>
+        /// <param name="publisher">The publisher to register.</param>
+        /// <exception cref="IllegalStateException">A publisher has already been registered or the virtual publisher is terminal.</exception>
         public void RegisterPublisher(IPublisher<T> publisher)
         {
+            if(VirtualProcessor<T>.IsDebug)
+                Console.WriteLine($"{this}.RegisterPublisher({publisher})");
             while (true)
             {
-                if (Value == null)
+                switch (Value)
                 {
-                    if (!CompareAndSet(null, publisher))
+                    case null when !CompareAndSet(null, publisher):
                         continue;
-                    return;
+                    case null:
+                        return;
+                    case ISubscriber<T> subscriber:
+                        Value = Inert.Instance;
+                        publisher.Subscribe(subscriber);
+                        return;
+                    default:
+                        throw new IllegalStateException("internal error");
                 }
-
-                var subscriber = Value as ISubscriber<T>;
-                if (subscriber != null)
-                {
-                    Value = Inert.Instance;
-                    publisher.Subscribe(subscriber);
-                    return;
-                }
-
-                throw new IllegalStateException("internal error");
             }
         }
     }
@@ -2124,12 +2272,12 @@ namespace Akka.Streams.Implementation
     public abstract class MaterializerSession
     {
         /// <summary>
-        /// TBD
+        /// Enables optional diagnostic output from materialization sessions when compiled with the <c>DEBUG</c> symbol.
         /// </summary>
         public static readonly bool IsDebug = false;
 
         /// <summary>
-        /// TBD
+        /// Carries the cause used to fail intermediate subscribers during best-effort cleanup after materialization fails.
         /// </summary>
         public class MaterializationPanicException : Exception
         {
@@ -2154,23 +2302,20 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// The module graph being materialized by this session.
         /// </summary>
         protected readonly IModule TopLevel;
         /// <summary>
-        /// TBD
+        /// Attributes applied above the top-level module during materialization.
         /// </summary>
         protected readonly Attributes InitialAttributes;
 
-        private readonly LinkedList<IDictionary<InPort, object>> _subscribersStack =
-            new LinkedList<IDictionary<InPort, object>>();
+        private readonly LinkedList<IDictionary<InPort, object>> _subscribersStack = new();
 
-        private readonly LinkedList<IDictionary<OutPort, IUntypedPublisher>> _publishersStack =
-            new LinkedList<IDictionary<OutPort, IUntypedPublisher>>();
+        private readonly LinkedList<IDictionary<OutPort, IUntypedPublisher>> _publishersStack = new();
 
         private readonly LinkedList<IDictionary<StreamLayout.IMaterializedValueNode, LinkedList<IMaterializedValueSource>>>
-            _materializedValueSources =
-                new LinkedList<IDictionary<StreamLayout.IMaterializedValueNode, LinkedList<IMaterializedValueSource>>>();
+            _materializedValueSources = new();
 
         /// <summary>
         /// Please note that this stack keeps track of the scoped modules wrapped in CopiedModule but not the CopiedModule
@@ -2180,13 +2325,13 @@ namespace Akka.Streams.Implementation
         /// The reason why the encapsulated (copied) modules are stored as mutable state to save subclasses of this class
         /// from passing the current scope around or even knowing about it.
         /// </summary>
-        private readonly LinkedList<IModule> _moduleStack = new LinkedList<IModule>();
+        private readonly LinkedList<IModule> _moduleStack = new();
 
         /// <summary>
-        /// TBD
+        /// Creates a session for the supplied top-level module and initial attributes.
         /// </summary>
-        /// <param name="topLevel">TBD</param>
-        /// <param name="initialAttributes">TBD</param>
+        /// <param name="topLevel">The module graph to materialize.</param>
+        /// <param name="initialAttributes">The attributes applied to the top-level module.</param>
         protected MaterializerSession(IModule topLevel, Attributes initialAttributes)
         {
             TopLevel = topLevel;
@@ -2208,7 +2353,7 @@ namespace Akka.Streams.Implementation
         /// of the same module.
         /// We don't store the enclosing CopiedModule itself as state since we don't use it anywhere else than exit and enter
         /// </summary>
-        /// <param name="enclosing">TBD</param>
+        /// <param name="enclosing">The copied module whose internal graph is entered as a new materialization scope.</param>
         protected void EnterScope(CopiedModule enclosing)
         {
             if(IsDebug)
@@ -2225,7 +2370,7 @@ namespace Akka.Streams.Implementation
         /// leading to port identity collisions)
         /// We don't store the enclosing CopiedModule itself as state since we don't use it anywhere else than exit and enter
         /// </summary>
-        /// <param name="enclosing">TBD</param>
+        /// <param name="enclosing">The copied module whose exposed ports are mapped back into the enclosing scope.</param>
         protected void ExitScope(CopiedModule enclosing)
         {
             var scopeSubscribers = Subscribers;
@@ -2255,10 +2400,11 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Materializes the top-level graph and returns its computed materialized value. Empty graphs and graphs with
+        /// unconnected exposed ports cannot be materialized.
         /// </summary>
-        /// <exception cref="InvalidOperationException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <exception cref="InvalidOperationException">The top-level module is empty or has unconnected exposed ports.</exception>
+        /// <returns>The materialized value computed by the top-level module.</returns>
         public object Materialize()
         {
             if(IsDebug)
@@ -2282,36 +2428,48 @@ namespace Akka.Streams.Implementation
                 // (This is an attempt to clean up after an exception during materialization)
                 var ex = new MaterializationPanicException(cause);
 
-                foreach (var subMap in _subscribersStack)
-                    foreach (var value in subMap.Values)
+                // Clean-up is best effort: a step that fails here (e.g. the NotSupportedException a foreign
+                // IUntypedSubscriber/IUntypedPublisher raises with Akka.DynamicTypeLoading off) must not
+                // replace the materialization failure the caller needs to see, nor skip the other ports.
+                foreach (var value in _subscribersStack.SelectMany(subMap => subMap.Values))
+                {
+                    try
                     {
-                        var subscriber = value as IUntypedSubscriber;
-                        if (subscriber != null)
+                        switch (value)
                         {
-                            var subscribedType = UntypedSubscriber.ToTyped(subscriber).GetType().GetSubscribedType();
-                            var publisher = typeof(ErrorPublisher<>).Instantiate(subscribedType, ex, string.Empty);
-
-                            UntypedPublisher.FromTyped(publisher).Subscribe(subscriber);
-                            continue;
-                        }
-
-                        var virtualPublisher = value as IUntypedVirtualPublisher;
-                        if (virtualPublisher != null)
-                        {
-                            var publishedType =
-                                UntypedVirtualPublisher.ToTyped(virtualPublisher).GetType().GetPublishedType();
-                            var publisher = typeof(ErrorPublisher<>).Instantiate(publishedType, ex, string.Empty);
-                            virtualPublisher.RegisterPublisher(UntypedPublisher.FromTyped(publisher));
+                            case UntypedSubscriber subscriber:
+                                subscriber.SubscribeToErrorPublisher(ex);
+                                break;
+                            case IUntypedSubscriber subscriber:
+                                SubscribeToErrorPublisherReflectively(subscriber, ex);
+                                break;
+                            case IUntypedVirtualPublisher virtualPublisher:
+                                virtualPublisher.RegisterErrorPublisher(ex);
+                                break;
                         }
                     }
+                    catch (Exception cleanupFailure)
+                    {
+                        if (IsDebug)
+                            Console.WriteLine($"failing subscriber {value} after a materialization panic failed: {cleanupFailure}");
+                    }
+                }
 
                 foreach (var pubMap in _publishersStack)
                     foreach (var publisher in pubMap.Values)
                     {
-                        var publishedType = UntypedPublisher.ToTyped(publisher).GetType().GetPublishedType();
-                        var subscriber = typeof(CancellingSubscriber<>).Instantiate(publishedType);
-
-                        publisher.Subscribe(UntypedSubscriber.FromTyped(subscriber));
+                        try
+                        {
+                            if (publisher is UntypedPublisher untyped)
+                                untyped.SubscribeCancellingSubscriber();
+                            else
+                                SubscribeCancellingSubscriberReflectively(publisher);
+                        }
+                        catch (Exception cleanupFailure)
+                        {
+                            if (IsDebug)
+                                Console.WriteLine($"cancelling publisher {publisher} after a materialization panic failed: {cleanupFailure}");
+                        }
                     }
 
                 throw;
@@ -2319,17 +2477,19 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Combines attributes inherited from a parent module with those declared by the current module. Subclasses may
+        /// override this policy.
         /// </summary>
-        /// <param name="parent">TBD</param>
-        /// <param name="current">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="parent">The effective attributes inherited from the parent.</param>
+        /// <param name="current">The attributes declared by the current module.</param>
+        /// <returns>The effective attributes for the current module.</returns>
         protected virtual Attributes MergeAttributes(Attributes parent, Attributes current) => parent.And(current);
 
         /// <summary>
-        /// TBD
+        /// Registers a source to receive the result of its materialized-value computation when that computation is
+        /// resolved during materialization.
         /// </summary>
-        /// <param name="materializedSource">TBD</param>
+        /// <param name="materializedSource">The source to complete with its computed value.</param>
         protected void RegisterSource(IMaterializedValueSource materializedSource)
         {
             if (IsDebug) Console.WriteLine($"Registering source {materializedSource}");
@@ -2342,11 +2502,12 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Materializes child modules, wires their ports, resolves the module's materialized-value computation, and
+        /// completes sources waiting for that computation.
         /// </summary>
-        /// <param name="module">TBD</param>
-        /// <param name="effectiveAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="module">The module graph to materialize.</param>
+        /// <param name="effectiveAttributes">The effective attributes inherited by this module.</param>
+        /// <returns>The value produced by the module's materialized-value computation.</returns>
         protected object MaterializeModule(IModule module, Attributes effectiveAttributes)
         {
             var materializedValues = new Dictionary<IModule, object>();
@@ -2358,19 +2519,21 @@ namespace Akka.Streams.Implementation
             {
                 var subEffectiveAttributes = MergeAttributes(effectiveAttributes, submodule.Attributes);
 
-                var atomic = submodule as AtomicModule;
-                if (atomic != null)
-                    MaterializeAtomic(atomic, subEffectiveAttributes, materializedValues);
-                else if (submodule is CopiedModule)
+                switch (submodule)
                 {
-                    var copied = submodule as CopiedModule;
-                    EnterScope(copied);
-                    materializedValues.Add(copied, MaterializeModule(copied, subEffectiveAttributes));
-                    ExitScope(copied);
+                    case AtomicModule atomic:
+                        MaterializeAtomic(atomic, subEffectiveAttributes, materializedValues);
+                        break;
+                    case CopiedModule copied:
+                        EnterScope(copied);
+                        materializedValues.Add(copied, MaterializeModule(copied, subEffectiveAttributes));
+                        ExitScope(copied);
+                        break;
+                    case CompositeModule or FusedModule:
+                        materializedValues.Add(submodule, MaterializeComposite(submodule, subEffectiveAttributes));
+                        break;
                 }
-                else if(submodule is CompositeModule || submodule is FusedModule)
-                    materializedValues.Add(submodule, MaterializeComposite(submodule, subEffectiveAttributes));
-                
+
                 //EmptyModule, nothing to do or say
             }
 
@@ -2395,21 +2558,24 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Materializes a composite module by recursively materializing its child modules. Subclasses can customize this
+        /// behavior for composite module types.
         /// </summary>
-        /// <param name="composite">TBD</param>
-        /// <param name="effectiveAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="composite">The composite module to materialize.</param>
+        /// <param name="effectiveAttributes">The effective attributes inherited by the composite.</param>
+        /// <returns>The value produced by the composite's materialized-value computation.</returns>
         protected virtual object MaterializeComposite(IModule composite, Attributes effectiveAttributes)
             => MaterializeModule(composite, effectiveAttributes);
 
         /// <summary>
-        /// TBD
+        /// Materializes an atomic module. Implementations create the runtime stage and record its materialized value in
+        /// <paramref name="materializedValues"/>, which is the channel used by the materializer to resolve graph
+        /// materialized values; the caller that materializes modules ignores this method's return value.
         /// </summary>
-        /// <param name="atomic">TBD</param>
-        /// <param name="effectiveAttributes">TBD</param>
-        /// <param name="materializedValues">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="atomic">The atomic module to materialize.</param>
+        /// <param name="effectiveAttributes">The effective attributes for the module.</param>
+        /// <param name="materializedValues">The values materialized for modules in the containing graph.</param>
+        /// <returns>An implementation-defined value; the materializer caller uses <paramref name="materializedValues"/> instead.</returns>
         protected abstract object MaterializeAtomic(AtomicModule atomic, Attributes effectiveAttributes,
             IDictionary<IModule, object> materializedValues);
 
@@ -2420,45 +2586,44 @@ namespace Akka.Streams.Implementation
             if (IsDebug)
                 Console.WriteLine($"{indent}{node}");
             object result;
-            if (node is StreamLayout.Atomic)
+            
+            switch (node)
             {
-                var atomic = (StreamLayout.Atomic) node;
-                values.TryGetValue(atomic.Module, out result);
+                case StreamLayout.Atomic atomic:
+                    values.TryGetValue(atomic.Module, out result);
+                    break;
+                case StreamLayout.Combine combine:
+                    result = combine.Combinator(ResolveMaterialized(combine.Left, values, spaces + 2),
+                        ResolveMaterialized(combine.Right, values, spaces + 2));
+                    break;
+                case StreamLayout.Transform transform:
+                    result = transform.Transformator(ResolveMaterialized(transform.Node, values, spaces + 2));
+                    break;
+                default:
+                    result = NotUsed.Instance;
+                    break;
             }
-            else if (node is StreamLayout.Combine)
-            {
-                var combine = (StreamLayout.Combine) node;
-                result = combine.Combinator(ResolveMaterialized(combine.Left, values, spaces + 2),
-                    ResolveMaterialized(combine.Right, values, spaces + 2));
-            }
-            else if (node is StreamLayout.Transform)
-            {
-                var transform = (StreamLayout.Transform) node;
-                result = transform.Transformator(ResolveMaterialized(transform.Node, values, spaces + 2));
-            }
-            else
-                result = NotUsed.Instance;
 
             if (IsDebug)
                 Console.WriteLine($"{indent}result = {result}");
 
-            if (MaterializedValueSource.TryGetValue(node, out var sources))
-            {
-                if (IsDebug)
-                    Console.WriteLine($"{indent}triggering sources {sources}");
-                MaterializedValueSource.Remove(node);
-                foreach (var source in sources)
-                    source.SetValue(result);
-            }
+            if (!MaterializedValueSource.TryGetValue(node, out var sources)) return result;
+            
+            if (IsDebug)
+                Console.WriteLine($"{indent}triggering sources {sources}");
+            MaterializedValueSource.Remove(node);
+            foreach (var source in sources)
+                source.SetValue(result);
 
             return result;
         }
 
         /// <summary>
-        /// TBD
+        /// Records the subscriber for an inlet in the current scope and connects it if its upstream publisher has
+        /// already been registered.
         /// </summary>
-        /// <param name="inPort">TBD</param>
-        /// <param name="subscriberOrVirtual">TBD</param>
+        /// <param name="inPort">The inlet receiving the subscriber.</param>
+        /// <param name="subscriberOrVirtual">The subscriber or virtual publisher waiting for its publisher.</param>
         protected void AssignPort(InPort inPort, object subscriberOrVirtual)
         {
             Subscribers[inPort] = subscriberOrVirtual;
@@ -2471,10 +2636,11 @@ namespace Akka.Streams.Implementation
 
 
         /// <summary>
-        /// TBD
+        /// Records the publisher for an outlet in the current scope and connects it if its downstream subscriber has
+        /// already been registered.
         /// </summary>
-        /// <param name="outPort">TBD</param>
-        /// <param name="publisher">TBD</param>
+        /// <param name="outPort">The outlet providing the publisher.</param>
+        /// <param name="publisher">The publisher assigned to the outlet.</param>
         protected void AssignPort(OutPort outPort, IUntypedPublisher publisher)
         {
             Publishers[outPort] = publisher;
@@ -2484,63 +2650,97 @@ namespace Akka.Streams.Implementation
                     DoSubscribe(publisher, subscriber);
         }
 
-        private void DoSubscribe(IUntypedPublisher publisher, object subscriberOrVirtual)
+        private static void DoSubscribe(IUntypedPublisher publisher, object subscriberOrVirtual)
         {
-            var subscriber = subscriberOrVirtual as IUntypedSubscriber;
-            if (subscriber != null)
+            switch (subscriberOrVirtual)
             {
-                publisher.Subscribe(subscriber);
-                return;
+                case IUntypedSubscriber subscriber:
+                    publisher.Subscribe(subscriber);
+                    return;
+                case IUntypedVirtualPublisher virtualPublisher:
+                    virtualPublisher.RegisterPublisher(publisher);
+                    return;
+                default:
+                    // a sink module's plain ISubscriber<T>: the publisher knows the element type
+                    if (publisher is UntypedPublisher untyped)
+                        untyped.SubscribeTyped(subscriberOrVirtual);
+                    else
+                        SubscribeReflectively(publisher, subscriberOrVirtual);
+                    break;
             }
+        }
 
-            var virtualPublisher = subscriberOrVirtual as IUntypedVirtualPublisher;
-            if (virtualPublisher != null)
-            {
-                virtualPublisher.RegisterPublisher(UntypedPublisher.FromTyped(publisher));
-                return;
-            }
+        // The three methods below only serve IUntypedPublisher/IUntypedSubscriber implementations from
+        // outside Akka.Streams; every built-in one is an UntypedPublisher/UntypedSubscriber (#8731).
+        private static void SubscribeReflectively(IUntypedPublisher publisher, object subscriber)
+        {
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw RuntimeGenerics.NotSupported(publisher);
 
-            publisher.Subscribe(UntypedSubscriber.FromTyped(subscriberOrVirtual));
+            var subscribedType = RuntimeGenerics.ElementType(subscriber, typeof(ISubscriber<>));
+            publisher.Subscribe((IUntypedSubscriber)RuntimeGenerics.Instantiate(typeof(UntypedSubscriberImpl<>), subscribedType, subscriber));
+        }
+
+        private static void SubscribeToErrorPublisherReflectively(IUntypedSubscriber subscriber, Exception cause)
+        {
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw RuntimeGenerics.NotSupported(subscriber);
+
+            var typed = UntypedSubscriber.ToTyped(subscriber);
+            var subscribedType = RuntimeGenerics.ElementType(typed, typeof(ISubscriber<>));
+            var publisher = RuntimeGenerics.Instantiate(typeof(ErrorPublisher<>), subscribedType, cause, string.Empty);
+            ((UntypedPublisher)RuntimeGenerics.Instantiate(typeof(UntypedPublisherImpl<>), subscribedType, publisher)).Subscribe(subscriber);
+        }
+
+        private static void SubscribeCancellingSubscriberReflectively(IUntypedPublisher publisher)
+        {
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw RuntimeGenerics.NotSupported(publisher);
+
+            var publishedType = RuntimeGenerics.ElementType(UntypedPublisher.ToTyped(publisher), typeof(IPublisher<>));
+            var subscriber = RuntimeGenerics.Instantiate(typeof(CancellingSubscriber<>), publishedType);
+            publisher.Subscribe((IUntypedSubscriber)RuntimeGenerics.Instantiate(typeof(UntypedSubscriberImpl<>), publishedType, subscriber));
         }
     }
 
     /// <summary>
-    /// TBD
+    /// Internal contract for atomic modules that create an untyped processor together with its materialized value.
     /// </summary>
     internal interface IProcessorModule
     {
         /// <summary>
-        /// TBD
+        /// The inlet exposed by the processor module.
         /// </summary>
         Inlet In { get; }
         
         /// <summary>
-        /// TBD
+        /// The outlet exposed by the processor module.
         /// </summary>
         Outlet Out { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the processor, wrapped for both of its ports, plus the materialized value.
         /// </summary>
-        (object, object) CreateProcessor();
+        (IUntypedSubscriber Subscriber, IUntypedPublisher Publisher, object Materialized) CreateUntypedProcessor();
     }
 
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    /// <typeparam name="TOut">TBD</typeparam>
-    /// <typeparam name="TMat">TBD</typeparam>
+    /// <typeparam name="TIn">The type of elements accepted by the processor.</typeparam>
+    /// <typeparam name="TOut">The type of elements emitted by the processor.</typeparam>
+    /// <typeparam name="TMat">The type of the processor's materialized value.</typeparam>
     [InternalApi]
     public sealed class ProcessorModule<TIn, TOut, TMat> : AtomicModule, IProcessorModule
     {
         private readonly Func<(IProcessor<TIn, TOut>, TMat)> _createProcessor;
 
         /// <summary>
-        /// TBD
+        /// Creates a processor module with the supplied processor factory and attributes. The factory is invoked when
+        /// the module is materialized.
         /// </summary>
-        /// <param name="createProcessor">TBD</param>
-        /// <param name="attributes">TBD</param>
+        /// <param name="createProcessor">A factory that creates the processor and its materialized value.</param>
+        /// <param name="attributes">Attributes for this module, or <see langword="null"/> to use the processor defaults.</param>
         public ProcessorModule(Func<(IProcessor<TIn, TOut>, TMat)> createProcessor, Attributes attributes = null)
         {
             _createProcessor = createProcessor;
@@ -2549,26 +2749,26 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// The inlet through which the processor receives elements.
         /// </summary>
         public Inlet In { get; } = new Inlet<TIn>("ProcessorModule.in");
 
         /// <summary>
-        /// TBD
+        /// The outlet through which the processor emits elements.
         /// </summary>
         public Outlet Out { get; } = new Outlet<TOut>("ProcessorModule.out");
 
         /// <summary>
-        /// TBD
+        /// The flow shape formed by this module's inlet and outlet.
         /// </summary>
         public override Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Returns this module for its existing flow shape; processor modules cannot be assigned another shape.
         /// </summary>
-        /// <param name="shape">TBD</param>
-        /// <exception cref="NotSupportedException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="shape">The shape requested for the replacement.</param>
+        /// <exception cref="NotSupportedException">The requested shape is not equal to this module's shape.</exception>
+        /// <returns>This module.</returns>
         public override IModule ReplaceShape(Shape shape)
         {
             if(shape != Shape)
@@ -2577,31 +2777,37 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a carbon copy of this module with the same attributes and processor factory.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A new processor module with the same configuration.</returns>
         public override IModule CarbonCopy() => WithAttributes(Attributes);
 
         /// <summary>
-        /// TBD
+        /// The attributes applied to this processor module.
         /// </summary>
         public override Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a processor module that uses the supplied attributes and the same processor factory.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply to the new module.</param>
+        /// <returns>A new processor module.</returns>
         public override IModule WithAttributes(Attributes attributes) => new ProcessorModule<TIn, TOut, TMat>(_createProcessor, attributes);
 
         /// <summary>
-        /// TBD
+        /// Invokes the processor factory and returns the processor and its materialized value.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The created processor and materialized value.</returns>
         public (object, object) CreateProcessor()
         {
             var result = _createProcessor();
             return (result.Item1, result.Item2);
+        }
+
+        (IUntypedSubscriber Subscriber, IUntypedPublisher Publisher, object Materialized) IProcessorModule.CreateUntypedProcessor()
+        {
+            var (processor, materialized) = _createProcessor();
+            return (UntypedSubscriber.FromTyped(processor), UntypedPublisher.FromTyped(processor), materialized);
         }
     }
 }

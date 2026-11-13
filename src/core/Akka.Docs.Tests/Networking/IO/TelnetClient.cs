@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TelnetClient.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
@@ -14,6 +15,7 @@ using Akka.IO;
 
 namespace DocsExamples.Networking.IO
 {
+    // <telnetClient>
     public class TelnetClient : UntypedActor
     {
         public TelnetClient(string host, int port)
@@ -24,9 +26,8 @@ namespace DocsExamples.Networking.IO
 
         protected override void OnReceive(object message)
         {
-            if (message is Tcp.Connected)
+            if (message is Tcp.Connected connected)
             {
-                var connected = message as Tcp.Connected;
                 Console.WriteLine("Connected to {0}", connected.RemoteAddress);
 
                 // Register self as connection handler
@@ -45,14 +46,13 @@ namespace DocsExamples.Networking.IO
         {
             return message =>
             {
-                if (message is Tcp.Received)  // data received from network
+                if (message is Tcp.Received received)  // data received from network
                 {
-                    var received = message as Tcp.Received;
                     Console.WriteLine(Encoding.ASCII.GetString(received.Data.ToArray()));
                 }
-                else if (message is string)   // data received from console
+                else if (message is string s)   // data received from console
                 {
-                    connection.Tell(Tcp.Write.Create(ByteString.FromString((string)message + "\n")));
+                    connection.Tell(Tcp.Write.Create(Encoding.ASCII.GetBytes(s + "\n").AsMemory()));
                     ReadConsoleAsync();
                 }
                 else if (message is Tcp.PeerClosed)
@@ -68,4 +68,6 @@ namespace DocsExamples.Networking.IO
             Task.Factory.StartNew(self => Console.In.ReadLineAsync().PipeTo((ICanTell)self), Self);
         }
     }
+
+    // </telnetClient>
 }

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ChildStats.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,25 +11,24 @@ using Akka.Util;
 namespace Akka.Actor.Internal
 {
     /// <summary>
-    /// TBD
+    /// Marker interface for a child entry or reserved child name.
     /// </summary>
     public interface IChildStats
     {
     }
 
     /// <summary>
-    /// TBD
+    /// Marks an actor name as reserved while its child reference is being created.
     /// </summary>
     public class ChildNameReserved : IChildStats
     {
-        private static readonly ChildNameReserved _instance = new ChildNameReserved();
         private ChildNameReserved() {/* Intentionally left blank */}
 
         /// <summary>
-        /// TBD
+        /// The shared marker used for reserved child names.
         /// </summary>
-        public static ChildNameReserved Instance { get { return _instance; } }
-        /// <inheritdoc/>
+        public static ChildNameReserved Instance { get; } = new();
+
         public override string ToString()
         {
             return "Name Reserved";
@@ -47,11 +46,11 @@ namespace Akka.Actor.Internal
         private long _restartTimeWindowStartTicks;
 
         /// <summary>
-        /// TBD
+        /// Creates restart statistics for a child actor.
         /// </summary>
-        /// <param name="child">TBD</param>
-        /// <param name="maxNrOfRetriesCount">TBD</param>
-        /// <param name="restartTimeWindowStartTicks">TBD</param>
+        /// <param name="child">The child reference being tracked.</param>
+        /// <param name="maxNrOfRetriesCount">The number of restart attempts already counted.</param>
+        /// <param name="restartTimeWindowStartTicks">The monotonic-clock tick when the current retry window began, or zero when no window is active.</param>
         public ChildRestartStats(IInternalActorRef child, uint maxNrOfRetriesCount = 0, long restartTimeWindowStartTicks = 0)
         {
             _child = child;
@@ -60,31 +59,31 @@ namespace Akka.Actor.Internal
         }
 
         /// <summary>
-        /// TBD
+        /// The unique identifier from the child's actor path.
         /// </summary>
         public long Uid { get { return Child.Path.Uid; } }
 
         /// <summary>
-        /// TBD
+        /// The child actor reference being tracked.
         /// </summary>
         public IInternalActorRef Child { get { return _child; } }
 
         /// <summary>
-        /// TBD
+        /// The number of restart attempts counted in the current retry window.
         /// </summary>
         public uint MaxNrOfRetriesCount { get { return _maxNrOfRetriesCount; } }
 
         /// <summary>
-        /// TBD
+        /// The monotonic-clock tick when the current retry window began.
         /// </summary>
         public long RestartTimeWindowStartTicks { get { return _restartTimeWindowStartTicks; } }
 
         /// <summary>
-        /// TBD
+        /// Records a restart attempt and checks whether the strategy's retry limit permits it.
         /// </summary>
-        /// <param name="maxNrOfRetries">TBD</param>
-        /// <param name="withinTimeMilliseconds">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="maxNrOfRetries">The maximum number of retries; zero permits none. A negative value permits one retry per positive time window, or has no count limit when there is no positive window.</param>
+        /// <param name="withinTimeMilliseconds">The retry window in milliseconds, or a nonpositive value for no time window.</param>
+        /// <returns><c>true</c> if another restart is permitted; otherwise, <c>false</c>.</returns>
         public bool RequestRestartPermission(int maxNrOfRetries, int withinTimeMilliseconds)
         {
             if (maxNrOfRetries == 0) return false;
@@ -100,12 +99,6 @@ namespace Akka.Actor.Internal
                 return RetriesInWindowOkay(retriesIsDefined ? maxNrOfRetries : 1, withinTimeMilliseconds);
             }
             return true;
-            //retriesWindow match {
-            //  case (Some(retries), _) if retries < 1 ⇒ false
-            //  case (Some(retries), None)             ⇒ { maxNrOfRetriesCount += 1; maxNrOfRetriesCount <= retries }
-            //  case (x, Some(window))                 ⇒ retriesInWindowOkay(if (x.isDefined) x.get else 1, window)
-            //  case (None, _)                         ⇒ true
-            //}
         }
 
         private bool RetriesInWindowOkay(int retries, int windowInMilliseconds)

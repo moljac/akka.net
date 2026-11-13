@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="FlowExpandSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,7 +15,6 @@ using Akka.TestKit;
 using Akka.Util;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 // ReSharper disable InvokeAsExtensionMethod
 
 namespace Akka.Streams.Tests.Dsl
@@ -184,7 +183,7 @@ namespace Akka.Streams.Tests.Dsl
             source.SendNext(1);
 
             sink.Request(4)
-                .ExpectNext((1, 0), (1, 1), (1, 2))
+                .ExpectNext( (1, 0), (1, 1), (1, 2))
                 .ExpectNoMsg(TimeSpan.FromMilliseconds(100));
 
             source.SendNext(2).SendComplete();

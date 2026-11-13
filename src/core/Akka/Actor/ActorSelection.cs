@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorSelection.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -86,14 +86,14 @@ namespace Akka.Actor
                     case null:
                     case "":
                         break;
-                    case "**":                        
+                    case "**":
                         list.Add(SelectChildRecursive.Instance);
                         hasDoubleWildcard = true;
                         break;
-                    case string e when e.Contains("?") || e.Contains("*"):
+                    case string e when e.Contains('?') || e.Contains('*'):
                         list.Add(new SelectChildPattern(e));
                         break;
-                    case string e when e == "..":
+                    case string and "..":
                         list.Add(SelectParent.Instance);
                         break;
                     default:
@@ -177,9 +177,9 @@ namespace Akka.Actor
         /// Convenience method used by remoting when receiving <see cref="ActorSelectionMessage" /> from a remote
         /// actor.
         /// </summary>
-        /// <param name="anchor">TBD</param>
-        /// <param name="sender">TBD</param>
-        /// <param name="sel">TBD</param>
+        /// <param name="anchor">The starting actor reference to deliver the selection from.</param>
+        /// <param name="sender">The sender of the message.</param>
+        /// <param name="sel">The actor selection message to deliver.</param>
         internal static void DeliverSelection(IInternalActorRef anchor, IActorRef sender, ActorSelectionMessage sel)
         {
             if (sel.Elements.IsNullOrEmpty())
@@ -289,7 +289,6 @@ namespace Akka.Actor
             }
         }
 
-        /// <inheritdoc/>
         public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj)) return false;
@@ -298,13 +297,13 @@ namespace Akka.Actor
             return Equals((ActorSelection)obj);
         }
 
-        /// <inheritdoc/>
+        
         protected bool Equals(ActorSelection other)
         {
             return Equals(Anchor, other.Anchor) && Equals(PathString, other.PathString);
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -313,7 +312,7 @@ namespace Akka.Actor
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString()
         {
             var builder = new StringBuilder();
@@ -335,7 +334,7 @@ namespace Akka.Actor
         /// </summary>
         /// <param name="message">The message.</param>
         /// <param name="elements">The elements.</param>
-        /// <param name="wildCardFanOut">TBD</param>
+        /// <param name="wildCardFanOut">Whether the selection is a result of a wildcard fan-out operation.</param>
         public ActorSelectionMessage(object message, SelectionPathElement[] elements, bool wildCardFanOut = false)
         {
             Message = message;
@@ -358,7 +357,7 @@ namespace Akka.Actor
         /// </summary>
         public bool WildCardFanOut { get; }
 
-        /// <inheritdoc/>
+        
         public override string ToString()
         {
             var elements = string.Join<SelectionPathElement>("/", Elements);
@@ -405,13 +404,13 @@ namespace Akka.Actor
         /// </summary>
         public string Name { get; }
 
-        /// <inheritdoc/>
+        
         protected bool Equals(SelectChildName other)
         {
             return string.Equals(Name, other.Name);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj)) return false;
@@ -420,10 +419,10 @@ namespace Akka.Actor
             return Equals((SelectChildName)obj);
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode() => Name?.GetHashCode() ?? 0;
 
-        /// <inheritdoc/>
+        
         public override string ToString() => Name;
     }
 
@@ -446,10 +445,10 @@ namespace Akka.Actor
         /// </summary>
         public string PatternStr { get; }
 
-        /// <inheritdoc/>
+        
         protected bool Equals(SelectChildPattern other) => string.Equals(PatternStr, other.PatternStr);
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj)) return false;
@@ -458,16 +457,16 @@ namespace Akka.Actor
             return Equals((SelectChildPattern)obj);
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode() => PatternStr?.GetHashCode() ?? 0;
 
-        /// <inheritdoc/>
+        
         public override string ToString() => PatternStr;
     }
 
     public class SelectChildRecursive : SelectionPathElement
     {
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             if (obj is null) return false;
@@ -479,12 +478,12 @@ namespace Akka.Actor
         /// <summary>
         ///  Use this instead of calling the default constructor
         /// </summary>
-        public static readonly SelectChildRecursive Instance = new SelectChildRecursive();
+        public static readonly SelectChildRecursive Instance = new();
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode() => "**".GetHashCode();
 
-        /// <inheritdoc/>
+        
         public override string ToString() => "**";
 
     }
@@ -497,15 +496,15 @@ namespace Akka.Actor
         /// <summary>
         ///  Use this instead of calling the default constructor
         /// </summary>
-        public static readonly SelectParent Instance = new SelectParent();
+        public static readonly SelectParent Instance = new();
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => !ReferenceEquals(obj, null) && obj is SelectParent;
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode() => nameof(SelectParent).GetHashCode();
 
-        /// <inheritdoc/>
+        
         public override string ToString() => "..";
     }
 }

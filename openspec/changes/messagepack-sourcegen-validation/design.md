@@ -1,0 +1,529 @@
+## Context
+
+The POC at `Aaronontheweb/AkkaSerializationPoC` validated the preferred direction for generated serialization:
+
+- MessagePack is the default codec.
+- Generated serializers use MessagePack-CSharp directly on their hot path.
+- There is no generalized codec abstraction layer.
+- Source generation provides compile-time validation and avoids reflection.
+- Users explicitly register generated serializers through generated per-serializer helpers.
+
+The source generator should not be developed against hypothetical serialization APIs. It should run after `serializer-v2` makes V2 canonical and after classic remoting and persistence are bridged. That lets generated serializers validate the exact API Artery will consume.
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- Implement user-facing source-generated MessagePack serialization on top of `SerializerV2`.
+- Validate generated serializers through `Serialization`, classic remoting, events, and snapshots.
+- Confirm V2 API details before Artery envelopes are built.
+- Support AOT-oriented, reflection-free serializer code.
+- Support common Akka protocol-family message shapes, including `IActorRef` reply-to fields.
+- Produce an early benchmarkable POC before completing the full sourcegen matrix.
+- Preserve V1/V2 coexistence.
+
+**Non-Goals:**
+
+- Replacing all built-in protobuf serializers.
+- Adding MessagePack dependency to core Akka.
+- Implementing Artery envelopes.
+- Replacing classic remoting, persistence, Akka.Delivery, or DistributedData protobuf wrapper wire formats by default.
+- Removing V1 serializer support.
+
+## Decisions
+
+### 1. MessagePack Package Outside Core Akka
+
+`Akka.Serialization.V2` owns MessagePack dependencies, attributes, Akka-specific MessagePack helper conventions, and source generator integration.
+
+Core Akka owns only `SerializerV2` and compatibility infrastructure.
+
+### 2. Direct MessagePack Reader / Writer
+
+Generated serializers should create one `MessagePackWriter` per `Serialize` call and one `MessagePackReader` per `Deserialize` call, then pass those cursors by `ref` through generated helper methods. This avoids recreating `MessagePackReader` / `MessagePackWriter` per field while preserving MessagePack-CSharp's cursor semantics.
+
+Do not keep separate `AkkaReader` or `AkkaWriter` public wrapper classes for generated serializers. Tests that need to inspect or craft payloads should use MessagePack-CSharp cursors directly.
+
+### 3. Sourcegen Validates V2 API Before Artery
+
+Generated serializers must prove:
+
+- bytes-written/result reporting works,
+- unknown-size fallback works,
+- manifests work,
+- V1 adapter coexistence works,
+- persistence can store and recover generated payloads,
+- classic remoting can send generated payloads.
+
+### 4. Version-Tolerant Schema
+
+Fields are explicitly indexed using `[AkkaField(index)]`, and those indexes are encoded as field IDs in the MessagePack payload. The MessagePack representation should not depend on constructor or property array position for compatibility.
+
+Generated readers should skip unknown field IDs. Schema evolution should stay close to traditional MessagePack schema behavior: once a field ID is published, it must not be reused for a different meaning; renames are safe when the field ID stays stable; removing a field reserves its ID forever. Changing a field type is not compatible and should fail through normal MessagePack reader/type validation while older message versions are still in circulation.
+
+The source generator should not add extra historical schema validation, swapped-field detection, or schema-registry style checks. Analyzer rules should focus on the current compilation shape and obvious protocol-family mistakes.
+
+### 5. Explicit Per-Serializer Registration
+
+Generated serializers should expose registration helpers on the user-declared partial serializer class. Runtime assembly scanning is not part of the generated serializer path because it conflicts with NativeAOT and trimming goals.
+
+The primary shape is:
+
+```csharp
+[AkkaSerializer<IOrderProtocol>("orders", 120001)]
+public sealed partial class OrderSerializer : AkkaSerializer
+{
+    public static partial global::Akka.Serialization.SerializerDetails CreateSerializerDetails(global::Akka.Actor.ExtendedActorSystem system);
+}
+```
+
+`Name` and `SerializerId` are required, positional, get-only constructor arguments on
+`[AkkaSerializer<TProtocol>]` -- there is no named-property form and no auto-assignment (Decision
+14). The base class is the non-generic `AkkaSerializer`; the protocol marker interface is carried
+entirely by the attribute's type parameter (Decision 15).
+
+Generated serializers return reusable registration data. Non-hosted applications compose registrations explicitly into one `SerializationSetup`; Akka.Hosting integrations should feed generated registrations into Akka.Hosting's serializer accumulator. The generator does not emit a cross-assembly aggregate or a generated `CreateSetup()` helper.
+
+### 6. Protocol Marker Grouping
+
+Users declare a serializer module and a protocol marker interface. `[AkkaSerializable]` message types implement that interface. This is similar in spirit to `System.Text.Json` source-generated contexts, but it fits Akka protocol families better and avoids a second manually-maintained type list.
+
+### 7. `IActorRef` Field Support
+
+Generated serializers should support `IActorRef` fields by writing `Serialization.SerializedActorPath(actorRef)` and resolving through the serializer's `ExtendedActorSystem` on read. Empty paths represent `ActorRefs.NoSender` / null.
+
+`ActorRefs.NoSender` is treated as the null-equivalent actor reference value for generated payloads.
+
+### 7.1 Message Shape Scope
+
+The initial generator should force immutable message designs. Supported shapes should start with records / primary constructors, constructor-bound immutable classes, and init-only field or property assignment. Nested structures are required early, should support arbitrary-depth acyclic schemas, and must use explicit `[AkkaField]` IDs of their own. Nested value objects do not need serializer manifests unless they are also top-level protocol messages dispatched directly by Akka serialization. Nested value-object types still need an explicit generated serialization definition via `[AkkaSerializable]`; otherwise the generator should fail compilation.
+
+Factory methods, mutable setter-centric models, inheritance-heavy object graphs, and arbitrary polymorphic discovery are out of scope for the first production slice.
+
+### 7.2 Collection Scope
+
+Initial collection support should cover immutable and read-only collection shapes: `ImmutableArray<T>`, `ImmutableList<T>`, `ImmutableHashSet<T>`, `ImmutableDictionary<TKey,TValue>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `IReadOnlyDictionary<TKey,TValue>`, and arrays where needed for interop or performance. Interface collection targets must document their concrete deserialization type.
+
+**As implemented for 1.6**, the generator natively recognizes all ten collection shapes originally scoped: `T[]`, `List<T>`, `IReadOnlyList<T>`, `Dictionary<TKey,TValue>`, `ImmutableArray<T>`, `ImmutableList<T>`, `ImmutableHashSet<T>`, `ImmutableDictionary<TKey,TValue>`, `IReadOnlyCollection<T>`, and `IReadOnlyDictionary<TKey,TValue>` (`AkkaSerializerGenerator.TryMapCollection`, `TryMatchSingleArgumentKind`, `TryMatchKeyValueKind`; round-trip and wire-format coverage in `CollectionFieldSpec.cs` and `ImmutableCollectionFieldSpec.cs`). Every shape shares IDENTICAL MessagePack wire framing -- an `ImmutableList<int>` field is byte-for-byte identical on the wire to the same data in a `List<int>` field, and likewise `ImmutableArray<int>` vs `int[]` -- only the in-memory construction on deserialize differs per shape:
+
+- `IReadOnlyList<T>` and `IReadOnlyCollection<T>` deserialize to a concrete `List<T>`; `IReadOnlyDictionary<TKey,TValue>` deserializes to a concrete `Dictionary<TKey,TValue>` (same reasoning as `Dictionary<TKey,TValue>` itself).
+- `ImmutableList<T>`, `ImmutableHashSet<T>`, and `ImmutableDictionary<TKey,TValue>` deserialize via the type's own `Builder` (no capacity parameter -- these are tree/trie-backed, not array-backed) followed by `.ToImmutable()`. A duplicate key overwrites (last-write-wins, matching `Dictionary<TKey,TValue>`'s own indexer semantics); a duplicate `ImmutableHashSet<T>` element is silently deduplicated (matching a normal set's `Add`).
+- `ImmutableArray<T>` deserializes via `ImmutableArray.CreateBuilder<T>(capacity)` pre-sized to the wire's element count, followed by `Builder.MoveToImmutable()` -- a zero-copy handoff instead of a defensive copy, since `Count` always equals `Capacity` when the read loop finishes.
+
+`ImmutableArray<T>` is the one VALUE-typed (struct) collection shape; every other shape is a reference type, where "null" is a genuine CLR null and the existing null-vs-empty wire distinction (nil vs a zero-length array/map header) applies unchanged. `ImmutableArray<T>` cannot be compared to `null` (`value is null` does not compile against a non-nullable value type), and on current .NET (verified against the in-box `System.Collections.Immutable` on net10.0) accessing `.Length` or enumerating a `default(ImmutableArray<T>)` throws `NullReferenceException` -- so every code path touching an `ImmutableArray<T>` value must check `.IsDefault` before doing anything else with it. The implementation maps `ImmutableArray<T>`'s own `IsDefault`/`Empty` distinction onto the SAME nil-vs-empty wire framing every other collection shape already uses: `default(ImmutableArray<T>)` (`IsDefault` true) writes as MessagePack nil and reads back as `default`, exactly mirroring how `null` round-trips for a reference collection; `ImmutableArray<T>.Empty` (`IsDefault` false, `Length` 0) writes as a zero-length array header and reads back as a fresh, non-default empty array, staying distinct from the nil case on the wire and after deserialization. A REQUIRED (non-nullable) `ImmutableArray<T>` field therefore accepts a nil-encoded wire value without throwing -- `default(ImmutableArray<T>)` is a legal value of a value type, exactly as `0` is a legal value for a required `int` field, unlike a required reference-collection field, which rejects a nil value as "missing." `ImmutableArray<T>?` (`Nullable<ImmutableArray<T>>`) composes through the generator's existing nullable-value-field machinery; both `HasValue == false` and `HasValue == true` with an internally-default array collapse to the same wire nil and both read back as `HasValue == false`.
+
+Collections compose (nested `List<List<int>>`, jagged arrays, dictionaries of lists, `ImmutableList<ImmutableArray<int>>`, `ImmutableDictionary<string, List<int>>`, collections of nested `[AkkaSerializable]` types), and an unsupported element/key/value type collapses the whole field to `FieldKind.Unsupported` (AKKASG003) rather than partially generating -- for every one of the ten shapes, not just the original four. Collection shapes outside this ten-shape scope (`HashSet<T>`, `ImmutableSortedSet<T>`, `ImmutableQueue<T>`, etc.) remain AKKASG003, by design.
+
+### 8. Wrapper Validation Without Wire Replacement
+
+Generated payloads should be validated inside existing Akka.Delivery and DistributedData wrappers where practical. This proves nested serializer behavior without changing those subsystems' default protobuf wire formats.
+
+Envelope payloads are serializer boundaries, not nested generated schemas. A generated MessagePack envelope should preserve the wrapped payload's Akka serializer id, manifest, and serialized bytes, then recover it through normal Akka deserialization. This matches existing Akka.Remote `WrappedPayloadSupport`, Akka.Delivery payload handling, and DistributedData `OtherMessage` conventions.
+
+Generated object payload boundaries are expressed with `[AkkaEnvelopePayload]` on the wrapper field. The marker is field-level because the same message type may be serialized inline in one schema and treated as an Akka serializer boundary in an envelope schema. The generator emits runtime serializer lookup for marked fields and does not structurally MessagePack-encode the marked payload value.
+
+Pre-serialized envelope payloads, such as Akka.Delivery `ChunkedMessage`, are a related but distinct shape: they already carry serialized bytes plus serializer id and manifest. Generated envelope support should distinguish object payload fields that require serializer lookup from already-captured serialized payload metadata.
+
+`SerializerV2.SizeHint` is an exact-size contract: non-negative values mean the exact number of bytes `Serialize` will write, while `SerializerV2.UnknownSize` means exact size is not cheaply known. Unknown size is transitive through nested generated values and envelope payloads. If any nested field or payload serializer returns `UnknownSize`, every enclosing generated serializer must return `UnknownSize`. Generated serializers should report exact sizes only when they can prove the complete encoded size.
+
+MessagePack `bin` fields require the byte length before payload bytes are written. Envelope payloads with unknown or expensive-to-compute length need a staging buffer before the outer `bin` field can be written. Benchmarking showed that forcing exact-size precomputation before envelope writes can duplicate expensive work, such as UTF8 string sizing and actor-ref path serialization, and can be slower than staging. The default envelope path should therefore stage V2 payload bytes with a reusable buffer and dispatch V2 payload reads from `ReadOnlySequence<byte>` to avoid the read-side byte-array copy. Exact-size direct writing should be a future targeted optimization only for schemas where size calculation is demonstrably cheap.
+
+The original SerializerV2 proof-of-concept demonstrated a different optimization: inline structural nesting, where a V2 envelope writes serializer id and manifest metadata, then delegates to the inner V2 serializer using the same MessagePack writer so the payload becomes a nested MessagePack value instead of an opaque `bin`. That design is feasible across assemblies if generated MessagePack serializers expose an explicit cross-assembly MessagePack contract and are registered normally, but it is not equivalent to Akka's default serializer boundary. It only works for V2 MessagePack serializers, requires a distinct wire shape or version marker from opaque payload bytes, and custom or V1 serializers still need a binary-blob fallback. Closed generated unions are also feasible across referenced assemblies, but only from explicit user-declared payload sets; they should not rely on runtime assembly scanning or automatic cross-assembly discovery.
+
+### 8.1 Future Built-in Serializer Migration Strategy
+
+Future MessagePack integrations for built-in Akka.Remote, Akka.Persistence, Akka.Delivery, or DistributedData serializers should fork existing serializers instead of changing their wire format in place. Existing serializer IDs must remain available for reads, and new MessagePack/generated serializers must use new unique serializer IDs and manifests. This preserves mixed-version compatibility, persisted journal and snapshot readability, and user applications that depend on custom or legacy serializer bindings.
+
+Read compatibility and write selection should be treated separately. New integrations should read both old and new serializer IDs where practical, while writes should remain controlled by configuration, feature flags, or explicit protocol capability checks. Remoting and cluster features must not emit new serializer IDs to peers that are not known to support them; early releases may require an "all nodes upgraded before enabling" rule rather than automatic negotiation.
+
+Persistence needs the strictest compatibility rule: historical events and snapshots are durable wire contracts. New serializers can be offered for opt-in new writes, but old serializers must remain readable indefinitely unless a separate migration tool and operational process is provided. DistributedData and Akka.Delivery should follow the same serializer-boundary model for arbitrary user payloads, because replicated state and delivery envelopes can carry payloads owned by application serializers outside Akka's control.
+
+### 9. Early Benchmark POC Stop Point
+
+Before completing the full spec, produce a basic BenchmarkDotNet POC using real C# protocol-family messages. The first benchmark should compare generated MessagePack serialization against current baseline serializer behavior and report throughput/allocation/payload-size signals.
+
+### 10. Packaging
+
+Ship as one user-facing package if packing can be done cleanly. Internal split projects for runtime and generator are acceptable, but users should not have to install a separate runtime package and generator package manually.
+
+### 11. Foreign-Type Formatters
+
+The generator's nested-value-object rule (Decision 7.1: every nested field type must carry `[AkkaSerializable]` and its own explicit `[AkkaField]` schema) fails closed for types the generator cannot annotate. Core Akka types such as `Akka.Actor.Address` are the canonical case: `[AkkaSerializable]` lives in `Akka.Serialization.V2`, which references `Akka` — annotating `Address` directly would require a dependency cycle. Before this decision, a serializer with an `Address`-typed field (nested or top-level) always failed compilation with `AKKASG007` (`MissingNestedSerializableDefinition`), with no escape hatch. This is exactly the friction that forced Artery's handshake messages (`HandshakeReq`/`HandshakeRsp`, which carry `UniqueAddress`/`Address`) onto a hand-rolled base-class subclass (`Akka.Remote.Artery.ArteryControlMessageSerializer`, at the time named `MessagePackSerializer<T>` -- see Decision 15 for the later rename to `AkkaSerializer`) instead of a generated one.
+
+Two options were evaluated:
+
+1. **Relocate or metadata-match `[AkkaSerializable]` so core types can opt in.** Either move the attribute to a dependency-free assembly core Akka can reference, or have the generator match attributes by metadata name/shape across assemblies instead of a single compile-time attribute reference. **Rejected.** The generator is syntax-driven (`ForAttributeWithMetadataName` on the *current* compilation's syntax trees): `[AkkaSerializable]` types declared in a *referenced* assembly (like core `Akka`) are invisible to it regardless of where the attribute type lives, because there is no syntax node to walk in the referencing compilation. Making that work would require a metadata-based schema-extraction redesign (reading previously-generated schema facts back out of referenced assemblies), which is a much larger change than the problem justifies. It also permanently couples core Akka types to a durable generated-wire schema the moment they're annotated, and it still cannot express context-dependent encodings — `IActorRef` and `ActorPath` fields need transport-aware address substitution (`Serialization.SerializedActorPath`, `ActorPath.ToSerializationFormatWithAddress`) that no static per-type schema can capture.
+
+2. **A per-serializer formatter escape hatch.** **Chosen.** A serializer opts a specific foreign type into hand-written encoding via `[AkkaSerializerFormatter<TTarget, TFormatter>]`, where `TFormatter` implements `Akka.Serialization.V2.IAkkaMessagePackFormatter<TTarget>`:
+
+   ```csharp
+   public interface IAkkaMessagePackFormatter<T>
+   {
+       void Write(ref MessagePackWriter writer, T value);
+       T Read(ref MessagePackReader reader);
+       int SizeOf(T value); // exact byte count, or SerializerV2.UnknownSize
+   }
+   ```
+
+   The contract mirrors the rest of the generator's field conventions: `Write`/`Read` must be symmetric; `value` is never null/absent for non-nullable fields — the generator, not the formatter, owns MessagePack nil encoding for nullable fields; `SizeOf` must return the *exact* encoded byte count or `UnknownSize`, and an incorrect non-negative value silently corrupts the enclosing serializer's `SizeHint` contract the same way a buggy nested `SizeOf<Message>` would. `Write` must also produce exactly ONE top-level MessagePack value (wrap multiple values in a single array or map): the generated map framing and the unknown-field forward-compatibility path (`reader.Skip()`) both depend on one field id mapping to one MessagePack value, and multiple top-level values desync older readers during rolling upgrades. The exact-size encoding math the generated serializers use is exposed as the public `MessagePackSizes` static class precisely so external hand-written formatters — Akka.Remote's future formatters and user formatters in other assemblies alike — can compose the same helpers when honoring the exact-or-`UnknownSize` contract instead of hand-deriving MessagePack header sizes.
+
+   `[AkkaSerializerFormatter]` is applied to the `[AkkaSerializer]` partial class and is **serializer-scoped**: the same foreign type can be formatted differently (or not at all) by different serializers in the same compilation, because the generator resolves field kinds per serializer in the output stage rather than globally at extract time. A formatter registration **overrides every field-kind resolution** the generator would otherwise infer for the target type — scalars, `Object`, `ActorRef`, `Enum`, `MissingSerializableDefinition`, and `Unsupported` alike — with one exception: `[AkkaEnvelopePayload]` always wins, because it is an explicit field-level marker for a distinct concern (an Akka serializer boundary, not a structural encoding). `Nullable<T>` fields match the formatter registration on the *underlying* value type, so `Address?` and `TestUniqueAddress?`-shaped fields both route through the same formatter as their non-nullable counterparts, with the generator handling the nil branch.
+
+   Formatters are constructed once per generated serializer instance, in the generated constructor, using either a public parameterless constructor or a public constructor taking `Akka.Actor.ExtendedActorSystem` (for formatters that need system context, e.g. to resolve local vs. remote encoding). When BOTH constructors are present, the generator prefers the `ExtendedActorSystem` one: the generated serializer always has the system in hand, and system context is why a formatter declares that constructor in the first place — silently picking parameterless would drop it. Registering a formatter that exposes neither usable constructor shape fails compilation (`AKKASG010` no usable constructor). `TFormatter`'s interface conformance to `IAkkaMessagePackFormatter<TTarget>` is no longer a generator diagnostic at all: the `where TFormatter : IAkkaMessagePackFormatter<TTarget>` constraint on the now-generic `[AkkaSerializerFormatter<TTarget, TFormatter>]` attribute (Decision 15) makes a non-conforming formatter a compiler error at the attribute usage site. `AKKASG008` narrows to the one thing that constraint cannot express — `TFormatter` must not be abstract (there is deliberately no `new()` clause, since an `ExtendedActorSystem`-only constructor is legitimate) — instead of silently falling back to the old nested-object behavior. Registering two formatters for the same target type on one serializer also fails compilation (`AKKASG009`), as does registering a target type that is not a plain named type — arrays and closed generics (`AKKASG011`; an open generic can no longer reach this check either, since C# does not allow an unbound generic type as an attribute type argument) — rather than the registration silently doing nothing or colliding on the arity-less type name the generator uses for field matching.
+
+   Two built-in formatters ship in `Akka.Serialization.V2`: `AddressFormatter` for `Akka.Actor.Address`, and `ActorPathFormatter` for `Akka.Actor.ActorPath`. `AddressFormatter`'s wire format is deliberately **byte-identical** to `ArteryControlMessageSerializer`'s hand-rolled `WriteAddress`/`ReadAddress`/`SizeOfAddress` (a 4-element array of `[Protocol, System, Host-or-nil, Port-or-nil]`), so a generated serializer that registers `[AkkaSerializerFormatter<Address, AddressFormatter>]` can read and write the exact bytes Artery's control-message serializer already produces on the wire today. `ActorPathFormatter` writes a single transport-aware string using the same convention the generator already uses for `IActorRef` fields: it reads the thread-static transport context (`Serialization.CurrentTransportInformation`, accessed directly via an `InternalsVisibleTo` grant to `Akka.Serialization.V2` so no exception is thrown or caught on the non-transport path) and renders the path with the transport's address via `ActorPath.ToSerializationFormatWithAddress` when one is set; outside any transport scope it falls back to the owning system's `Provider.DefaultAddress` when constructed with an `ExtendedActorSystem` (which generated serializers do automatically, since the generator prefers that constructor — matching `Serialization.SerializedActorPath` semantics, so the path stays remotely resolvable), and only to `ActorPath.ToSerializationFormat()` when it has no system at all. Because `SizeOf` and `Write` each read the thread-static context independently, transport-sensitive formatters require both calls to run under the same transport scope/thread for the exact-size contract to hold — the generated serializers and the Artery encode path do this naturally. This closes the loop that started `ArteryControlMessageSerializer`'s hand-rolled fallback: a generated serializer can now reproduce that exact wire format, so the hand-rolled class is a candidate for replacement by a generated one in a follow-up change, without a wire-format break.
+
+   As a related but independently useful fix in the same change, the generator now emits the serializer partial class with the **declared accessibility of the user's serializer symbol** (`public` or `internal`) instead of hardcoding `public`. This has no direct dependency on the formatter escape hatch, but it was required to exercise `[AkkaSerializerFormatter]` against `internal` serializers (the shape Akka.Remote's own control-message serializer would need if it were later migrated to the generator), and there was no reason to gate it behind a separate change.
+
+### 12. Oversized-Payload Determinism
+
+Oversized-payload failure is deterministic and happens at encode time. The contract: a caller-imposed cap — a transport's maximum-frame-size expressed as `PooledPayloadWriter.maxCapacity` — makes any payload whose encoding would exceed that cap fail *during* `Serialize` with a typed `Akka.Serialization.PayloadSizeExceededException` carrying the attempted size and the configured cap. A truncated or corrupt frame is never observed downstream: the writer refuses the write that would cross the boundary, so no partial frame larger than the cap ever exists to hand to a transport.
+
+The writer-side mechanism is serializer-v2 design.md Decision 12 (`PooledPayloadWriter` + ownership contract): every `GetSpan`/`GetMemory`/`Advance` that would push the written count past `maxCapacity` throws, and writer mechanics are covered by `Akka.Tests.Serialization.PooledPayloadWriterSpec`. What this change pins (`OversizedPayloadDeterminismSpec`, task 6.8) is the *serializer-side* half of the contract:
+
+- The exception propagates out of the generated serializer's `Serialize` call, for both plain generated messages and `[AkkaEnvelopePayload]`-carrying envelopes whose staged payload bytes push the outer writer past its cap.
+- Generated serializers are stateless, so a mid-write failure leaves the serializer instance fully reusable — the same instance round-trips the next message with no cleanup.
+- The writer is reusable after `Reset()`: the transport's dead-letter-then-reuse pattern (translate the exception into a dead-letter for that send, reset the pooled writer, encode the next message into the same buffer) works without re-renting.
+- The written count never exceeds the cap after a failure, so the encode-time boundary is hard, not advisory.
+
+Exact generated `SizeHint` (task 5.12, extended to formatter-backed fields by Decision 11) is the complementary happy-path tool: callers can pre-size `initialCapacityHint` from `SizeHint` so the exception path is reserved for genuinely oversized messages rather than being a common-case growth mechanism.
+
+### 13. Manifest-Discriminated Unions And Closed Generic Registrations
+
+Two structural shapes were added after the decisions above, both following the closed-polymorphism precedent `System.Text.Json`'s source generator already established (`[JsonDerivedType]`, `[JsonSerializable]` on closed constructions).
+
+**Unions.** `[AkkaUnion(Type first, params Type[] rest)]` declares a closed, explicitly-enumerated set of concrete `[AkkaSerializable]` member types, either on the union's base interface/abstract class (type-level, inherited by every field of that static type) or on one `[AkkaField]` property (a narrowing override for that field only). The wire format is a manifest-discriminated 2-entry map, `{1: member manifest, 2: inline member field map}` — deliberately distinct in shape from the `[AkkaEnvelopePayload]` frame (`{1: serializerId, 2: manifest, 3: opaque bytes}`), because a union member is encoded structurally inline at compile time, not resolved through runtime Akka serializer lookup. Write dispatch matches the exact runtime type: a value whose exact type is not a declared member — including an undeclared subtype of a declared member — fails serialization rather than silently widening. Because that failure mode is specifically about undeclared *subtypes*, the generator emits an advisory (`AKKASG025`, `DiagnosticSeverity.Info`, not an error) when a union member type is not sealed, rather than blocking compilation over a shape that is often intentional. Dispatch helpers are deduplicated by (field static type, member set) identity, so the common case — one type-level `[AkkaUnion]` declaration reused by many fields — emits one helper, not one per field.
+
+**Closed generic registrations.** A Roslyn source generator is syntax-driven and cannot reify an open generic type, so a generic `[AkkaSerializable]` type (e.g. `Wrapper<T>`) is never itself serialized — the open definition exists only to host the `[AkkaField]` schema its closed constructions share. `[AkkaSerializerIncludes<Wrapper<IOrder>>(Manifest = ...)]`, applied to the `[AkkaSerializer]` class, registers one closed construction; each registration then behaves exactly like an ordinary top-level message, with its own manifest and dispatch arm, and its generic fields resolved against the concrete type arguments. A generic definition that implements the serializer's protocol interface with no registered closed construction fails compilation (`AKKASG022`), and a field typed as an unregistered closed construction fails compilation (`AKKASG023`) — the source-generation analog of System.Text.Json rejecting an unbound generic in `[JsonSerializable]`.
+
+Scope differs between the two features, and `CrossAssemblyBaselineSpec` pins the current behavior. A union member type declared only in a referenced assembly is invisible to this generator. It fails AKKASG015 even when it carries `[AkkaSerializable]` and a manifest in that assembly. A closed-generic registration is not scoped that way. `[AkkaSerializerIncludes<T>]` resolves the generic definition through symbol APIs, not through the per-compilation syntax registry that backs the union check. So a closed construction over a generic definition that lives only in a referenced assembly (`Wrapper<T>` in A, `[AkkaSerializerIncludes<Wrapper<int>>]` on B's serializer) compiles and generates correctly today. What fails across assemblies is a non-generic `[AkkaSerializable]` type used as a nested field, and a union member declared in a referenced assembly. Before this branch the nested-field case was misreported as AKKASG023 (unregistered closed generic). It now reports AKKASG007, and both diagnostics name the type, its assembly, and the fixes that work today.
+
+### 14. Always-Explicit Serializer Identity
+
+`[AkkaSerializer<TProtocol>(string name, int serializerId)]` requires both constructor arguments at every call site — there is no auto-assigned id or alias, and no named-property form. Two properties of source generation make auto-assignment unsafe rather than merely inconvenient: a generator's registration order across a compilation is nondeterministic (so a stable auto-id cannot be derived from declaration order), and a collision with a serializer id or alias defined elsewhere — for example in HOCON `akka.actor.serialization-bindings` / `serializers` — is invisible to the generator at compile time, so it cannot even validate the id it would pick. `AKKASG001`/`AKKASG002` accordingly guard only argument *validity* (non-null/empty/whitespace name; positive id), not presence, since the compiler now makes omission impossible.
+
+### 15. Illegal-States-Unrepresentable Attribute Pass
+
+A design review (issue #8384, PR #8385) reshaped the attribute surface so several states the generator previously rejected with a diagnostic became states the C# compiler rejects outright, and added generator-level validation of the `[AkkaSerializer]` class shape itself that had no coverage before:
+
+- The base class dropped its `TProtocol` type parameter — `MessagePackSerializer<TProtocol>` became the non-generic `AkkaSerializer` — moving protocol identity entirely onto `[AkkaSerializer<TProtocol>]` and eliminating a shape where a serializer's base-class type argument and its attribute's type argument could silently disagree. (The rename also sidesteps a `CS0104` ambiguity against `MessagePack.MessagePackSerializer` under dual top-level usings.)
+- `[AkkaUnion]`'s constructor became `(Type first, params Type[] rest)` (Decision 13), so `[AkkaUnion()]` — an empty member set — no longer compiles; `AKKASG019` keeps only the duplicate-member-type half of what it used to guard.
+- `[AkkaSerializerFormatter<TTarget, TFormatter>]` became generic with a `where TFormatter : IAkkaMessagePackFormatter<TTarget>` constraint (Decision 11), so non-conformance to the formatter interface is now a compiler error at the attribute usage site rather than an `AKKASG008` diagnostic.
+- The generator now validates the `[AkkaSerializer]` class shape itself — partial, non-generic, derives from `AkkaSerializer` (`AKKASG032`) — that its protocol type argument is an interface (`AKKASG033`), that no two serializers bind the same protocol (`AKKASG031`), and that every type implementing a bound protocol is `[AkkaSerializable]` (`AKKASG029`). Each of these closes a gap where the previous shape either compiled into a silently-empty dispatch switch or failed only at runtime on first send.
+- Diagnostic message text and hand-written runtime code stopped using `global::`-qualified type names in favor of human-readable names (readability only; no behavior change).
+
+### 16. Schema Extraction From Referenced-Assembly Metadata
+
+A message in serializer B can have a field whose type lives in assembly A. The generator in B reads that type's schema from A's compiled metadata. It reads the attributes, the properties, and the constructor. It emits private `Write`, `Read`, and `SizeOf` helpers inside B's own serializer. This covers three uses of a type from a referenced assembly:
+
+- the type of a nested field
+- a member type of a union
+- the generic definition behind a closed-generic registration, from Decision 13
+
+Local declarations keep priority. A type declared in the current compilation behaves as before. The closed-generic path already extracts schema this way today. This decision extends that technique to nested fields and union members.
+
+A's metadata already has everything the generator needs:
+
+- the serializable attribute and its manifest
+- the field attributes and their indexes
+- the property types
+- the constructor shape
+
+The generator builds the codec inside B, not inside A. So A needs no serializer. A needs no reference to the source generator. Nothing couples A and B at run time. The only calls across the boundary are normal constructor and property calls, the kind any code makes on any type.
+
+Two alternatives were rejected. The first is a public generated per-type contract. A generates a public formatter for each of its types. B calls that formatter. This cannot handle closed generics, because A cannot know which constructions B will register. It also ties A and B together at the code level. The second is a DTO mirror. B declares its own copy of each A type. B marks the copy serializable. B converts between the two by hand. Akka's own internal migration code does this today, for a handful of types. It does not scale to a customer with hundreds of types.
+
+A type from a referenced assembly must carry `[AkkaSerializable]`. It must also be accessible from B: public, or visible through `InternalsVisibleTo`. A type that has the attribute but is not accessible from B fails compilation. This is a new diagnostic, distinct from the existing missing-attribute diagnostic.
+
+Assembly A never gets a diagnostic. No generator work runs there. Every failure reports at the local reference site in B. That site is the property that names the type from A, or the registration attribute for a closed generic. The message names the upstream type and its assembly. The failure can sit one level down, inside A's own schema. Then the message also names the failing member of the A type. It does not stop at the property in B that referenced it. Every such message offers both fixes. Fix one: add `[AkkaSerializable]` to the type in A. That type then needs to reference `Akka.Serialization.V2`. Fix two: register a hand-written `[AkkaSerializerFormatter]` on B's serializer for that type.
+
+Two serializers in two different assemblies can both nest the same A type. Each one generates its own private copy of the codec. The copies are byte-identical by construction. Both read the same attributes from the same metadata. Both emit from the same extraction routine. There is no shared runtime codec to keep in sync. There is only independently generated code that happens to agree.
+
+Characterization facts about today's behavior live in `CrossAssemblyBaselineSpec`, on branch `feature/serialization-v2-cross-assembly-baseline`:
+
+- a nested field type from a referenced assembly failed with a mislabeled AKKASG023, "closed generic must be registered." That branch changes it to AKKASG007, with a hint that names the type, its assembly, and the fixes that work before this decision ships
+- a union member from a referenced assembly fails with AKKASG015, with the same hint
+- a generic definition behind a closed-generic registration already works today. This decision does not change that case
+
+**Implementation addendum (F1).** The points above were decided while building the metadata-schema stage; the design text above did not fully cover them.
+
+*Where the stage lives.* A new per-compilation stage, `ComputeMetadataSchemas` in `AkkaSerializerGenerator.MetadataSchemas.cs`, wired next to `ComputeCompilationFacts` (`context.CompilationProvider.Combine(messages).Combine(serializers).Select(...)`) but kept in its own file: `AkkaSerializerGenerator.Facts.cs` only enumerates and buckets symbols for Decision 19's future walk, while this stage does real extraction work, resolving a referenced-assembly symbol and running it through the same `ExtractMessageCore` a local type uses. Unlike `CompilationFacts`, which is deliberately not combined into `ResolvedSerializers`' own inputs yet, this stage is combined in directly: a referenced-assembly nested field or union member cannot resolve at all unless `ResolveSerializerMessages` can see its schema. Empirically this third combined input does not cost `ResolvedSerializers` its `Cached` best case for an edit the stage does not care about (see `GeneratorIncrementalScenariosSpec`'s scenario (f)).
+
+*The cache key.* The stage's seed set is every non-generic, foreign-assembly `TypeKey` a declared message's field (an Object mapping, recursively through collections) or union member names, plus the same walk over each serializer's own closed-generic schemas (a registered closed construction's fields can name a foreign type too). A generic construction is excluded from the seed set: the closed-generic registration path already resolves it via symbols, unaffected by this decision. From that seed set the stage performs a breadth-first walk, following each newly-resolved schema's own foreign references, so a type nested arbitrarily deep in a referenced assembly still resolves.
+
+*The accessibility check is two different mechanisms, not one.* A referenced TYPE's own accessibility is checked directly with `Compilation.IsSymbolAccessibleWithin(symbol, compilation.Assembly)`, which correctly honors `InternalsVisibleTo`, unlike the existing declared-accessibility-only check local extraction uses (safe there, since same-compilation `internal` always means accessible). A referenced type's MEMBER accessibility cannot be checked the same way: Roslyn's metadata importer hides a member this compilation cannot see entirely from `symbol.GetMembers()` when the member's own accessibility is too low (confirmed empirically: an `internal` property with no `InternalsVisibleTo` grant does not appear in the member list at all). A wholly inaccessible property is therefore undetectable from B's side; it is silently absent from the metadata schema, a Roslyn-level limit no diagnostic can observe. What IS detectable, and is the shape the "non-public property" wording anticipates, is a property whose own accessibility is high enough to appear in `GetMembers()` (for example `public`) but whose getter specifically is separately restricted (`public string Secret { internal get; set; }`): Roslyn resolves `IPropertySymbol.GetMethod` to `null` for that shape, which `ExtractMessageCore` already treats as "no accessible getter" (`InvalidFieldInfo`, the same path AKKASG028 uses locally). The metadata stage therefore does not duplicate accessibility logic per property: it calls `ExtractMessageCore` unconditionally (after the type-level check passes), then treats a non-empty `MessageInfo.InvalidFields` or `ConstructionPlan.Errors` as an accessibility failure, describing it from the first offending field/error.
+
+*Failure propagation.* A candidate schema that itself names a type already known to be a failure becomes a failure too, attributed to that nested failure's own description (not a generic "X is inaccessible" for the outer type) -- this is what makes the one-level-down case in the design text above concrete. The propagation runs to a fixed point, since propagating one failure can turn a second, previously-clean candidate into a failure when it nests the first.
+
+*Local-declaration priority.* `ResolveSerializerMessages` merges the metadata schema table underneath the local/closed-generic message table (metadata entries first, then overlaid by local ones), so a local declaration always wins on the rare key collision -- matching "local declarations keep priority" above literally.
+
+*The new diagnostic.* AKKASG039, `NestedFieldNotAccessibleCrossAssembly` / `UnionMemberNotAccessibleCrossAssembly` (two message variants sharing one id, matching the AKKASG007/AKKASG015 cross-assembly pattern), Error severity. Reports at the same local site AKKASG007/AKKASG015 already use (`LocationKey(message.Key, field.Name)`), naming the directly-referenced type plus, via a free-text argument, whichever type/member is actually inaccessible.
+
+*Baseline case numbering.* The characterization facts above (this section) describe exactly two behavior changes: the nested-field case and the union-member case. `CrossAssemblyBaselineSpec`'s six original cases were re-examined against a fresh test run before any code changed: only its `Nested_field_type_from_referenced_assembly` and `Union_members_from_referenced_assembly` cases pinned a failure this decision fixes. Its `Generic_definition_from_referenced_assembly`, `Unreachable_closed_generic_registration_of_customer_envelope`, `Envelope_payload_on_generic_property_from_referenced_assembly`, and `Protocol_implementor_declared_only_in_referenced_assembly` cases were already pinning success or a still-correct failure unrelated to this decision (matching the "generic definition... already works" bullet above) and were left unchanged.
+
+### 17. Unknown Union Members: The Generator Throws, The Caller Decides
+
+This decision closes the two "to be designed" notes in issue #8384. Note 1 proposed an envelope fallback on write, for a union value whose runtime type is not a declared member. This is rejected. Note 2 proposed skip-or-null on read, for an unknown union manifest. This is rejected too. On write, if the runtime type is not a declared member, the generated code throws `SerializationException`. On read, if the manifest does not match a declared member, the generated code throws `SerializationException`. The generator adds no fallback. The generator adds no opt-in, for either case.
+
+The wire already decides where a message goes. Nothing in that path leaves room for a fallback. The receiver dispatches on the serializer id, then on the manifest. It can never choose a different serializer or a different type. A union frame does not even carry a serializer id. The enclosing serializer owns every member. So the generated manifest switch is the only dispatch point that exists. An envelope fallback on write would add a second wire shape in the same slot. The union would have to stay compatible with that shape forever. It would also need a serializer binding. That brings back the runtime lookup the union exists to remove. Skip-or-null on read causes silent data loss, on any field the schema marks as required.
+
+Read dispatch has three steps. Each step either matches or throws. First, the serializer id on the wire selects one serializer. An unknown id throws "Cannot find serializer with id." Second, the generated `FromBinary` manifest switch selects one message type. Third, inside a union field, the union frame's own manifest selects one declared member. An unknown manifest throws inside the generated reader. This is the same way a hand-written string-manifest serializer throws, on a manifest it has no case for.
+
+A new field on an existing message or union member is a different problem. It already works today:
+
+- the reader skips field ids it does not recognize
+- a missing nullable field is allowed
+- a missing non-nullable field throws "Missing required field"
+
+The rule for a new field is to make it nullable. A new member type added to a union is different. That mechanism does not cover it. An old build has no case for a manifest it has never seen. Skipping keys cannot produce a type that does not exist in that build. The rule for a new member type is the same as for a new top-level message: deploy before send. For persisted messages, deploy before write. An old build cannot recover an event it cannot deserialize.
+
+After the exception leaves the generated serializer, the caller decides what happens next. None of these callers get a new rule. Classic remoting fails the association on an inbound deserialization error. Classic remoting keeps the association on an outbound error. Persistence fails recovery.
+
+### 18. Closed-Set Expansion And Adoption On The Serializer
+
+A registration can have a type argument with a closed set. The closed set can be the serializer's own protocol interface. The closed set can be any type carrying a type-level `[AkkaUnion]`. Such a registration expands to one closed construction per member of that set. It does not register only the single construction named in the attribute. For example, take `[AkkaSerializerIncludes<Envelope<ICommsMessage>>(ManifestPrefix = "env")]` on a serializer whose protocol is `ICommsMessage`. It registers `Envelope<AcceptCassette>`, `Envelope<OrderCancelled>`, and one construction per remaining member of the protocol set. Each construction gets its own dispatch arm, private helpers, and manifest.
+
+The registration attribute gains a new property: `ManifestPrefix`, alongside the existing `Manifest`. The two properties combine into four cases:
+
+- `Manifest` alone registers exactly the named construction, with no expansion. This is today's behavior.
+- `ManifestPrefix` alone expands over the closed set. It does not register the literal construction.
+- both together register the literal construction under `Manifest`, and the expansion under `ManifestPrefix`
+- neither property present is still AKKASG006, the existing manifest-required diagnostic
+
+`ManifestPrefix` on a construction whose type argument is a concrete class is an error. A concrete class has no set to expand.
+
+The manifest for each expanded construction comes from a fixed formula. The generator evaluates it once. Both sides of the wire produce the same result:
+
+```
+manifest(explicit registration, Manifest = "m")   = "m"
+manifest(M) for a member of the set               = the top-level manifest of M
+manifest(G<M>, ManifestPrefix = "p")              = "p" + "/" + manifest(M)
+manifest(G<M1, M2>, ManifestPrefix = "p")         = "p" + "/" + manifest(M1) + "/" + manifest(M2)
+manifest(G<H<M>>, ManifestPrefix = "p")           = "p" + "/" + manifest(H<M>)
+```
+
+Every member of a closed set already has its own manifest. AKKASG006 requires one on a top-level message. The equivalent union rule requires one on a union member. The nested case, `G<H<M>>`, needs `H<M>` itself registered separately. Only then does it have a manifest to compose into the outer formula. Both sides of the wire emit the same literal strings, from the same formula, over the same set. The runtime never builds or parses a manifest.
+
+A field whose static type is the serializer's own protocol interface is a union over the protocol set. No `[AkkaUnion]` attribute is required. The protocol set is already the closed set. This rule is what makes the literal construction encodable at all. The literal construction is the one registered under a bare `Manifest`, with the interface as its type argument. Its payload field is typed as the interface. The generator treats that field as a union over the same set every expanded construction draws from.
+
+The expansion rule applies to every type argument of a registration, not only the first. A multi-argument generic expands to the product of its arguments' sets. A type argument that is itself a generic with its own closed-set argument expands recursively. The number of generated constructions can grow quickly. So the generator reports it as an info diagnostic. A broad expansion stays visible instead of turning into a silent pile of generated code.
+
+An explicit registration for one specific construction, with its own `Manifest`, stays valid alongside an expansion. It overrides the manifest the formula would have derived for that construction. This lets a team pin or migrate a manifest for a single message, without touching the rest of the expansion. It also remains the only way to register a construction whose type argument is a concrete class. A concrete class has no set to expand over.
+
+A registration attribute on the serializer class no longer means only "register this closed generic construction." It means adopt this type into this serializer, generic or not. AKKASG034, the "registration has no effect" diagnostic, is retired. AKKASG020 stops rejecting a non-generic type argument. Every construction adopted this way gets a dispatch arm, private helpers, and a concrete binding in the generated registration. This holds whether the construction implements the serializer's protocol or not. The runtime can route a value of that exact type to this serializer, even when the type implements nothing in particular. Three constraints remain, checked at build time:
+
+- the adopted type must carry `[AkkaSerializable]` and its field schema, wherever it lives, including a referenced assembly under Decision 16
+- it needs a manifest, from its own attribute or from the registration's `Manifest` override
+- one type may have only one owner. A second serializer adopting the same type is a conflict. So is a type that implements a protocol another visible serializer owns, and is separately adopted. This is a build error when the two serializers can see each other. It is a startup check when they cannot see each other. Decision 19 covers that check.
+
+Anything the generator cannot see at build time does not exist. A construction can be built through `Activator.CreateInstance` and `MakeGenericType`, over a type argument outside the registered set. That construction has no matching case. It fails at send time with an `ArgumentException` naming the unsupported type. Reflection is not a path the generator accommodates. This rule closes a real gap. A generic type declared in Core.dll cannot implement a protocol interface declared in Comms.dll. Core.dll does not reference Comms.dll. So a closed construction of that generic fails the old test. The old test requires the type to implement the protocol, or be reachable from a field. Today that gap surfaces as AKKASG034. As pinned in `CrossAssemblyBaselineSpec`, on branch `feature/serialization-v2-cross-assembly-baseline`, that one diagnostic also suppresses emission of the entire serializer. One stray registration then turns into a pile of unrelated missing-partial compile errors.
+
+**Implementation addendum (F2).** The points above were decided while building the expansion and adoption stage; the design text above did not fully cover them.
+
+*Decision 17 needed no code change.* The generated union write/read dispatch already throws `SerializationException` on a runtime type or a manifest it has no case for (`GenerateUnionWrite`/`GenerateUnionRead`, `AkkaSerializerGenerator.Emission.cs`), unconditionally, with no opt-in and no fallback. This predates F2. Confirmed by inspection; nothing in this phase changed it.
+
+*The three new diagnostic ids.* AKKASG040 (`ClosedSetExpansionRequiresClosedSet`), the next free id after F1's AKKASG039: a `ManifestPrefix` registration whose target has no closed set to expand, gate-level (alongside AKKASG020/AKKASG021), reported at the registration's own attribute. AKKASG041 (`AdoptedMessageOwnedByMultipleSerializers`): the one-owner rule, reported once per offending serializer, at that serializer's own `[AkkaSerializer<TProtocol>]` attribute (not at a specific registration, since a conflicting ownership can come from plain protocol membership, which has no registration site of its own). AKKASG042 (`ClosedSetExpansionCount`), Info: the construction count, reported once per successfully-expanding registration.
+
+*The construction-count diagnostic has no size threshold.* The design text above and the maintainer's own decision-record page both describe an unconditional info diagnostic ("the generator reports the number of constructions it produced"), not a warning gated on a count. AKKASG042 is Info severity and fires for every expanding registration, regardless of how many constructions it produces.
+
+*The closed-set walk for expansion is scoped to the current compilation only.* `ManifestPrefix`'s protocol-set discovery (`ComputeLocalMarkedProtocolImplementors`, `AkkaSerializerGenerator.Extraction.cs`) walks only this compilation's own source-declared types, matching every other top-level-dispatch walk before Decision 19 lands. A member of the set that is itself a generic construction is out of scope for this walk (it would need its own nested expansion to discover); the "G&lt;H&lt;M&gt;&gt;" nested-construction shape in the manifest formula covers that case instead, through a *fixed*, non-expanding type-argument position resolved against a sibling literal registration's own manifest (`TryResolveFixedArgumentManifest`), not through the protocol walk.
+
+*The manifest formula's five rows collapse to one mechanism.* Every row but the multi-argument one is the single-argument case applied to a different kind of member: a member that is itself a generic construction (row 5, "G&lt;H&lt;M&gt;&gt;") composes exactly the same way an ordinary concrete member does (row 3), because both are just "the top-level manifest of this argument's chosen member" (row 2). The implementation is one cartesian-product loop over every type-argument position (`CartesianProduct`, `ExpandClosedGenericRegistration`), each position independently resolved to a closed set or a single fixed choice, with no special-casing for nesting depth.
+
+*Explicit override during expansion.* An explicit, non-prefix registration's manifest for a construction is captured in a first pass over every attribute on the serializer (`explicitManifestByTarget`), before any expansion runs, so declaration order never matters. A combination the expansion would otherwise produce is skipped when that table already has an entry for its exact constructed type; the explicit registration (already extracted independently, earlier in the same method) keeps its own manifest and schema.
+
+*A non-generic adoption target can collide with its own ordinary declaration.* A concrete type registered via `[AkkaSerializerIncludes<T>(Manifest = ...)]` on the serializer is very often *also* an ordinarily-declared `[AkkaSerializable]` type in the same compilation (it has to be, for the registration to be valid at all). `ResolveSerializerMessages` excludes such a type's plain `declaredMessages` entry from its message table when a `ClosedGenericSchemas` entry exists for the same key, so the registration's own (possibly overridden) manifest and schema win, and no duplicate-key failure occurs building the per-serializer message dictionary.
+
+*The adoption rule's effect on a construction registered only for nested-field use.* Before this decision, a closed generic construction registered purely so it could appear as a nested `Object` field -- never top-level, never implementing the protocol -- needed no manifest of its own. Decision 18 retires that allowance along with AKKASG034: every registered construction is now unconditionally top-level, so it now needs a manifest the same way any other top-level message does (AKKASG006), even when it is also reachable as a nested field. This is a deliberate, direct consequence of "every construction registered on the serializer... is a top-level message," not an oversight; the golden corpus's own `Pair<int, string>` registration needed a `Manifest` added for this reason.
+
+### 19. Protocol Implementors From Referenced Assemblies, And Serializer Placement
+
+The generator finds top-level messages for a protocol not only in the current compilation. It also walks every referenced assembly that itself references `Akka.Serialization.V2`. For each such assembly, it enumerates types from metadata. It adopts every `[AkkaSerializable]` implementor of the protocol interface it finds. No attribute is needed to opt an assembly in. No runtime type scanning happens. No scanning of how or whether a type is actually used happens either. This amends Decision 16. Top-level dispatch, not only nested-field and union-member resolution, covers this compilation plus every referenced assembly that references V2.
+
+The walk's output is a sorted list of fully qualified type names. It is a plain value-equatable list, not a set of symbols. So the incremental generator's caching stays intact once that list stops changing. Every later stage keys off the list, not off the walk itself.
+
+AKKASG029, a local implementor of the protocol missing `[AkkaSerializable]`, and AKKASG012, manifest uniqueness, widen to run over this combined, cross-assembly set. They no longer run only over the current compilation's types. An implementor found in a referenced assembly without the attribute is reported on the serializer class itself. There is no local property or declaration in this compilation to attach the diagnostic to.
+
+This has two costs, each with a mitigation. First, the message set a serializer owns changes whenever someone adds a project reference. Nobody explicitly assigns the new messages to that serializer. This is by design. The construction-count info diagnostic from Decision 18 makes a resulting jump in scope visible, rather than silent. Second, two serializers declared in assemblies that do not reference each other can each adopt the same implementor. Neither compilation can see the other, to object. Where one serializer's assembly can see the other's, the cross-assembly AKKASG031 check catches the collision at build time. That check enforces one protocol, one serializer. Where neither can see the other, a startup check catches it instead, when registrations are composed. That check throws, naming both serializers.
+
+The constraint behind all of this is not circular. It does not require a serializer's identity and its message encoders to live in the same assembly. A compilation cannot see assemblies that depend on it. So the code that encodes a message must be generated in a compilation that can see that message. That compilation is the message's own assembly, or one below it. Nothing in that requirement says the serializer's name, id, and protocol declaration must sit in that same compilation.
+
+Splitting serializer identity from its encoders is a documented follow-up, not part of this change. A serializer identity is declared upstream, with no messages of its own. A generated "part" holds each downstream assembly's encoders. Composition happens explicitly at startup, one line per part, with no scanning. This remains available for the case where a serializer's identity must sit above its messages. The shapes this change targets do not need it.
+
+Four placement rules turn a misplaced serializer into a compile-time or startup failure, instead of a silent gap. A downstream compilation reports an error on the type declaration. This happens when a type implements a protocol that an upstream serializer already binds. That upstream assembly can never see this type, so it would never be dispatched. An upstream compilation reports a warning on the serializer class. This happens when a serializer has no messages in its own compilation or in any referenced assembly, and also has no registrations. A serializer with nothing to serialize is very likely a placement mistake. AKKASG031 extends across assemblies. Two serializers that bind the same protocol collide at build time, whenever one assembly can see the other. The runtime "unsupported generated serializer type" exception text improves too. It now names both the type's assembly and the generating serializer's assembly, not just the type.
+
+A message assembly whose serializer lives in a host assembly below it is not an error condition. That compilation sees no serializer at all, which is a legitimate shape. It gets at most an info diagnostic, rather than a warning or error.
+
+**Implementation addendum (F3).** The points above were decided while building the referenced-assembly walk; the design text above did not fully cover them.
+
+*Where discovery lives.* The whole-compilation walk moved into `CompilationFacts` (`AkkaSerializerGenerator.Facts.cs`), replacing the local-only, per-`ManifestPrefix`-registration walk F2 left in place (`ComputeLocalMarkedProtocolImplementors`, called once per registration from inside the per-serializer-node extraction step). `CompilationFacts` now carries `LocalMarkedImplementorsByClosedSetKey` and a REAL `ReferencedAssemblyImplementorsByProtocol` (the F2 skeleton always returned empty; it is a genuine metadata walk now), both keyed by every closed-set key any collected serializer or message actually asks about -- a serializer's own protocol key, or a discovered-mode union field's own static-type key (Decision 21).
+
+*A performance correction: the local-marked half is not a symbol walk at all.* A first pass computed `LocalMarkedImplementorsByClosedSetKey` with its own whole-compilation symbol walk, alongside the unmarked/AKKASG029 walk, in one merged pass over `GetSourceDeclaredTypes(compilation)`. That duplicated work the per-node extraction stage had already done: every local marked message is, by definition, an `[AkkaSerializable]`-attributed type that already went through `ExtractMessageCore` and left behind a cached, value-equatable `MessageInfo` carrying its own `Protocols` and `BaseTypeNames`. `ComputeLocalMarkedImplementorsFromMessages` replaces the walk with a pure filter over the already-collected `messages` array -- ordinal string membership against each closed-set key's `DisplayName`, the same test the referenced-assembly walk below uses -- so this half of Decision 19/21 now costs nothing beyond what extraction was already doing, and correctly reports the pipeline's own `Unchanged`/`Cached` result when an edit does not touch a message these facts care about. The ONLY symbol walk left in `CompilationFacts` for the LOCAL half is `ComputeLocalUnmarkedImplementorsByProtocol`, S5's original AKKASG029 walk, restored to its original shape: it skips a marked candidate immediately, before building any `TypeKey` for it, since a marked type has nothing left for this walk to do. `ImplementsOrDerivesFromClosedSetKey` (checking `AllInterfaces` and the base-type chain) still exists, but backs only the two symbol-based `ManifestPrefix`-expansion walks in `AkkaSerializerGenerator.Extraction.cs` (`ComputeLocalMarkedProtocolImplementors` and `EnumerateReferencedAssemblyMarkedImplementors`, both described below) -- CompilationFacts' own walks no longer call it at all.
+
+*A performance correction: the referenced-assembly walk is cached per assembly reference.* The referenced-assembly walk genuinely needs a symbol walk -- a referenced type has no local `MessageInfo` to read back -- but re-enumerating a large referenced assembly's entire public type table on every keystroke is wasted work when that assembly's own reference has not changed. `ComputeReferencedAssemblyFacts` (`AkkaSerializerGenerator.Facts.cs`) now runs at most once per referenced assembly identity, cached in a process-lifetime `ConditionalWeakTable<object, ReferencedAssemblyFacts>`; the cached, symbol-free result carries the assembly's full candidate list (key, marked flag, `Protocols`, `BaseTypeNames`) plus every `[AkkaSerializer<TProtocol>]` declaration found in the same pass, so both `ComputeReferencedAssemblyImplementors` and `ComputeUpstreamSerializerBindings` read from it instead of walking metadata twice.
+
+A first version of this cache was keyed on `IAssemblySymbol` directly, on the premise that Roslyn reuses the same assembly symbol instance for an unchanged reference across successive compilations. That reuse depends on an earlier bound symbol for the reference still being reachable through Roslyn's own internal, weak symbol cache -- not guaranteed, and confirmed to fail under memory pressure on a second machine reviewing this change, where the second of two back-to-back compilations received a fresh assembly symbol for the identical, unchanged reference, producing a real cache miss (and a real re-walk) rather than a flaky test artifact. The cache is now keyed on `Compilation.GetMetadataReference(assemblySymbol)` instead, falling back to the assembly symbol itself only when a compilation has no separate reference for it (a source or compilation-referenced assembly, which has no separate PE metadata to reuse across edits in the first place). The workspace and the generator driver both keep the same `MetadataReference` instance across an edit for as long as the reference set itself is unchanged -- that instance IS what "the reference set is unchanged" means -- and the walk's result depends only on the PE file's own metadata, not on which symbol instance happens to represent it right now, so keying on the reference is both safe and the thing that is actually stable. Proven in `GeneratorCompilationFactsSpec.ReferencedAssemblyWalk_is_cached_per_metadata_reference_not_per_assembly_symbol`, a test-only counter (`AkkaSerializerGenerator.ReferencedAssemblyWalkCount`) asserting, across a three-run sequence, zero additional walks across an edit that reuses the same reference and exactly one more against a freshly compiled, genuinely distinct reference over identical source -- proving the cache is scoped to the reference, not global. That test also neutralizes an incidental confound in the test harness itself (its own base reference set includes the executing test assembly, which independently qualifies for this same walk) by warming that entry before measuring, so the asserted delta is attributable only to the references the test constructs.
+
+Measured on the `SourceGeneratorBenchmarks` corpus (which references `Akka.Remote` -- confirmed one of exactly two assemblies, alongside `Akka.Benchmarks` itself, that qualify for `ReferencedAssembliesUsingV2` there), these corrections together brought allocations back within roughly 1% of the pre-Decision-19 baseline on all four benchmark rows, down from a 7-20% regression the first (uncached, symbol-walking) pass had left in place.
+
+*How top-level dispatch actually widens.* Rather than a separate merge step, a referenced-assembly implementor's full schema (fields, manifest, constructor shape) is extracted through the SAME per-compilation stage Decision 16 already built, `ComputeMetadataSchemas` -- its seed set now also includes every key in `CompilationFacts.ReferencedAssemblyImplementorsByProtocol`'s value lists, not only the referenced types a local message names directly. `ResolveSerializerMessages` then adds every resolved referenced-assembly implementor's schema to the same candidate pool `declaredMessages` already populates, compilation-wide and not scoped to one serializer -- exactly how `declaredMessages` itself already behaves. The existing top-level filter (`message.Protocols.Contains(serializer.ProtocolTypeFullName)`) and the existing protocol-interface-implicit-union rule (Decision 18) both pick up the widened pool with no further change, since a referenced-assembly implementor's extracted `MessageInfo.Protocols` already names every interface it implements, the same way a local message's does. AKKASG012 (manifest uniqueness) widens for the same reason: it already runs over `topLevelMessages`, which now includes the referenced-assembly members.
+
+*AKKASG029's widening is a small, separate addition.* `ValidateProtocolCoverage` now also consults a new `ReferencedAssemblyUnmarkedImplementorsByProtocol` bucket (an unmarked implementor found by the SAME referenced-assembly walk, bucketed alongside the marked one in one pass over each qualifying assembly's public types) and reports it exactly like a local unmarked implementor, at the serializer's own attribute.
+
+*The four placement rules resolved to three new descriptors, not four, and two of the three are new ids.* The decision page's own table labels its third rule "AKKASG031 across assemblies (extended)" -- an explicit instruction to widen the EXISTING descriptor, not mint a new one. This addendum follows the page: `DuplicateProtocolBindingCrossAssembly` is a second message-text variant sharing the "AKKASG031" id, the same pattern this codebase already uses for AKKASG003/007/015/039's cross-assembly variants. The fourth rule (the runtime exception text) is not a `Diagnostic` at all -- it has no compile-time site, since the mismatch it describes is only ever observed at send time -- so it carries no id. Two new descriptors exist: **AKKASG043** (`ProtocolOwnedUpstream`, Error, Rule 1) and **AKKASG044** (`SerializerHasNoMessages`, Warning, Rule 2). Where the setup instructions read as asking for four new ids, this addendum reports the discrepancy and follows the page's own table.
+
+*Rule 1's scope.* `ReportProtocolOwnedUpstream` (`AkkaSerializerGenerator.Placement.cs`) scans this compilation's own `[AkkaSerializable]`-marked messages (the same collected array every other pass already has) against `CompilationFacts.UpstreamSerializerBindingsByProtocol` -- a new walk, alongside but independent of the implementor walks, for every `[AkkaSerializer<TProtocol>]` declaration found in a qualifying referenced assembly. An UNMARKED local implementor of an upstream-bound protocol is a real gap too, but reporting it needs its own whole-compilation walk over unmarked types (today's `ComputeLocalUnmarkedImplementorsByProtocol` is keyed by LOCAL protocol keys only, since only a local serializer's own protocol is relevant to it) and its own decision about severity and site; left as a follow-up, not part of this change.
+
+*Where the maintainer's decision-record page and this design text disagree.* The page's own fix list for Rule 1 names three fixes, including "declare a serializer part for 'IMessage' here." Serializer parts (Option 3) are a documented follow-up, not implemented in this change -- both the page and this design text agree on that elsewhere. Suggesting an unimplemented mechanism as an actionable compiler fix would mislead the reader, so AKKASG043's message names only the two fixes that work today: move the type upstream, or move the serializer downstream. This is the one place the page and this document's own text pull in different directions; followed the more conservative, currently-true reading.
+
+*Rule 4's runtime text.* `GenerateManifest` and `GenerateSerializeDirect` (`AkkaSerializerGenerator.Emission.cs`) both build their default-case exception text through one shared helper, `BuildUnsupportedTypeExceptionMessage`, naming the failing value's own runtime assembly (`obj.GetType().Assembly.GetName().Name`, known only at run time) and the assembly the serializer was generated in (`SerializerInfo.CompilationAssemblyName`, a new, purely local, build-time fact captured once at extraction via `Compilation.AssemblyName`). This changes existing generated text, so the checked-in golden-output baselines were regenerated; see this file's own task-list entry for why that is the correct call here, not a regression.
+
+*Runtime composition.* Generated serializers expose
+`CreateSerializerDetails(ExtendedActorSystem)` directly. Core `SerializationSetup` retains its
+existing behavior; ownership conflicts between serializers that cannot see each other are the
+application's responsibility. The generator's compile-time ownership diagnostics remain.
+
+*`ManifestPrefix` expansion is cross-assembly-correct, but not yet migrated to the shared stage.* Decision 18's expansion mechanism (`ExpandClosedGenericRegistration`/`TryGetClosedSetMembers`, `AkkaSerializerGenerator.Extraction.cs`) still runs inside the per-serializer-node extraction step, not inside `CompilationFacts` or a new shared stage. It now calls a referenced-assembly counterpart of the local walk (`EnumerateReferencedAssemblyMarkedImplementors`) directly, so a closed set spanning the assembly boundary expands correctly -- proven byte-identically in the golden corpus (a `ManifestPrefix` registration over a protocol whose implementors sit on both sides of the boundary). What this does NOT yet do is share `CompilationFacts`' own cached walk result: `ExtractSerializerCore` (this method's caller) is itself the per-node transform `CompilationFacts` is built FROM (via the collected `serializers` array), so it cannot consume `CompilationFacts`' cached value without a circular pipeline dependency. Hoisting the expansion itself into a new per-compilation stage that consumes `CompilationFacts` and re-resolves each member's symbol (the "construction extraction" the setup instructions describe) is a functionally-motivated but not yet implemented refinement: it would let a `ManifestPrefix` registration's own IDE-performance caching match the ideal `CompilationFacts` already achieves for top-level dispatch and the implicit-union rules, at the cost of a larger pipeline restructuring than this change makes. Flagged here as a deliberate scoping decision, not an oversight.
+
+**Implementation addendum (S7).** The walk flagged above as a deliberate scoping gap is closed in this pass, which stacks on F3 (`ab82136da`).
+
+*The walk moved, and where it lives now.* `ExpandClosedGenericRegistration`/`TryGetClosedSetMembers`/`AddDiscoveredClosedSetMembers`/`ComputeLocalMarkedProtocolImplementors`/`EnumerateReferencedAssemblyMarkedImplementors` are gone from `AkkaSerializerGenerator.Extraction.cs`. In their place: the per-node serializer extraction transform still classifies each `ManifestPrefix` target's own type-argument positions (`TryClassifyPrefixArgumentPosition`, `BuildPrefixExpansionSpec`) using only the argument's own symbol -- no walk of the compilation's declared types -- and records a light, symbol-free `PrefixExpansionSpec` per registration (`SerializerInfo.PrefixExpansions`) whenever at least one position is protocol- or `[AkkaUnion]`-flavored. An invalid target, an unresolvable fixed argument, or no closed-set-flavored position at all is still resolved and reported as an AKKASG040 error entirely in the transform, exactly as before -- none of those depend on a whole-compilation walk. A new per-compilation stage, `ComputeClosedGenericExpansions` (`AkkaSerializerGenerator.Expansion.cs`, wired next to `CompilationFacts`/`ComputeMetadataSchemas`), consumes every serializer's own `PrefixExpansions` plus `CompilationFacts`' own `LocalMarkedImplementorsByClosedSetKey`/`ReferencedAssemblyImplementorsByProtocol` buckets, re-resolves each candidate's `TypeKey` back to a symbol, runs the SAME cartesian product and manifest formula F2 ran inline, and extracts each construction's schema through the same `ExtractMessageCore`. `CompilationFacts`' own closed-set-key request list (`ComputeDistinctClosedSetKeys`, `AkkaSerializerGenerator.Facts.cs`) is extended to also include a `PrefixExpansionSpec`'s own discovered-mode keys, so the shared buckets this stage reads already cover them.
+
+*The merge point.* The expansion stage's own output, `PrefixExpansionTable` (keyed by serializer), is folded back into each `SerializerInfo`'s `ClosedGenericRegistrations`/`ClosedGenericSchemas` by one function, `SerializerInfo.WithClosedGenericExpansion` (called from `MergeSerializerClosedGenericExpansions` immediately after the expansion stage runs, producing `effectiveSerializers`). Every OTHER consumer of either property -- `ResolveSerializerMessages`, validation, `MessageTypeLocationKey`, the placement diagnostics, and Decision 16's own metadata-schema seed scan (`ComputeReferencedTypeKeys`) -- reads `effectiveSerializers` instead of the raw collected array and needs no other change: none of them know the expansion table exists.
+
+*Byte-identical output needed a splice, not an append.* F2/F3 expanded a registration's own members INLINE, in the same per-attribute loop iteration that added its literal entry (if any) -- so a serializer with an early literal registration, a `ManifestPrefix` registration, and a later literal registration produced dispatch arms interleaved in that exact order. Simply appending every expansion member after every literal one (the first working version of this hoist) reordered the golden corpus's own dispatch switch and failed the byte-identical gate. Each `PrefixExpansionSpec` now also records `RegistrationInsertionIndex`/`SchemaInsertionIndex` -- `ClosedGenericRegistrations`'/`ClosedGenericSchemas`' own array length at the moment the transform reached that attribute -- and `SpliceExpansionGroups<T>` (`AkkaSerializerGenerator.Expansion.cs`) inserts each `PrefixExpansionGroup`'s own members back at that exact position. This is what makes the hoist behavior-neutral at the byte level, not merely at the round-trip level.
+
+*A second symbol-resolution bug the golden corpus caught immediately.* `Compilation.GetTypeByMetadataName` only ever resolves a type's own OPEN DEFINITION -- a generic type's metadata name carries its arity, never its type arguments -- so re-resolving a "fixed" position's own candidate (Decision 18's "G&lt;H&lt;M&gt;&gt;" nested case, e.g. a sibling registration's `Envelope<AcceptCassette>`) with a single `GetTypeByMetadataName` call silently produced the unsubstituted `Envelope<T>` instead. `ResolveTypeSymbol` (`AkkaSerializerGenerator.Expansion.cs`) resolves the definition, then recursively resolves and `Construct()`s each of `TypeKey.TypeArguments`' own entries; a non-generic key (the overwhelming common case: an implementor `CompilationFacts` already found) degenerates to the original single call.
+
+*What the transform still does for a prefix registration, and what it does not.* Still in the transform: reading the target's own validity (`IsFullyClosed`, definition attribute), `AllowEmpty`, the raw `explicitManifestByTarget`/`SerializerInfo.ExplicitManifestsByTarget` map (read once from the serializer's own small, fixed attribute list, not a compilation-wide walk), and classifying each position -- including fully resolving an EXPLICIT `[AkkaUnion(typeof(A), typeof(B))]` position's own member list, since that needs only the argument's own attribute, not a search over every declared type. No longer in the transform: discovering a DISCOVERED-mode position's own member set (that read now goes through `CompilationFacts`), constructing any closed generic symbol, and extracting any expansion member's schema.
+
+*Run reasons.* `ComputeClosedGenericExpansions` is wired as a "raw" stage (`context.CompilationProvider.Combine(serializers).Combine(compilationFacts).Select(...)`) whose own record-struct output bundles the value-equatable `PrefixExpansionTable` with this run's own `LocationBag` (an expanded member's `[AkkaField]` property locations, resolved from the SAME substituted symbols `ExtractMessageCore`'s inlined capture already produces for a literal registration -- these always point back to the GENERIC DEFINITION's own declared property, so no attribute-location plumbing of the expansion stage's own is needed for type-level diagnostics; `MessageTypeLocationKey` was changed to redirect an expansion member's own lookup through `ClosedGenericRegistrationInfo.ExpansionGroup` -- the SAME base-attribute location entry `BuildSerializerLocationBag` already records -- instead of a per-member entry, which is what let this stage skip producing one). `TrackingNames.ClosedGenericExpansions` names the TABLE-only projection of that raw stage, exactly mirroring `SerializerSchemas`'/`MessageSchemas`' own split from `ExtractedSerializers`/`ExtractedMessages`: an edit that touches neither a requested closed set nor any location the raw stage's own `LocationBag` half carries leaves the raw stage's own produced value equal to its previous run, which lets this projection report `Cached` (skipped entirely, not merely recomputed to an equal value) -- the SAME "Unchanged upstream lets a trivial downstream projection go Cached" shape this codebase already documents for `SerializerSchemas` in `GeneratorIncrementalScenariosSpec`'s scenario (a). An edit that shifts ONLY a location the raw stage's `LocationBag` half carries (for example, editing a message declared before the generic definition in the same file) still reports `Cached` at the projection -- the location shift never propagates past `.Table`. An edit that adds a new local marked implementor of the expanded protocol changes `CompilationFacts` (`Modified`) and, through it, this stage's own table (`Modified`); `ResolvedSerializers`, built from `effectiveSerializers`, then re-emits only the serializer whose own closed set changed. See `GeneratorIncrementalScenariosSpec`'s scenarios (i)/(j)/(k).
+
+### 20. The Envelope Payload Attribute Is Removed: object Is The Boundary
+
+`[AkkaEnvelopePayload]` is removed. A property typed `object`, or `object?`, is now the serializer boundary. The generator writes it as the envelope frame: serializer id, manifest, bytes. The static type of the property selects the encoding. Nothing else does.
+
+The rule runs on the static type, after generic substitution:
+
+- `object` selects the envelope frame
+- the serializer's own protocol interface, or a type carrying a type-level `[AkkaUnion]`, selects a union frame
+- any other interface or abstract class, one with no closed set, is `AKKASG003`. The hint reads: declare `[AkkaUnion]`, use the protocol interface, or type the property as `object`
+- a concrete serializable type is encoded inline
+
+A generic wrapper follows its type argument. `Envelope<object>` is an envelope frame. `Envelope<IComms>` is a union frame. `Envelope<AcceptCassette>` is inline.
+
+The attribute only ever added a static type to a boundary field. The static type alone can carry that meaning. On `dev`, eight usages exist in product code and tests:
+
+- four are `object` or `object?` already
+- two are interfaces: the Artery system-message DTO in `SystemMessageDeliveryMessages.cs`, and one spec
+- two are concrete envelope types, in nesting tests
+
+The reliable-delivery branch adds four more, in its own serializer. Every one of these is a DTO mirror or a test fixture. Retyping each to `object`, and casting at the consumer, costs almost nothing. The principle matches Decisions 18 and 19. The closed set comes from the type. The open case is explicit, because the author wrote `object`.
+
+This change touches five things:
+
+- one attribute class is removed. Six remain
+- `AKKASG035` is retired. The conflict it guarded against can no longer occur
+- `AKKASG003` gains the hint text above
+- the envelope nesting-depth guard stays as it is
+- the Artery DTO and the reliable-delivery serializer both retype their boundary fields to `object`
+
+The API is unreleased. So this needs no entry in the breaking-changes ledger. It must land before the first 1.6 beta. After that beta ships, the same change would be a breaking change.
+
+This ships as its own small PR, independent of the others.
+
+### 21. Unions Without A Member List
+
+`[AkkaUnion]` with no arguments, on an interface or an abstract class, gets a new meaning. The closed set becomes every `[AkkaSerializable]` implementor the generator can see. The explicit list, `[AkkaUnion(typeof(A), typeof(B))]`, still works. As a field-level override, it works anywhere in the serializer's compilation. As a type-level form, it works only where every listed member is visible from the type's own assembly.
+
+Three reasons back this decision.
+
+- Assembly direction causes the first problem. In a layered codebase, the interface lives upstream of its implementations. An assembly cannot name a type from an assembly that references it. So a type-level member list is uncompilable there, not merely tedious.
+- Intent stays explicit under this rule. The marker declares the interface a wire contract. Without a marker, the generator would have to walk implementors of any interface a field mentions. It could not tell a wire contract from an incidental interface with in-memory-only implementations.
+- The third reason is cost. This decision reuses Decision 19's mechanism and cost model. It only points that mechanism at a marked interface, instead of the protocol interface. The protocol interface needs no marker. Decision 18 already covers it, because `[AkkaSerializer<TProtocol>]` declares the protocol.
+
+This decision changes six things:
+
+- the attribute regains a parameterless constructor, with a documented meaning: all visible serializable implementors, not an empty set. Decision 15 removed the empty form. This is a different meaning
+- an implementor of a marked interface without `[AkkaSerializable]` is a build error. This is the same rule as AKKASG029 for the protocol. It reports at the serializer class when the implementor lives in a referenced assembly
+- the empty-set half of AKKASG019 does not apply to the marker form
+- the set is scoped as in Decision 19: this compilation, plus referenced assemblies that reference V2
+- both costs of Decision 19 apply, with the same mitigations: the construction-count diagnostic, and the startup one-owner check
+- the wire format does not change. A union frame carries each member's own manifest, whether the set was listed or found
+
+This ships with the referenced-assembly walk from Decision 19. It is the same walk.
+
+**Implementation addendum (F3).** The points above were decided while building the marked-union-base form; the design text above did not fully cover them.
+
+*How the marker is recognized.* `AkkaUnionAttribute` (`src/core/Akka.Serialization.V2/Attributes.cs`) regains a parameterless constructor that sets `MemberTypes` to an empty array -- extend-only; the two-argument `(Type first, params Type[] rest)` constructor is unchanged, and an empty array from the PARAMETERLESS form is never confused with a malformed EXPLICIT one (that shape cannot occur: `first` is mandatory there). `ExtractUnionMembers` (`AkkaSerializerGenerator.Extraction.cs`) now branches on `unionAttribute.ConstructorArguments.Length`: 0 means "discovered, resolve later" and returns an empty member array with `hasUnionAttribute = true`; 2 is the unchanged explicit-list path. A `FieldKind.Union` mapping with an empty `UnionMembers` array is therefore an unambiguous "not resolved yet" signal downstream -- the explicit form can never produce that shape, since its own constructor requires at least one member.
+
+*Where the field's own key comes from.* `TypeMapping` for a `FieldKind.Union` mapping now also carries the field's own static-type key (`TypeMapping.Key`, set at extraction from `member.Type` when it is a named type) -- for BOTH the explicit and discovered forms, harmless in the former case since nothing reads it once `UnionMembers` is already populated. `ResolveMessages` (`AkkaSerializerGenerator.Emission.cs`) generalizes Decision 18's existing protocol-interface-implicit-union reclassification into one shared, per-closed-set-key member cache: a field with `Kind == Union` and an empty `UnionMembers` resolves against ITS OWN key the same way a field typed as the protocol interface resolves against the protocol's key. Both draw from the same candidate pool `ResolveSerializerMessages` builds, which -- Decision 19 -- already includes every referenced-assembly implementor of any requested closed-set key, so no separate cross-assembly plumbing was needed for the marker form specifically.
+
+*Abstract-class bases need a class-hierarchy fact `Protocols` cannot carry.* `MessageInfo.Protocols` (`GetProtocolNames`, built from `AllInterfaces`) never contains a class, but Decision 21's marker also applies to an abstract class. `MessageInfo` gains `BaseTypeNames` (every base class, direct and transitive, excluding `object`), and the discovered-union membership test checks `Protocols.Contains(key) || BaseTypeNames.Contains(key)`. The compilation-facts walk's own membership test, `ImplementsOrDerivesFromClosedSetKey`, checks both an interface list and a base-type chain unconditionally for the identical reason -- a protocol key simply never matches via the chain, at no meaningful extra cost.
+
+*A deliberate gap, disclosed: an unmarked implementor of a marked union base is not diagnosed.* The design text above states "an implementor of a marked interface without `[AkkaSerializable]` is a build error ... the same rule as AKKASG029 for the protocol." This addendum does NOT implement that rule. AKKASG029 has a natural, single reporting site for a protocol violation: the one serializer that binds the protocol. A marked union base has no analogous single owner -- it can be referenced by fields across several serializers, or by none directly yet still reachable through a nested chain -- so choosing a reporting site needs a design decision this phase's setup did not make for me, and the concrete task list for this phase (Decisions 19 and 21) does not call for it as one of the four placement diagnostics. An unmarked implementor of a marked union base is therefore simply invisible to the discovered set today, the same silent-gap shape an unmarked protocol implementor had before AKKASG029 existed. Flagged here rather than silently narrowed.
+
+*The empty-set exemption.* `ValidateUnionField` (`AkkaSerializerGenerator.Validation.cs`) is unchanged: it iterates `field.UnionMembers`, and an empty array (a marked base with zero visible implementors, or one whose only implementors are unmarked) produces no diagnostics -- AKKASG019's empty-set half genuinely does not apply, matching the design text. A field in that shape compiles clean and emits a union helper with no cases, which throws `SerializationException` if a value is ever written or read through it -- Decision 17's existing "the generator throws, the caller decides" contract, unchanged.
+
+*Both gaps above are closed (union completeness follow-up).* The reporting site the gap note asked for is the union FIELD, the same site every other union diagnostic uses: each field that reaches a broken set is itself broken. A new `UnionHierarchyFacts` (on `CompilationFacts`) shares AKKASG029's single walk over this compilation's source types, for every discovered union field's static type and every listed one that is a closed class declared here (open listed types are dropped up front, so they cost nothing per edit), and AKKASG048 (Error) names each concrete implementor of a discovered set that lacks `[AkkaSerializable]`. A discovered set that resolves to nothing now reports AKKASG019 instead of emitting a dispatch helper with no arms (whose dead code raised CS0162, which fails warnings-as-errors builds). The same facts record which union static types are closed hierarchies (a C# 15 `closed` class or record, found by its modifier since the compiler adds `IsClosedTypeAttribute` only at emit time; a type carrying that attribute; or a class whose constructors are all private, ignoring a record's copy constructor); an explicit member list on such a field that omits a derived case gets AKKASG049 (Warning). AKKASG025 moved from Info to Warning so it shows in ordinary build output. Referenced-assembly unmarked implementors of a marked union base remain undiagnosed.
+
+### 22. Unions Are Inferred From The Property Type; `[AkkaUnion]` Is Removed
+
+`[AkkaUnion]` is removed, in both its listed and parameterless forms. The property's static type alone decides whether a field is a union, the same way Decision 20 lets `object` alone mark the envelope boundary.
+
+The rule runs on the static type, after generic substitution:
+
+- an interface or abstract class is a union over every `[AkkaSerializable]` type that implements or derives from it, scoped as in Decision 19
+- a closed hierarchy is a union over its cases: an abstract class with only private constructors (already covered by "abstract class"), or a C# 15 `closed` class or record. A concrete class is never a union, even with only private constructors: it can hand out instances of itself (a `static readonly` default, a factory), which no union of its subclasses could write
+- a C# 15 `union` is a union over its cases
+- the serializer's own protocol interface is still Decision 18's protocol set
+- framework types (the `System` namespace, and Akka.NET's own core assembly) and collection-like types (anything implementing `IEnumerable`) are never inferred, and keep their existing errors
+- a sealed or concrete open class stays a nested value. Inferring a union there would change the field's wire format the moment someone added a subclass. Instead, a concrete non-sealed nested value class that some class in this compilation derives from is a build error, `AKKASG052`, whether the field holds it directly or as a collection element, key, or value: a subclass value written there would lose its own fields
+
+Decision 21 kept the marker to keep intent explicit. That reason does not hold up. Intent is already explicit twice over: the field sits on an `[AkkaSerializable]` message, and each member carries its own `[AkkaSerializable(Manifest = ...)]`. The parameterless marker found every implementor anyway, so it never narrowed anything; it only repeated what the members already declared. The listed form did narrow, but its uses are niche: a deliberate omission (better expressed as a narrower interface), and pinning the set (each member's manifest already shows up in review). The one real loss is an open type from a library the author cannot annotate; a C# 15 `union` declared locally, or an `object` field, covers it.
+
+`System.Text.Json` keeps explicit `[JsonDerivedType]` lists for open types because its list lives on the base type, which usually cannot see derived types in other assemblies, and because changing existing JSON output would break users. Neither holds here: this generator runs in the serializer's compilation, which sees every referenced assembly, and the API has not shipped.
+
+This change touches these things:
+
+- `AkkaUnionAttribute` is deleted
+- `AKKASG018`, `AKKASG038`, `AKKASG049`, and `AKKASG050` are retired; their ids stay permanent gaps. Each one checked a hand-written list
+- `AKKASG019` keeps only its empty-set half; `AKKASG048` now applies to every inferred union except the protocol interface, which `AKKASG029` already covers
+- a formatter registered for an interface or abstract class takes precedence over inference
+- `ManifestPrefix` expands over any type argument that would be a union as a property type
+- the wire format does not change: a union frame carries each member's own manifest, whatever produced the set
+
+### 23. Including A Type Is Its Own Attribute; A Non-Generic Type Owns Its Manifest
+
+`[AkkaSerializable<T>]` on the serializer class is renamed `[AkkaSerializerIncludes<T>]`. The old name made one attribute look like two declarations of the same type, so authors wrote the manifest twice:
+
+```csharp
+[AkkaSerializable(Manifest = "cr")]
+public sealed record ChatResponse(...);
+
+[AkkaSerializer<IWithUserId>("user-serializer", 120001)]
+[AkkaSerializable<ChatResponse>(Manifest = "other-msg")]
+public sealed partial class ChatSerializer : AkkaSerializer { ... }
+```
+
+Decision 18's text said the type's own manifest applies unless the registration overrides it. The generator never read the type's own manifest for a registration: the shape above put `"other-msg"` on the wire and silently dropped `"cr"`, and a registration with no `Manifest` failed `AKKASG006` even though the type declared one.
+
+The two attributes now do different jobs. `[AkkaSerializable]` describes a type: its fields and its manifest. `[AkkaSerializerIncludes<T>]` only says which serializer owns it. So:
+
+- a non-generic type's manifest comes from its own `[AkkaSerializable(Manifest = ...)]`, the one place it is declared
+- `Manifest` on `[AkkaSerializerIncludes<T>]` for a non-generic `T` is an error, `AKKASG053`, reported at the include, naming the manifest the type declares (or that it declares none)
+- a closed generic construction still takes `Manifest` and `ManifestPrefix` from its include, since it has no declaration of its own
+
+The API is unreleased, so this needs no entry in the breaking-changes ledger.
+
+## Risks / Trade-offs
+
+**Generator complexity**: keep diagnostics focused and add incrementally.
+
+**MessagePack conventions**: document DateTime, Guid, decimal, nullable, collection, and nested object conventions.
+
+**Benchmark interpretation**: the first benchmark is directional POC evidence, not final Artery performance proof.
+
+**API churn**: if sourcegen finds V2 API problems, fix V2 before Artery starts.
+
+**Persistence compatibility**: generated serializers must not compromise stored payload readability.

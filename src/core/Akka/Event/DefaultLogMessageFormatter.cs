@@ -1,9 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="DefaultLogMessageFormatter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Akka.Event
 {
@@ -12,15 +16,34 @@ namespace Akka.Event
     /// </summary>
     public class DefaultLogMessageFormatter : ILogMessageFormatter
     {
-        /// <summary>
-        /// Formats a specified composite string using an optional list of item substitutions.
-        /// </summary>
-        /// <param name="format">The string that is being formatted.</param>
-        /// <param name="args">An optional list of items used to format the string.</param>
-        /// <returns>The given string that has been correctly formatted.</returns>
+        public static readonly DefaultLogMessageFormatter Instance = new();
+        private DefaultLogMessageFormatter(){}
+
         public string Format(string format, params object[] args)
         {
-            return string.Format(format, args);
+            try
+            {
+                return string.Format(format, args);
+            }
+            catch (FormatException)
+            {
+                return $"[INVALID LOG FORMAT] str=[{format}], args=[{string.Join(", ", args)}]. " +
+                       "Please fix the format string in the logging call site.";
+            }
+        }
+
+        public string Format(string format, IEnumerable<object> args)
+        {
+            var argsArray = args.ToArray();
+            try
+            {
+                return string.Format(format, argsArray);
+            }
+            catch (FormatException)
+            {
+                return $"[INVALID LOG FORMAT] str=[{format}], args=[{string.Join(", ", argsArray)}]. " +
+                       "Please fix the format string in the logging call site.";
+            }
         }
     }
 }

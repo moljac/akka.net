@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SystemMessageSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Text;
 using Akka.Actor;
 using Akka.Dispatch.SysMsg;
@@ -23,6 +24,11 @@ namespace Akka.Remote.Serialization
 
         private static readonly byte[] EmptyBytes = {};
 
+        // Every manifest FromBinary(byte[], Type) below handles.
+        private static readonly Dictionary<string, Type> ManifestTypes = TypeExtensions.ManifestTable(
+            typeof(Create), typeof(Recreate), typeof(Suspend), typeof(Resume), typeof(Terminate),
+            typeof(Supervise), typeof(Watch), typeof(Unwatch), typeof(Failed), typeof(DeathWatchNotification));
+
         /// <summary>
         /// Initializes a new instance of the <see cref="SystemMessageSerializer" /> class.
         /// </summary>
@@ -34,21 +40,24 @@ namespace Akka.Remote.Serialization
         }
 
         /// <inheritdoc />
+        public override int Identifier => 22;
+
+        /// <inheritdoc />
         public override bool IncludeManifest { get; } = true; // TODO: should be false
 
         /// <inheritdoc />
         public override byte[] ToBinary(object obj)
         {
-            if (obj is Create) return CreateToProto((Create)obj);
-            if (obj is Recreate) return RecreateToProto((Recreate)obj);
+            if (obj is Create create) return CreateToProto(create);
+            if (obj is Recreate recreate) return RecreateToProto(recreate);
             if (obj is Suspend) return EmptyBytes;
-            if (obj is Resume) return ResumeToProto((Resume)obj);
+            if (obj is Resume resume) return ResumeToProto(resume);
             if (obj is Terminate) return EmptyBytes;
-            if (obj is Supervise) return SuperviseToProto((Supervise)obj);
-            if (obj is Watch) return WatchToProto((Watch)obj);
-            if (obj is Unwatch) return UnwatchToProto((Unwatch)obj);
-            if (obj is Failed) return FailedToProto((Failed)obj);
-            if (obj is DeathWatchNotification) return DeathWatchNotificationToProto((DeathWatchNotification)obj);
+            if (obj is Supervise supervise) return SuperviseToProto(supervise);
+            if (obj is Watch watch) return WatchToProto(watch);
+            if (obj is Unwatch unwatch) return UnwatchToProto(unwatch);
+            if (obj is Failed failed) return FailedToProto(failed);
+            if (obj is DeathWatchNotification notification) return DeathWatchNotificationToProto(notification);
             if (obj is NoMessage) throw new ArgumentException("NoMessage should never be serialized or deserialized");
 
             throw new ArgumentException($"Cannot serialize object of type [{obj.GetType().TypeQualifiedName()}]");
@@ -70,6 +79,10 @@ namespace Akka.Remote.Serialization
 
             throw new ArgumentException($"Unimplemented deserialization of message with manifest [{type.TypeQualifiedName()}] in [${nameof(SystemMessageSerializer)}]");
         }
+
+        /// <summary>Resolves the manifest from <see cref="ManifestTypes"/> so this works without dynamic type loading.</summary>
+        public override object FromBinary(byte[] bytes, string manifest)
+            => ManifestTypes.TryResolveManifestType(manifest, out var type) ? FromBinary(bytes, type!) : base.FromBinary(bytes, manifest);
 
         //
         // Create

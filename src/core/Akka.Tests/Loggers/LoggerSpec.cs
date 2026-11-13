@@ -1,4 +1,11 @@
-﻿using System;
+﻿//-----------------------------------------------------------------------
+// <copyright file="LoggerSpec.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -11,7 +18,6 @@ using Akka.Event;
 using Akka.TestKit;
 using Akka.Tests.Shared.Internals;
 using Xunit;
-using Xunit.Abstractions;
 using FluentAssertions;
 
 namespace Akka.Tests.Loggers
@@ -29,46 +35,34 @@ akka.stdout-loglevel = DEBUG");
         { }
 
         [Fact]
-        public void TestOutputLogger_WithBadFormattingMustNotThrow()
+        public async Task TestOutputLogger_WithBadFormattingMustNotThrow()
         {
-            var events = new List<LogEvent>();
-
             // Need to wait until TestOutputLogger initializes
-            Thread.Sleep(200);
+            await Task.Delay(500);
             Sys.EventStream.Subscribe(TestActor, typeof(LogEvent));
 
+            // Bad format strings should now produce diagnostic messages rather than throwing FormatException.
+            // Only the original log event should be published (no secondary Error event).
             Sys.Log.Error(new FakeException("BOOM"), Case.t, Case.p);
-            events.Add(ExpectMsg<Error>());
-            events.Add(ExpectMsg<Error>());
+            var errorEvt = await ExpectMsgAsync<Error>();
+            errorEvt.Cause.Should().BeOfType<FakeException>();
+            errorEvt.ToString().Should().Contain("[INVALID LOG FORMAT]");
 
-            events.All(e => e is Error).Should().BeTrue();
-            events.Select(e => e.Cause).Any(c => c is FakeException).Should().BeTrue();
-            events.Select(e => e.Cause).Any(c => c is AggregateException).Should().BeTrue();
-
-            events.Clear();
             Sys.Log.Warning(Case.t, Case.p);
-            events.Add(ExpectMsg<LogEvent>());
-            events.Add(ExpectMsg<LogEvent>());
-            events.Any(e => e is Warning).Should().BeTrue();
-            events.First(e => e is Error).Cause.Should().BeOfType<FormatException>();
+            var warningEvt = await ExpectMsgAsync<Warning>();
+            warningEvt.ToString().Should().Contain("[INVALID LOG FORMAT]");
 
-            events.Clear();
             Sys.Log.Info(Case.t, Case.p);
-            events.Add(ExpectMsg<LogEvent>());
-            events.Add(ExpectMsg<LogEvent>());
-            events.Any(e => e is Info).Should().BeTrue();
-            events.First(e => e is Error).Cause.Should().BeOfType<FormatException>();
+            var infoEvt = await ExpectMsgAsync<Info>();
+            infoEvt.ToString().Should().Contain("[INVALID LOG FORMAT]");
 
-            events.Clear();
             Sys.Log.Debug(Case.t, Case.p);
-            events.Add(ExpectMsg<LogEvent>());
-            events.Add(ExpectMsg<LogEvent>());
-            events.Any(e => e is Debug).Should().BeTrue();
-            events.First(e => e is Error).Cause.Should().BeOfType<FormatException>();
+            var debugEvt = await ExpectMsgAsync<Debug>();
+            debugEvt.ToString().Should().Contain("[INVALID LOG FORMAT]");
         }
 
         [Fact]
-        public void DefaultLogger_WithBadFormattingMustNotThrow()
+        public async Task DefaultLogger_WithBadFormattingMustNotThrow()
         {
             var config = ConfigurationFactory.ParseString("akka.loggers = [\"Akka.Event.DefaultLogger\"]");
             var sys2 = ActorSystem.Create("DefaultLoggerTest", config.WithFallback(Sys.Settings.Config));
@@ -77,22 +71,22 @@ akka.stdout-loglevel = DEBUG");
             sys2.EventStream.Subscribe(probe, typeof(LogEvent));
 
             sys2.Log.Error(new FakeException("BOOM"), Case.t, Case.p);
-            probe.ExpectMsg<Error>().Cause.Should().BeOfType<FakeException>();
+            (await probe.ExpectMsgAsync<Error>()).Cause.Should().BeOfType<FakeException>();
 
             sys2.Log.Warning(Case.t, Case.p);
-            probe.ExpectMsg<Warning>();
+            await probe.ExpectMsgAsync<Warning>();
 
             sys2.Log.Info(Case.t, Case.p);
-            probe.ExpectMsg<Info>();
+            await probe.ExpectMsgAsync<Info>();
 
             sys2.Log.Debug(Case.t, Case.p);
-            probe.ExpectMsg<Debug>();
+            await probe.ExpectMsgAsync<Debug>();
 
-            sys2.Terminate().Wait();
+            await sys2.Terminate();
         }
 
         [Fact]
-        public void StandardOutLogger_WithBadFormattingMustNotThrow()
+        public async Task StandardOutLogger_WithBadFormattingMustNotThrow()
         {
             var config = ConfigurationFactory.ParseString("akka.loggers = [\"Akka.Event.StandardOutLogger\"]");
             var sys2 = ActorSystem.Create("StandardOutLoggerTest", config.WithFallback(Sys.Settings.Config));
@@ -101,18 +95,18 @@ akka.stdout-loglevel = DEBUG");
             sys2.EventStream.Subscribe(probe, typeof(LogEvent));
 
             sys2.Log.Error(new FakeException("BOOM"), Case.t, Case.p);
-            probe.ExpectMsg<Error>().Cause.Should().BeOfType<FakeException>();
+            (await probe.ExpectMsgAsync<Error>()).Cause.Should().BeOfType<FakeException>();
 
             sys2.Log.Warning(Case.t, Case.p);
-            probe.ExpectMsg<Warning>();
+            await probe.ExpectMsgAsync<Warning>();
 
             sys2.Log.Info(Case.t, Case.p);
-            probe.ExpectMsg<Info>();
+            await probe.ExpectMsgAsync<Info>();
 
             sys2.Log.Debug(Case.t, Case.p);
-            probe.ExpectMsg<Debug>();
+            await probe.ExpectMsgAsync<Debug>();
 
-            sys2.Terminate().Wait();
+            await sys2.Terminate();
         }
 
         [Theory]
@@ -120,7 +114,7 @@ akka.stdout-loglevel = DEBUG");
         public void StandardOutLogger_PrintLogEvent_WithBadLogFormattingMustNotThrow(LogEvent @event)
         {
             var obj = new object();
-            obj.Invoking(o => StandardOutLogger.PrintLogEvent(@event)).Should().NotThrow();
+            obj.Invoking(_ => StandardOutLogger.PrintLogEvent(@event, LogFilterEvaluator.NoFilters)).Should().NotThrow();
         }
 
         public static IEnumerable<object[]> LogEventFactory()
@@ -129,15 +123,15 @@ akka.stdout-loglevel = DEBUG");
             var logSource = LogSource.Create(nameof(LoggerSpec));
             var ls = logSource.Source;
             var lc = logSource.Type;
-            var formatter = new DefaultLogMessageFormatter();
+            var formatter =  DefaultLogMessageFormatter.Instance;
 
-            yield return new object[] { new Error(ex, ls, lc, new LogMessage(formatter, Case.t, Case.p)) }; 
+            yield return new object[] { new Error(ex, ls, lc, new DefaultLogMessage(formatter, Case.t, Case.p)) }; 
 
-            yield return new object[] {new Warning(ex, ls, lc, new LogMessage(formatter, Case.t, Case.p))};
+            yield return new object[] {new Warning(ex, ls, lc, new DefaultLogMessage(formatter, Case.t, Case.p))};
 
-            yield return new object[] {new Info(ex, ls, lc, new LogMessage(formatter, Case.t, Case.p))};
+            yield return new object[] {new Info(ex, ls, lc, new DefaultLogMessage(formatter, Case.t, Case.p))};
 
-            yield return new object[] {new Debug(ex, ls, lc, new LogMessage(formatter, Case.t, Case.p))};
+            yield return new object[] {new Debug(ex, ls, lc, new DefaultLogMessage(formatter, Case.t, Case.p))};
         }
 
         private class FakeException : Exception

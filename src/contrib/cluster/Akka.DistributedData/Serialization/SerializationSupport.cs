@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SerializationSupport.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -142,7 +142,7 @@ namespace Akka.DistributedData.Serialization
 
         public UniqueAddress UniqueAddressFromProto(Proto.Msg.UniqueAddress address)
         {
-            return new UniqueAddress(AddressFromProto(address.Address), (int)address.Uid);
+            return new UniqueAddress(AddressFromProto(address.Address), address.Uid);
         }
 
         public static Proto.Msg.VersionVector VersionVectorToProto(VersionVector versionVector)

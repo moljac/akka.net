@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LoggerMailbox.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -18,24 +18,15 @@ namespace Akka.Event
     /// </summary>
     internal sealed class LoggerMailboxType : MailboxType, IProducesMessageQueue<LoggerMailbox>
     {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="settings">TBD</param>
-        /// <param name="config">TBD</param>
+        /// <inheritdoc/>
         public LoggerMailboxType(Settings settings, Config config) : base(settings, config)
         {
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="owner">TBD</param>
-        /// <param name="system">TBD</param>
+        /// <inheritdoc/>
         /// <exception cref="ArgumentNullException">
         /// This exception is thrown if the given <paramref name="owner"/> or <paramref name="system"/> is undefined.
         /// </exception>
-        /// <returns>TBD</returns>
         public override IMessageQueue Create(IActorRef owner, ActorSystem system)
         {
             if(owner != null && system != null) return new LoggerMailbox(owner, system);
@@ -52,10 +43,11 @@ namespace Akka.Event
         private readonly ActorSystem _system;
 
         /// <summary>
-        /// TBD
+        /// Creates a new <see cref="LoggerMailbox"/> backed by an <see cref="UnboundedMessageQueue"/>.
+        /// Remaining messages are drained to the <see cref="StandardOutLogger"/> on cleanup.
         /// </summary>
-        /// <param name="owner">TBD</param>
-        /// <param name="system">TBD</param>
+        /// <param name="owner">The actor that owns this mailbox.</param>
+        /// <param name="system">The actor system used to resolve the <see cref="StandardOutLogger"/> during cleanup.</param>
         public LoggerMailbox(IActorRef owner, ActorSystem system) : base(new UnboundedMessageQueue())
         {
             _owner = owner;

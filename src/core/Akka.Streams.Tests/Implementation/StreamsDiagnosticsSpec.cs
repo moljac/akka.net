@@ -1,0 +1,364 @@
+//-----------------------------------------------------------------------
+// <copyright file="StreamsDiagnosticsSpec.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2025 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+#nullable enable
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading.Tasks;
+using Akka.Actor;
+using Akka.Streams.Stage;
+using Akka.Streams.Dsl;
+using Akka.Streams.Implementation;
+using Akka.Streams.TestKit;
+using Akka.TestKit;
+using FluentAssertions;
+using Xunit;
+
+namespace Akka.Streams.Tests.Implementation
+{
+    /// <summary>
+    /// Validates that per-element trace context captured at Source.Queue ingress flows through
+    /// the GraphInterpreter and causes stage-scoped Activity spans to be emitted for downstream
+    /// stages, with correct parent-child relationships — i.e. end-to-end OpenTelemetry trace
+    /// continuity through Akka.Streams pipelines.
+    /// </summary>
+    public class StreamsDiagnosticsSpec : AkkaSpec
+    {
+        private readonly ActorMaterializer _materializer;
+
+        public StreamsDiagnosticsSpec(ITestOutputHelper output) : base(output)
+        {
+            _materializer = Sys.Materializer();
+        }
+
+        [Fact]
+        public async Task ProducerActivityContext_should_propagate_to_downstream_stage_spans()
+        {
+            using var collector = new StreamsActivityCollector();
+
+            // Materialize: Source.Queue -> Select -> Sink.Seq
+            var queue = Source.Queue<int>(16, OverflowStrategy.DropNew)
+                .Select(i => i * 2)
+                .ToMaterialized(Sink.Seq<int>(), Keep.Left)
+                .Run(_materializer);
+
+            // Offer one element from inside a traced scope (simulating an instrumented producer).
+            // Use a DIFFERENT source so our parent isn't swallowed by our own listener.
+            using var producerSource = new ActivitySource("ProducerTest");
+            using var producerListener = new ActivityListener
+            {
+                ShouldListenTo = src => src.Name == "ProducerTest",
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStarted = _ => { },
+                ActivityStopped = _ => { }
+            };
+            ActivitySource.AddActivityListener(producerListener);
+
+            using (var parent = producerSource.StartActivity("producer.offer", ActivityKind.Internal))
+            {
+                parent.Should().NotBeNull("producer trace must be live for this test to mean anything");
+                var result = await queue.OfferAsync(42);
+                result.Should().Be(QueueOfferResult.Enqueued.Instance);
+            }
+
+            queue.Complete();
+
+            await collector.WaitForSpansAsync(atLeast: 4, timeoutSeconds: 3);
+
+            // Diagnostic dump of every span we saw:
+            var stopped = new List<Activity>(collector.StoppedActivities);
+            foreach (var a in stopped)
+            {
+                var stageType = a.GetTagItem("stream.stage.type") as string ?? "<none>";
+                Output?.WriteLine($"[span] name='{a.OperationName}' traceId={a.TraceId} spanId={a.SpanId} parentId={a.ParentSpanId} stream.stage.type={stageType}");
+            }
+
+            // We expect at least:
+            //   - 1 akka.stream.offer ingress span (from Source.Queue's Callback handler)
+            //   - 1 akka.stream.stage span (from Select, created in ProcessPush)
+            stopped.Should().HaveCountGreaterOrEqualTo(2,
+                "Source.Queue should emit an ingress span and downstream stages should each emit a stage span");
+
+            stopped.Should().Contain(a => a.OperationName.StartsWith("akka.stream.ingress"),
+                "at least one ingress span should be emitted when OfferAsync is called from a traced scope");
+
+            var selectStage = stopped.Find(a =>
+                a.OperationName == "akka.stream.stage Select");
+            selectStage.Should().NotBeNull("Select stage span should be emitted for the pushed element");
+
+            // End-to-end continuity: all stream spans share a single trace id.
+            var distinctTraceIds = stopped.Select(a => a.TraceId.ToString()).Distinct().ToList();
+            distinctTraceIds.Should().HaveCount(1, "all stream spans should share one trace id");
+
+            // The Select stage span must have a parent (it should not be a root).
+            selectStage!.ParentSpanId.Should().NotBe(default(ActivitySpanId),
+                "Select stage span must parent to an upstream span");
+        }
+
+        [Fact]
+        public async Task User_span_inside_SelectAsync_lambda_should_parent_to_stage_span()
+        {
+            using var collector = new StreamsActivityCollector();
+
+            // A separate user-owned ActivitySource represents "user code inside the SelectAsync lambda"
+            // (e.g. OpenTelemetry.Instrumentation.SqlClient creating a span when it sees Activity.Current).
+            using var userSource = new ActivitySource("UserWork");
+            var userSpans = new List<Activity>();
+            using var userListener = new ActivityListener
+            {
+                ShouldListenTo = src => src.Name == "UserWork" || src.Name == "ProducerTest",
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStarted = _ => { },
+                ActivityStopped = a =>
+                {
+                    if (a.Source.Name == "UserWork") userSpans.Add(a);
+                }
+            };
+            ActivitySource.AddActivityListener(userListener);
+
+            var sink = Source.Queue<int>(16, OverflowStrategy.DropNew)
+                .SelectAsync(1, async i =>
+                {
+                    // Simulate user code (or OpenTelemetry auto-instrumentation) inside the async lambda.
+                    // Represents the canonical case where user work inside SelectAsync (e.g. a
+                    // SqlClient / HttpClient / gRPC call) creates a span whose parent should be the
+                    // SelectAsync stage span, not a random root.
+                    using var userSpan = userSource.StartActivity("user.work", ActivityKind.Internal);
+                    await Task.Yield();
+                    return i * 2;
+                })
+                .ToMaterialized(Sink.Seq<int>(), Keep.Left)
+                .Run(_materializer);
+
+            using var producerSource = new ActivitySource("ProducerTest");
+            using (var parent = producerSource.StartActivity("producer.offer", ActivityKind.Internal))
+            {
+                parent.Should().NotBeNull();
+                (await sink.OfferAsync(42)).Should().Be(QueueOfferResult.Enqueued.Instance);
+            }
+
+            await collector.WaitForSpansAsync(atLeast: 3, timeoutSeconds: 3,
+                predicate: _ => userSpans.Count > 0);
+
+            userSpans.Should().HaveCount(1, "user span inside SelectAsync lambda should have been created");
+            var userSpan = userSpans[0];
+            Output?.WriteLine($"user.work span: traceId={userSpan.TraceId} parentSpanId={userSpan.ParentSpanId}");
+
+            // Dump stream spans for diagnosis
+            foreach (var a in collector.StoppedActivities)
+                Output?.WriteLine($"[stream] {a.OperationName} trace={a.TraceId} span={a.SpanId} parent={a.ParentSpanId}");
+
+            // The user's span should share the same TraceId as the stream spans, proving
+            // end-to-end trace continuity from actor → Source.Queue → SelectAsync → user code.
+            var streamSpansArr = collector.StoppedActivities.ToArray();
+            streamSpansArr.Should().NotBeEmpty("stream spans should have been emitted");
+            userSpan.TraceId.Should().Be(streamSpansArr[0].TraceId,
+                "user span inside SelectAsync lambda should share the producer's trace id");
+            userSpan.ParentSpanId.Should().NotBe(default(ActivitySpanId),
+                "user span should have a parent (not be a root)");
+        }
+
+        [Fact]
+        public async Task Multiple_offers_from_different_traced_scopes_should_preserve_distinct_traces()
+        {
+            // Validates that the generalized capture at InvokeCallbacks correctly attributes each
+            // element to its OWN producer trace when offers happen from different traced scopes.
+            // This is the multi-producer interleaving case that was the critical disqualifying
+            // scenario for the earlier mailbox-level hypothesis.
+            using var collector = new StreamsActivityCollector();
+
+            var queue = Source.Queue<int>(16, OverflowStrategy.DropNew)
+                .Select(i => i * 10)
+                .ToMaterialized(Sink.Seq<int>(), Keep.Left)
+                .Run(_materializer);
+
+            using var producerSource = new ActivitySource("ProducerTest");
+            using var producerListener = new ActivityListener
+            {
+                ShouldListenTo = src => src.Name == "ProducerTest",
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStarted = _ => { },
+                ActivityStopped = _ => { }
+            };
+            ActivitySource.AddActivityListener(producerListener);
+
+            // First offer under traceA
+            string traceAId;
+            using (var parent = producerSource.StartActivity("producer.offerA", ActivityKind.Internal))
+            {
+                parent.Should().NotBeNull();
+                traceAId = parent!.TraceId.ToString();
+                (await queue.OfferAsync(1)).Should().Be(QueueOfferResult.Enqueued.Instance);
+            }
+
+            await collector.WaitForSpansAsync(atLeast: 2, timeoutSeconds: 3);
+
+            var aSpans = collector.StoppedActivities.ToArray();
+            foreach (var a in aSpans)
+                a.TraceId.ToString().Should().Be(traceAId, "first offer's spans must all belong to traceA");
+
+            // Second offer under traceB (separate trace)
+            string traceBId;
+            using (var parent = producerSource.StartActivity("producer.offerB", ActivityKind.Internal))
+            {
+                parent.Should().NotBeNull();
+                traceBId = parent!.TraceId.ToString();
+                (await queue.OfferAsync(2)).Should().Be(QueueOfferResult.Enqueued.Instance);
+            }
+
+            queue.Complete();
+
+            var expectedTotal = aSpans.Length + 2;  // at least ingress + stage for offer B
+            await collector.WaitForSpansAsync(atLeast: expectedTotal, timeoutSeconds: 3);
+
+            traceAId.Should().NotBe(traceBId, "the two offers must have different trace ids");
+
+            // Every captured stream span should belong to EITHER traceA OR traceB — never mixed.
+            var allSpans = collector.StoppedActivities.ToArray();
+            foreach (var a in allSpans)
+            {
+                var tid = a.TraceId.ToString();
+                (tid == traceAId || tid == traceBId).Should().BeTrue(
+                    $"span {a.OperationName} traceId {tid} should match either traceA or traceB");
+            }
+
+            // And each trace id should have at least one stream span.
+            allSpans.Should().Contain(a => a.TraceId.ToString() == traceAId, "traceA should have stream spans");
+            allSpans.Should().Contain(a => a.TraceId.ToString() == traceBId, "traceB should have stream spans");
+        }
+
+        [Fact]
+        public async Task No_producer_context_should_produce_no_stream_spans()
+        {
+            using var collector = new StreamsActivityCollector();
+
+            var sink = Source.Queue<int>(16, OverflowStrategy.DropNew)
+                .Select(i => i + 1)
+                .ToMaterialized(Sink.Seq<int>(), Keep.Left)
+                .Run(_materializer);
+
+            // Offer without any Activity.Current set — simulates a background / timer-driven caller.
+            Activity.Current.Should().BeNull("precondition: no ambient trace");
+            var result = await sink.OfferAsync(7);
+            result.Should().Be(QueueOfferResult.Enqueued.Instance);
+
+            sink.Complete();
+
+            // Wait a beat to be sure nothing shows up asynchronously
+            await Task.Delay(200);
+
+            // No framework-owned spans should have been produced.
+            collector.StartedActivities.Should().BeEmpty(
+                "when the producer has no Activity.Current, ingress capture is a no-op and no " +
+                "stream spans are created — this is the cardinality guard that keeps background " +
+                "tick-driven streams invisible to tracing");
+        }
+
+        [Theory(DisplayName = "Should_PreserveFeedbackAndIsolateCallbackContexts_When_TracingIsPresentOrAbsent")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_preserve_feedback_and_isolate_callback_contexts_when_tracing_is_present_or_absent(bool traced)
+        {
+            using var collector = new StreamsActivityCollector();
+            var ((queue, callback), completion) = Source.Queue<int>(1, OverflowStrategy.Fail)
+                .ViaMaterialized(new CallbackContextStage(), Keep.Both)
+                .ToMaterialized(Sink.Ignore<int>(), Keep.Both)
+                .Run(_materializer);
+            var observed = new ConcurrentQueue<ActivityContext?>();
+            Activity.Current.Should().BeNull("the untraced callback must start without an ambient context");
+            using var producer = traced ? new Activity("callback.producer").Start() : null;
+
+            (await callback.InvokeWithFeedback(() => observed.Enqueue(Activity.Current?.Context)).WaitAsync(TimeSpan.FromSeconds(3)))
+                .Should().Be(Done.Instance);
+            Activity.Current.Should().BeSameAs(producer, "the interpreter must not alter the caller's scope");
+            producer?.Stop();
+            Activity.Current.Should().BeNull();
+            (await callback.InvokeWithFeedback(() => observed.Enqueue(Activity.Current?.Context)).WaitAsync(TimeSpan.FromSeconds(3)))
+                .Should().Be(Done.Instance);
+
+            queue.Complete();
+            await completion.WaitAsync(TimeSpan.FromSeconds(3));
+            var contexts = observed.ToArray();
+            contexts.Should().HaveCount(2, "successful feedback follows execution of each callback");
+            contexts[1].Should().BeNull("an untraced callback must not inherit the previous callback's ingress scope");
+            if (traced)
+            {
+                contexts[0].Should().NotBeNull();
+                var ingress = collector.StoppedActivities.Should().ContainSingle(a =>
+                    a.OperationName.StartsWith("akka.stream.ingress") && a.TraceId == producer!.TraceId).Subject;
+                ingress.ParentSpanId.Should().Be(producer!.SpanId);
+                contexts[0]!.Value.Should().Be(ingress.Context,
+                    "the handler must execute inside the ingress Activity, rather than merely capture its producer");
+            }
+            else
+            {
+                contexts[0].Should().BeNull();
+                collector.StartedActivities.Should().BeEmpty();
+            }
+        }
+
+        [Fact(DisplayName = "Should_StopIngressActivityAndFailFeedback_When_TracedCallbackThrows")]
+        public async Task Should_stop_ingress_activity_and_fail_feedback_when_traced_callback_throws()
+        {
+            using var collector = new StreamsActivityCollector();
+            var ((_, callback), completion) = Source.Queue<int>(1, OverflowStrategy.Fail)
+                .ViaMaterialized(new CallbackContextStage(), Keep.Both)
+                .ToMaterialized(Sink.Ignore<int>(), Keep.Both)
+                .Run(_materializer);
+            using var producer = new Activity("callback.throwing-producer").Start();
+            ActivityContext? observed = null;
+            var failure = new TestException("traced callback failed");
+            Func<Task> invoke = async () => await callback.InvokeWithFeedback(() =>
+            {
+                observed = Activity.Current?.Context;
+                throw failure;
+            }).WaitAsync(TimeSpan.FromSeconds(3));
+
+            (await invoke.Should().ThrowAsync<TestException>()).Which.Should().BeSameAs(failure);
+            Func<Task> finished = async () => await completion.WaitAsync(TimeSpan.FromSeconds(3));
+            (await finished.Should().ThrowAsync<TestException>()).Which.Should().BeSameAs(failure);
+            Activity.Current.Should().BeSameAs(producer);
+            observed.Should().NotBeNull();
+            var ingress = collector.StoppedActivities.Should().ContainSingle(a =>
+                a.OperationName.StartsWith("akka.stream.ingress") && a.TraceId == producer.TraceId).Subject;
+            observed!.Value.Should().Be(ingress.Context);
+            ingress.ParentSpanId.Should().Be(producer.SpanId);
+        }
+
+        private sealed class CallbackContextStage : GraphStageWithMaterializedValue<FlowShape<int, int>, IAsyncCallback<Action>>
+        {
+            private readonly Inlet<int> _in = new("callback-context.in");
+            private readonly Outlet<int> _out = new("callback-context.out");
+
+            public CallbackContextStage() => Shape = new FlowShape<int, int>(_in, _out);
+
+            public override FlowShape<int, int> Shape { get; }
+
+            public override ILogicAndMaterializedValue<IAsyncCallback<Action>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
+            {
+                var logic = new Logic(this);
+                return new LogicAndMaterializedValue<IAsyncCallback<Action>>(logic, logic.Callback);
+            }
+
+            private sealed class Logic : GraphStageLogic
+            {
+                public Logic(CallbackContextStage stage) : base(stage.Shape)
+                {
+                    Callback = GetTypedAsyncCallback<Action>(action => action());
+                    SetHandler(stage._in, onPush: () => Push(stage._out, Grab(stage._in)));
+                    SetHandler(stage._out, onPull: () => Pull(stage._in));
+                }
+
+                public IAsyncCallback<Action> Callback { get; }
+            }
+        }
+
+    }
+}

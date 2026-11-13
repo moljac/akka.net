@@ -1,16 +1,19 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TestKit.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading.Tasks;
 using Akka.Actor;
+using Akka.Actor.Internal;
 using Akka.Actor.Setup;
 using Akka.Configuration;
 using Akka.Event;
 using Akka.TestKit.Xunit2.Internals;
+using Xunit;
 using Xunit.Abstractions;
 
 namespace Akka.TestKit.Xunit2
@@ -19,15 +22,38 @@ namespace Akka.TestKit.Xunit2
     /// This class represents an Akka.NET TestKit that uses <a href="https://xunit.github.io/">xUnit</a>
     /// as its testing framework.
     /// </summary>
-    public class TestKit : TestKitBase , IDisposable
+    public class TestKit : TestKitBase, IDisposable
     {
-        private bool _isDisposed; //Automatically initialized to false;
+        private class PrefixedOutput : ITestOutputHelper
+        {
+            private readonly ITestOutputHelper _output;
+            private readonly string _prefix;
+
+            public PrefixedOutput(ITestOutputHelper output, string prefix)
+            {
+                _output = output;
+                _prefix = prefix;
+            }
+
+            public void WriteLine(string message)
+            {
+                _output.WriteLine(_prefix + message);
+            }
+
+            public void WriteLine(string format, params object[] args)
+            {
+                _output.WriteLine(_prefix + format, args);
+            }
+        }
 
         /// <summary>
         /// The provider used to write test output.
         /// </summary>
-        protected readonly ITestOutputHelper Output;
+        protected readonly ITestOutputHelper? Output;
 
+        private bool _disposed;
+        private bool _disposing;
+        
         /// <summary>
         /// <para>
         /// Initializes a new instance of the <see cref="TestKit"/> class.
@@ -39,7 +65,7 @@ namespace Akka.TestKit.Xunit2
         /// </summary>
         /// <param name="system">The actor system to use for testing. The default value is <see langword="null"/>.</param>
         /// <param name="output">The provider used to write test output. The default value is <see langword="null"/>.</param>
-        public TestKit(ActorSystem system = null, ITestOutputHelper output = null)
+        public TestKit(ActorSystem? system = null, ITestOutputHelper? output = null)
             : base(Assertions, system)
         {
             Output = output;
@@ -52,7 +78,7 @@ namespace Akka.TestKit.Xunit2
         /// <param name="config">The <see cref="Setup"/> to use for configuring the ActorSystem.</param>
         /// <param name="actorSystemName">The name of the system. The default name is "test".</param>
         /// <param name="output">The provider used to write test output. The default value is <see langword="null"/>.</param>
-        public TestKit(ActorSystemSetup config, string actorSystemName = null, ITestOutputHelper output = null)
+        public TestKit(ActorSystemSetup config, string? actorSystemName = null, ITestOutputHelper? output = null)
             : base(Assertions, config, actorSystemName)
         {
             Output = output;
@@ -65,7 +91,7 @@ namespace Akka.TestKit.Xunit2
         /// <param name="config">The configuration to use for the system.</param>
         /// <param name="actorSystemName">The name of the system. The default name is "test".</param>
         /// <param name="output">The provider used to write test output. The default value is <see langword="null"/>.</param>
-        public TestKit(Config config, string actorSystemName = null, ITestOutputHelper output = null)
+        public TestKit(Config config, string? actorSystemName = null, ITestOutputHelper? output = null)
             : base(Assertions, config, actorSystemName)
         {
             Output = output;
@@ -77,7 +103,7 @@ namespace Akka.TestKit.Xunit2
         /// </summary>
         /// <param name="config">The configuration to use for the system.</param>
         /// <param name="output">The provider used to write test output. The default value is <see langword="null"/>.</param>
-        public TestKit(string config, ITestOutputHelper output = null)
+        public TestKit(string config, ITestOutputHelper? output = null)
             : base(Assertions, ConfigurationFactory.ParseString(config))
         {
             Output = output;
@@ -98,20 +124,13 @@ namespace Akka.TestKit.Xunit2
         /// <summary>
         /// Commonly used assertions used throughout the testkit.
         /// </summary>
-        protected static XunitAssertions Assertions { get; } = new XunitAssertions();
+        protected static XunitAssertions Assertions { get; } = new();
 
         /// <summary>
         /// This method is called when a test ends.
-        /// 
-        /// <remarks>
-        /// If you override this, then make sure you either call base.AfterTest() or
-        /// <see cref="TestKitBase.Shutdown(System.Nullable{System.TimeSpan},bool)">TestKitBase.Shutdown</see>
-        /// to shut down the system. Otherwise a memory leak will occur.
-        /// </remarks>
         /// </summary>
         protected virtual void AfterAll()
         {
-            Shutdown();
         }
 
         /// <summary>
@@ -122,19 +141,40 @@ namespace Akka.TestKit.Xunit2
         {
             if (Output != null)
             {
-                var extSystem = (ExtendedActorSystem)system;
-                var logger = extSystem.SystemActorOf(Props.Create(() => new TestOutputLogger(Output)), "log-test");
-                logger.Tell(new InitializeLogger(system.EventStream));
+                var systemImpl = system as ActorSystemImpl ?? throw new InvalidOperationException("Expected ActorSystemImpl");
+                
+                // Create logger actor synchronously to avoid deadlock during parallel test execution
+                // Use AttachChildWithAsync with isAsync:false to create LocalActorRef instead of RepointableActorRef
+                var logger = systemImpl.Provider.SystemGuardian.Cell.AttachChildWithAsync(
+                    Props.Create(() => new TestOutputLogger(Output)),
+                    isSystemService: true,  // Mark as system service
+                    isAsync: false,         // Create synchronously to avoid deadlock
+                    name: "log-test");
+                
+                // Send the initialization message without waiting for response to avoid deadlock
+                // The logger will subscribe to the event stream when it processes this message
+                logger.Tell(new InitializeLogger(system.EventStream), ActorRefs.NoSender);
             }
         }
 
-        /// <inheritdoc/>
-        public void Dispose()
+        protected void InitializeLogger(ActorSystem system, string prefix)
         {
-            Dispose(true);
-            //Take this object off the finalization queue and prevent finalization code for this object
-            //from executing a second time.
-            GC.SuppressFinalize(this);
+            if (Output != null)
+            {
+                var systemImpl = system as ActorSystemImpl ?? throw new InvalidOperationException("Expected ActorSystemImpl");
+                
+                // Create logger actor synchronously to avoid deadlock during parallel test execution
+                var logger = systemImpl.Provider.SystemGuardian.Cell.AttachChildWithAsync(
+                    Props.Create(() => new TestOutputLogger(
+                        string.IsNullOrEmpty(prefix) ? Output : new PrefixedOutput(Output, prefix))),
+                    isSystemService: true,  // Mark as system service
+                    isAsync: false,         // Create synchronously to avoid deadlock
+                    name: "log-test");
+                
+                // Send the initialization message without waiting for response to avoid deadlock
+                // The logger will subscribe to the event stream when it processes this message
+                logger.Tell(new InitializeLogger(system.EventStream), ActorRefs.NoSender);
+            }
         }
 
         /// <summary>
@@ -148,22 +188,24 @@ namespace Akka.TestKit.Xunit2
         /// </param>
         protected virtual void Dispose(bool disposing)
         {
-            // If disposing equals false, the method has been called by the
-            // runtime from inside the finalizer and you should not reference
-            // other objects. Only unmanaged resources can be disposed.
-
+            if (_disposing || _disposed)
+                return;
+            
+            _disposing = true;
             try
             {
-                //Make sure Dispose does not get called more than once, by checking the disposed field
-                if(!_isDisposed && disposing)
-                {
-                    AfterAll();
-                }
-                _isDisposed = true;
+                AfterAll();
             }
             finally
             {
+                Shutdown();
+                _disposed = true;
             }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
         }
     }
 }

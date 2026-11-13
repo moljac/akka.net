@@ -1,7 +1,7 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="Replicator.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -149,7 +149,7 @@ namespace Akka.DistributedData
     ///
     /// In the <see cref="Update"/> message you can pass an optional request context, which the <see cref="Replicator"/>
     /// does not care about, but is included in the reply messages. This is a convenient
-    /// way to pass contextual information (e.g. original sender) without having to use <see cref="Ask"/>
+    /// way to pass contextual information (e.g. original sender) without having to use Ask{T}
     /// or local correlation data structures.
     /// </para>
     /// <para>
@@ -220,7 +220,6 @@ namespace Akka.DistributedData
     /// A deleted key cannot be reused again, but it is still recommended to delete unused
     /// data entries because that reduces the replication overhead when new nodes join the cluster.
     /// Subsequent <see cref="Delete"/>, <see cref="Update"/> and <see cref="Get"/> requests will be replied with <see cref="DataDeleted"/>.
-    /// Subscribers will receive <see cref="Deleted"/>.
     ///
     /// In the <see cref="Delete"/> message you can pass an optional request context in the same way as for the
     /// <see cref="Update"/> message, described above. For example the original sender can be passed and replied
@@ -270,7 +269,7 @@ namespace Akka.DistributedData
         private static readonly Digest LazyDigest = ByteString.CopyFrom(new byte[] { 0 });
         private static readonly Digest NotFoundDigest = ByteString.CopyFrom(new byte[] { 255 });
 
-        private static readonly DataEnvelope DeletedEnvelope = new DataEnvelope(DeletedData.Instance);
+        private static readonly DataEnvelope DeletedEnvelope = new(DeletedData.Instance);
 
         private readonly ReplicatorSettings _settings;
 
@@ -313,8 +312,6 @@ namespace Akka.DistributedData
         private ImmutableSortedSet<Address> _exitingNodes = ImmutableSortedSet<Address>.Empty;
 
         private ImmutableDictionary<UniqueAddress, long> _removedNodes = ImmutableDictionary<UniqueAddress, long>.Empty;
-        private ImmutableDictionary<UniqueAddress, long> _pruningPerformed = ImmutableDictionary<UniqueAddress, long>.Empty;
-        private ImmutableHashSet<UniqueAddress> _tombstonedNodes = ImmutableHashSet<UniqueAddress>.Empty;
 
         /// <summary>
         /// All nodes sorted with the leader first
@@ -322,8 +319,18 @@ namespace Akka.DistributedData
         private ImmutableSortedSet<Member> _leader = ImmutableSortedSet<Member>.Empty.WithComparer(Member.LeaderStatusOrdering);
         private bool IsLeader => !_leader.IsEmpty && _leader.First().Address == _selfAddress;
 
+        // A Replicator subscribes to cluster events with InitialStateAsEvents, and that replay
+        // reports each current member at its CURRENT status. A Replicator that starts after a
+        // member has already moved to Leaving/Exiting therefore receives MemberLeft/MemberExited
+        // for it and never MemberUp, so membership can't be inferred from MemberUp alone.
+        //
+        // _exitingNodes covers MemberExited. _leader covers MemberLeft/MemberDowned, which land
+        // there via ReceiveOtherMemberEvent. Both sets are pruned in ReceiveMemberRemoved, so a
+        // removed node stops being trusted. Reusing sets that are already maintained avoids
+        // introducing new membership state purely to answer this question.
         private bool IsKnownNode(Address node) => _nodes.Contains(node) || _weaklyUpNodes.Contains(node) ||
-                                                  _joiningNodes.Contains(node) || _selfAddress == node;
+                                                  _joiningNodes.Contains(node) || _exitingNodes.Contains(node) ||
+                                                  _leader.Any(x => x.Address == node) || _selfAddress == node;
 
         /// <summary>
         /// For pruning timeouts are based on clock that is only increased when all nodes are reachable.
@@ -348,8 +355,8 @@ namespace Akka.DistributedData
         private long _statusCount = 0;
         private int _statusTotChunks = 0;
 
-        private readonly Dictionary<string, HashSet<IActorRef>> _subscribers = new Dictionary<string, HashSet<IActorRef>>();
-        private readonly Dictionary<string, HashSet<IActorRef>> _newSubscribers = new Dictionary<string, HashSet<IActorRef>>();
+        private readonly Dictionary<string, HashSet<IActorRef>> _subscribers = new();
+        private readonly Dictionary<string, HashSet<IActorRef>> _newSubscribers = new();
         private ImmutableDictionary<string, IKey> _subscriptionKeys = ImmutableDictionary<string, IKey>.Empty;
 
         private readonly ILoggingAdapter _log;
@@ -392,11 +399,11 @@ namespace Akka.DistributedData
             _previousClockTime = DateTime.UtcNow.Ticks * 100;
 
             _hasDurableKeys = settings.DurableKeys.Count > 0;
-            var durableKeysBuilder = ImmutableHashSet<string>.Empty.ToBuilder();
-            var durableWildcardsBuilder = ImmutableHashSet<string>.Empty.ToBuilder();
+            var durableKeysBuilder = ImmutableHashSet.CreateBuilder<string>();
+            var durableWildcardsBuilder = ImmutableHashSet.CreateBuilder<string>();
             foreach (var key in settings.DurableKeys)
             {
-                if (key.EndsWith("*"))
+                if (key.EndsWith('*'))
                     durableWildcardsBuilder.Add(key.Substring(0, key.Length - 1));
                 else
                     durableKeysBuilder.Add(key);
@@ -468,7 +475,7 @@ namespace Akka.DistributedData
         protected override SupervisorStrategy SupervisorStrategy() => new OneForOneStrategy(e =>
         {
             var fromDurableStore = Equals(Sender, _durableStore) && !Equals(Sender, Context.System.DeadLetters);
-            if ((e is LoadFailedException || e is ActorInitializationException) && fromDurableStore)
+            if (e is LoadFailedException or ActorInitializationException && fromDurableStore)
             {
                 _log.Error(e,
                     "Stopping distributed-data Replicator due to load or startup failure in durable store, caused by: {0}",
@@ -630,7 +637,7 @@ namespace Akka.DistributedData
             }
             else
             {
-                var excludeExiting = consistency is ReadMajorityPlus || consistency is ReadAll;
+                var excludeExiting = consistency is ReadMajorityPlus or ReadAll;
 
                 Context.ActorOf(ReadAggregator.Props(key, consistency, req, NodesForReadWrite(excludeExiting), _unreachable, !_settings.PreferOldest, localValue, Sender)
                     .WithDispatcher(Context.Props.Dispatcher));
@@ -640,7 +647,7 @@ namespace Akka.DistributedData
         private bool IsLocalGet(IReadConsistency consistency)
         {
             if (consistency is ReadLocal) return true;
-            if (consistency is ReadAll || consistency is ReadMajority) return _nodes.Count == 0;
+            if (consistency is ReadAll or ReadMajority) return _nodes.Count == 0;
             return false;
         }
 
@@ -747,7 +754,7 @@ namespace Akka.DistributedData
                     // The order is also kept when prefer-oldest is enabled.
                     var shuffle = !(_settings.PreferOldest || (writeDelta?.RequiresCausalDeliveryOfDeltas) == true);
 
-                    var excludeExiting = consistency is WriteMajorityPlus || consistency is WriteAll;
+                    var excludeExiting = consistency is WriteMajorityPlus or WriteAll;
 
                     var writeAggregator = Context.ActorOf(WriteAggregator
                         .Props(key, writeEnvelope, writeDelta, consistency, request, NodesForReadWrite(excludeExiting), _unreachable, shuffle, Sender, durable)
@@ -775,7 +782,7 @@ namespace Akka.DistributedData
         private bool IsLocalUpdate(IWriteConsistency consistency)
         {
             if (consistency is WriteLocal) return true;
-            if (consistency is WriteAll || consistency is WriteMajority) return _nodes.Count == 0;
+            if (consistency is WriteAll or WriteMajority) return _nodes.Count == 0;
             return false;
         }
 
@@ -873,7 +880,7 @@ namespace Akka.DistributedData
                 }
                 else
                 {
-                    var excludeExiting = consistency is WriteMajorityPlus || consistency is WriteAll;
+                    var excludeExiting = consistency is WriteMajorityPlus or WriteAll;
 
                     var writeAggregator = Context.ActorOf(WriteAggregator
                         .Props(key, DeletedEnvelope, null, consistency, request, NodesForReadWrite(excludeExiting), _unreachable, !_settings.PreferOldest, Sender, durable)
@@ -1150,7 +1157,7 @@ namespace Akka.DistributedData
 
         private void ReceiveStatus(IImmutableDictionary<string, ByteString> otherDigests, int chunk, int totChunks)
         {
-            if (_log.IsDebugEnabled)
+            if (_log.IsDebugEnabled && _settings.VerboseDebugLogging)
                 _log.Debug("Received gossip status from [{0}], chunk {1}/{2} containing [{3}]", Sender.Path.Address, chunk + 1, totChunks, string.Join(", ", otherDigests.Keys));
 
             // if no data was send we do nothing
@@ -1177,7 +1184,7 @@ namespace Akka.DistributedData
 
             if (keys.Length != 0)
             {
-                if (_log.IsDebugEnabled)
+                if (_log.IsDebugEnabled && _settings.VerboseDebugLogging)
                     _log.Debug("Sending gossip to [{0}]: {1}", Sender.Path.Address, string.Join(", ", keys));
 
                 var g = new Gossip(keys.ToImmutableDictionary(x => x, _ => GetData(_)), !otherDifferentKeys.IsEmpty);
@@ -1197,10 +1204,10 @@ namespace Akka.DistributedData
 
         private void ReceiveGossip(IImmutableDictionary<string, DataEnvelope> updatedData, bool sendBack)
         {
-            if (_log.IsDebugEnabled)
+            if (_log.IsDebugEnabled && _settings.VerboseDebugLogging)
                 _log.Debug("Received gossip from [{0}], containing [{1}]", Sender.Path.Address, string.Join(", ", updatedData.Keys));
 
-            var replyData = ImmutableDictionary<string, DataEnvelope>.Empty.ToBuilder();
+            var replyData = ImmutableDictionary.CreateBuilder<string, DataEnvelope>();
             foreach (var d in updatedData)
             {
                 var key = d.Key;
@@ -1220,8 +1227,7 @@ namespace Akka.DistributedData
 
         private void ReceiveSubscribe(IKey key, IActorRef subscriber)
         {
-            HashSet<IActorRef> set;
-            if (!_newSubscribers.TryGetValue(key.Id, out set))
+            if (!_newSubscribers.TryGetValue(key.Id, out var set))
             {
                 _newSubscribers[key.Id] = set = new HashSet<IActorRef>();
             }
@@ -1235,8 +1241,7 @@ namespace Akka.DistributedData
 
         private void ReceiveUnsubscribe(IKey key, IActorRef subscriber)
         {
-            HashSet<IActorRef> set;
-            if (_subscribers.TryGetValue(key.Id, out set) && set.Remove(subscriber) && set.Count == 0)
+            if (_subscribers.TryGetValue(key.Id, out var set) && set.Remove(subscriber) && set.Count == 0)
                 _subscribers.Remove(key.Id);
 
             if (_newSubscribers.TryGetValue(key.Id, out set) && set.Remove(subscriber) && set.Count == 0)
@@ -1245,7 +1250,7 @@ namespace Akka.DistributedData
             if (!HasSubscriber(subscriber))
                 Context.Unwatch(subscriber);
 
-            if (!_subscribers.ContainsKey(key.Id) || !_newSubscribers.ContainsKey(key.Id))
+            if (!_subscribers.ContainsKey(key.Id) && !_newSubscribers.ContainsKey(key.Id))
                 _subscriptionKeys = _subscriptionKeys.Remove(key.Id);
         }
 
@@ -1270,8 +1275,7 @@ namespace Akka.DistributedData
 
                 foreach (var k in keys1)
                 {
-                    HashSet<IActorRef> set;
-                    if (_subscribers.TryGetValue(k, out set) && set.Remove(terminated) && set.Count == 0)
+                    if (_subscribers.TryGetValue(k, out var set) && set.Remove(terminated) && set.Count == 0)
                         _subscribers.Remove(k);
                 }
 
@@ -1281,8 +1285,7 @@ namespace Akka.DistributedData
 
                 foreach (var k in keys2)
                 {
-                    HashSet<IActorRef> set;
-                    if (_newSubscribers.TryGetValue(k, out set) && set.Remove(terminated) && set.Count == 0)
+                    if (_newSubscribers.TryGetValue(k, out var set) && set.Remove(terminated) && set.Count == 0)
                         _newSubscribers.Remove(k);
                 }
 
@@ -1565,11 +1568,9 @@ namespace Akka.DistributedData
                         var key = x.Key;
                         var (data, from, to) = x.Value;
                         var envelope = _replicator.GetData(key);
-                        return envelope != null
-                            ? new KeyValuePair<string, Delta>(key,
-                                new Delta(envelope.WithData(data), from, to))
-                            : new KeyValuePair<string, Delta>(key,
-                                new Delta(new DataEnvelope(data), from, to));
+                        // After pruning has been performed we deliberately fall back to the full
+                        // envelope so receivers learn the rewritten state before they gossip again.
+                        return new KeyValuePair<string, Delta>(key, new Delta(CreateDeltaEnvelope(envelope, data), from, to));
                     })
                     .ToImmutableDictionary();
 

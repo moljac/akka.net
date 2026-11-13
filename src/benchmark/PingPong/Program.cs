@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Program.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -40,21 +40,24 @@ namespace PingPong
 #endif
         }
 
-        private static void Main(params string[] args)
+        private static async Task Main(string[] args)
         {
-            uint timesToRun;
-            if (args.Length == 0 || !uint.TryParse(args[0], out timesToRun))
+            if (args.Length == 0 || !uint.TryParse(args[0], out var timesToRun))
             {
                 timesToRun = 1u;
             }
 
             bool testAsync = args.Contains("--async");
 
-            Start(timesToRun, testAsync);
-            Console.ReadKey();
+            await Start(timesToRun, testAsync);
+
+            if (!Console.IsInputRedirected)
+            {
+                Console.ReadKey();
+            }
         }
 
-        private static async void Start(uint timesToRun, bool testAsync)
+        private static async Task Start(uint timesToRun, bool testAsync)
         {
             const int repeatFactor = 500;
             const long repeat = 30000L * repeatFactor;

@@ -1,24 +1,40 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-  <Import Project="..\..\common.props" />
-  <PropertyGroup>
-    <AssemblyTitle>Akka.Remote</AssemblyTitle>
-    <Description>Remote actor support for Akka.NET</Description>
-    <TargetFrameworks>$(NetStandardLibVersion)</TargetFrameworks>
-    <PackageTags>$(AkkaPackageTags);network</PackageTags>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-  </PropertyGroup>
+    <PropertyGroup>
+        <Description>Remoting support for Akka.NET. Allows actors to communicate over the network.</Description>
+        <TargetFramework>$(NetStandardLibVersion)</TargetFramework>
+        <PackageTags>$(AkkaPackageTags);network</PackageTags>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    </PropertyGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="Configuration\Remote.conf" />
+        <ProjectReference Include="..\Akka\Akka.csproj" />
+        <!-- Artery's OutboundHandshakeStage/InboundHandshakeStage (src/core/Akka.Remote/Artery) are
+             Akka.Streams GraphStages - see openspec/changes/artery-tcp-remoting/design.md
+             ("Handshake + association/UID (gate G2)"). Akka.Streams only depends on Akka.csproj,
+             so this does not introduce a cycle. -->
+        <ProjectReference Include="..\Akka.Streams\Akka.Streams.csproj" />
+        <ProjectReference Include="..\Akka.Serialization.V2\Akka.Serialization.V2.csproj" />
+        <!-- Analyzer-only reference: generates the Artery control-message serializer partial
+             class (Akka.Remote.Artery.ArteryControlMessageSerializer) from [AkkaSerializable] /
+             [AkkaField] annotations. Mirrors Akka.Serialization.V2.Tests' csproj. -->
+        <ProjectReference Include="..\Akka.Serialization.V2.Generators\Akka.Serialization.V2.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="DotNetty.Handlers" Version="0.7.6" />
+        <PackageReference Include="Google.Protobuf" Version="$(ProtobufVersion)" />
+        <PackageReference Include="Grpc.Tools" Version="$(GrpcToolsVersion)">
+          <PrivateAssets>all</PrivateAssets>
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+
   <ItemGroup>
-    <EmbeddedResource Include="Configuration\Remote.conf" />
-    <ProjectReference Include="..\Akka\Akka.csproj" />
+    <Protobuf Access="internal" Include="../../protobuf/ContainerFormats.proto" />
+    <Protobuf Access="internal" Include="../../protobuf/SystemMessageFormats.proto" />
+    <Protobuf Access="internal" Include="../../protobuf/WireFormats.proto" />
+
   </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="DotNetty.Handlers" Version="0.6.0" />
-    <PackageReference Include="Google.Protobuf" Version="$(ProtobufVersion)" />
-  </ItemGroup>
-  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-    <DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
-  </PropertyGroup>
-  <PropertyGroup>
-    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
-  </PropertyGroup>
+    <PropertyGroup>
+        <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    </PropertyGroup>
 </Project>

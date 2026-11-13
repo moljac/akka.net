@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TestKitAssertionsProvider.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,16 +17,16 @@ namespace Akka.TestKit
         private readonly ITestKitAssertions _assertions;
 
         /// <summary>
-        /// TBD
+        /// Creates a provider for the specified test assertion implementation.
         /// </summary>
-        /// <param name="assertions">TBD</param>
+        /// <param name="assertions">The assertion implementation supplied by the test framework.</param>
         public TestKitAssertionsProvider(ITestKitAssertions assertions)
         {
             _assertions = assertions;
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the test framework assertion implementation.
         /// </summary>
         public ITestKitAssertions Assertions { get { return _assertions; } }
     }

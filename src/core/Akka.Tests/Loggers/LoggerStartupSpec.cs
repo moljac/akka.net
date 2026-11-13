@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LoggerStartupSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -9,47 +9,229 @@ using System;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
+using Akka.Dispatch;
 using Akka.Event;
+using Akka.TestKit;
 using FluentAssertions;
 using Xunit;
 
 namespace Akka.Tests.Loggers
 {
-    public class LoggerStartupSpec : TestKit.Xunit2.TestKit
+    public class LoggerStartupSpec : TestKit.Xunit.TestKit
     {
-        private const int LoggerResponseDelayMs = 10_000;
-        
-        [Fact]
-        public async Task Logger_async_start_configuration_helps_to_ignore_hanging_loggers()
+        public LoggerStartupSpec(ITestOutputHelper helper) : base(nameof(LoggerStartupSpec), helper)
         {
-            var loggerAsyncStartDisabledConfig = ConfigurationFactory.ParseString($"akka.logger-async-start = false");
-            var loggerAsyncStartEnabledConfig = ConfigurationFactory.ParseString($"akka.logger-async-start = true");
-            
-            var slowLoggerConfig = ConfigurationFactory.ParseString($"akka.loggers = [\"{typeof(SlowLoggerActor).FullName}, {typeof(SlowLoggerActor).Assembly.GetName().Name}\"]");
-
-            // Without logger async start, ActorSystem creation will hang
-            this.Invoking(_ => ActorSystem.Create("handing", slowLoggerConfig.WithFallback(loggerAsyncStartDisabledConfig))).Should()
-                .Throw<Exception>("System can not start - logger timed out");
-            
-            // With logger async start, ActorSystem is created without issues
-             // Created without timeouts
-            var system = ActorSystem.Create("working", slowLoggerConfig.WithFallback(loggerAsyncStartEnabledConfig));
+            XUnitOutLogger.Helper = helper;
         }
         
-        public class SlowLoggerActor : ReceiveActor
+        [Theory(DisplayName = "ActorSystem should start with loggers timing out")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ActorSystem_should_start_with_loggers_timing_out(bool useAsync)
         {
-            public SlowLoggerActor()
+            var slowLoggerConfig = ConfigurationFactory.ParseString($@"
+akka.loglevel = DEBUG
+akka.stdout-logger-class = ""{typeof(XUnitOutLogger).FullName}, {typeof(XUnitOutLogger).Assembly.GetName().Name}""
+akka.loggers = [
+    ""Akka.Event.DefaultLogger"",
+    ""{typeof(SlowLoggerActor).FullName}, {typeof(SlowLoggerActor).Assembly.GetName().Name}""
+]
+akka.logger-startup-timeout = 100ms").WithFallback(DefaultConfig);
+
+            var config = ConfigurationFactory.ParseString($"akka.logger-async-start = {(useAsync ? "true" : "false")}")
+                .WithFallback(slowLoggerConfig);
+
+            // The slow logger answers InitializeLogger only once this gate opens, and the gate stays shut
+            // for all of ActorSystem.Create - so the logger always misses the 100 ms startup window, and
+            // the LoggingBus announces it as started only after the test is already subscribed.
+            SlowLoggerActor.Release = new TaskCompletionSource<Done>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ActorSystem sys = null;
+            try
             {
-                ReceiveAsync<InitializeLogger>(async _ =>
-                {
-                    // Ooops... Logger is responding too slow
-                    await Task.Delay(LoggerResponseDelayMs);
-                    Sender.Tell(new LoggerInitialized());
-                });
+                this.Invoking(_ => sys = ActorSystem.Create("test", config)).Should()
+                    .NotThrow("System should not fail to start when a logger timed out");
+                var probe = CreateTestProbe(sys);
+                SlowLoggerActor.Probe = probe;
+                var logProbe = CreateTestProbe(sys);
+                sys.EventStream.Subscribe(logProbe, typeof(LogEvent));
+
+                SlowLoggerActor.Release.SetResult(Done.Instance);
+
+                // Logger actor should eventually initialize
+                await logProbe.FishForMessageAsync<Debug>(
+                    dbg => dbg.Message.ToString().Contains(nameof(SlowLoggerActor)) && dbg.Message.ToString().Contains("started"),
+                    TimeSpan.FromSeconds(5));
+
+                var logger = Logging.GetLogger(sys, this);
+                logger.Error("TEST");
+                await probe.FishForMessageAsync<string>(msg => msg == "TEST", TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                SlowLoggerActor.Release.TrySetResult(Done.Instance);
+                if(sys != null)
+                    Shutdown(sys);
+            }
+        }
+
+        [Theory(DisplayName = "ActorSystem should start with loggers throwing exceptions")]
+        [InlineData("ctor")]
+        [InlineData("PreStart")]
+        [InlineData("Receive")]
+        public void ActorSystem_should_start_with_logger_exception(string when)
+        {
+            var config = ConfigurationFactory.ParseString($@"
+akka.loglevel = DEBUG
+akka.stdout-logger-class = ""{typeof(XUnitOutLogger).FullName}, {typeof(XUnitOutLogger).Assembly.GetName().Name}""
+akka.loggers = [
+    ""Akka.Event.DefaultLogger"",
+    ""{typeof(ThrowingLogger).FullName}, {typeof(ThrowingLogger).Assembly.GetName().Name}""
+]
+akka.logger-startup-timeout = 100ms").WithFallback(DefaultConfig);
+
+            ThrowingLogger.ThrowWhen = when;
+            ActorSystem sys = null;
+            try
+            {
+                this.Invoking(_ => sys = ActorSystem.Create("test", config)).Should()
+                    .NotThrow("System should not fail to start when a logger throws an exception");
+            }
+            finally
+            {
+                if(sys != null)
+                    Shutdown(sys);
+            }
+        }
+        
+        [Fact(DisplayName = "ActorSystem should throw and fail to start on invalid logger FQCN entry")]
+        public void ActorSystem_should_fail_on_invalid_logger()
+        {
+            var config = ConfigurationFactory.ParseString($@"
+akka.loglevel = DEBUG
+akka.stdout-logger-class = ""{typeof(XUnitOutLogger).FullName}, {typeof(XUnitOutLogger).Assembly.GetName().Name}""
+akka.loggers = [
+    ""Akka.Event.InvalidLogger, NonExistantAssembly""
+]
+akka.logger-startup-timeout = 100ms").WithFallback(DefaultConfig);
+
+            ActorSystem sys = null;
+            try
+            {
+                this.Invoking(_ => sys = ActorSystem.Create("test", config)).Should()
+                    .ThrowExactly<ConfigurationException>("System should fail to start with invalid logger FQCN");
+            }
+            finally
+            {
+                if(sys != null)
+                    Shutdown(sys);
+            }
+        }
+
+        private class TestException: Exception
+        {
+            public TestException(string message) : base(message)
+            { }
+        }
+        
+        private class ThrowingLogger : ActorBase, IRequiresMessageQueue<ILoggerMessageQueueSemantics>
+        {
+            public static string ThrowWhen = "Receive";
+
+            public ThrowingLogger()
+            {
+                if(ThrowWhen == "ctor")
+                    throw new TestException(".ctor BOOM!");
             }
 
-            private void Log(LogLevel level, string str)
+            protected override void PreStart()
             {
+                base.PreStart();
+                if(ThrowWhen == "PreStart")
+                    throw new TestException("PreStart BOOM!");
+            }
+
+            protected override bool Receive(object message)
+            {
+                if(message is InitializeLogger)
+                {
+                    if(ThrowWhen == "Receive")
+                        throw new TestException("Receive BOOM!");
+                
+                    Sender.Tell(new LoggerInitialized());
+                    return true;
+                }
+
+                return false;
+            }
+        }
+        
+        private class SlowLoggerActor : ActorBase, IWithUnboundedStash, IRequiresMessageQueue<ILoggerMessageQueueSemantics> 
+        {
+            public static TestProbe Probe;
+
+            public static TaskCompletionSource<Done> Release;
+            
+            public SlowLoggerActor()
+            {
+                Become(Starting);
+            }
+
+            private bool Starting(object message)
+            {
+                switch (message)
+                {
+                    case InitializeLogger _:
+                        Release.Task.PipeTo(Self, Sender);
+                        Become(Initializing);
+                        return true;
+                    default:
+                        Stash.Stash();
+                        return true;
+                }
+            }
+
+            private bool Initializing(object message)
+            {
+                switch (message)
+                {
+                    case Done _:
+                        Sender.Tell(new LoggerInitialized());
+                        Become(Initialized);
+                        Stash.UnstashAll();
+                        return true;
+                    default:
+                        Stash.Stash();
+                        return true;
+                }
+            }
+
+            private bool Initialized(object message)
+            {
+                switch (message)
+                {
+                    case LogEvent evt:
+                        Probe.Tell(evt.Message.ToString());
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            protected override bool Receive(object message)
+            {
+                throw new NotImplementedException();
+            }
+
+            public IStash Stash { get; set; }
+        }
+
+        public class XUnitOutLogger : MinimalLogger
+        {
+            public static ITestOutputHelper Helper;
+            
+            protected override void Log(object message)
+            {
+                Helper.WriteLine(message.ToString());
             }
         }
     }

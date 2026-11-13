@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TestKitExtension.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -19,20 +19,20 @@ namespace Akka.TestKit
     public class TestKitExtension : ExtensionIdProvider<TestKitSettings>
     {
         /// <summary>
-        /// TBD
+        /// Creates test kit settings from the actor system configuration.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">The actor system whose configuration supplies the test kit settings.</param>
+        /// <returns>The settings parsed from the actor system configuration.</returns>
         public override TestKitSettings CreateExtension(ExtendedActorSystem system)
         {
             return new TestKitSettings(system.Settings.Config);
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the test kit settings installed in an actor system.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">The actor system whose settings are requested.</param>
+        /// <returns>The actor system's test kit settings.</returns>
         public static TestKitSettings For(ActorSystem system)
         {
             return system.GetExtension<TestKitSettings>();

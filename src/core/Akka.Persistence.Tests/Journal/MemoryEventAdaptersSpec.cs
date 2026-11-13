@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="MemoryEventAdaptersSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -97,6 +97,24 @@ akka.persistence.journal.inmem {
 
             var ex = Assert.Throws<ArgumentException>(() => EventAdapters.Create(_extendedActorSystem, combinedConfig));
             ex.Message.Contains("System.Integer was bound to undefined event-adapter: undefined-adapter").Should().BeTrue();
+        }
+
+        [Fact]
+        public void EventAdapters_should_fail_with_useful_message_when_binding_type_cannot_be_resolved()
+        {
+            var badConfig = ConfigurationFactory.ParseString(@"
+akka.persistence.journal.inmem {
+  event-adapters {
+    example  = """ + typeof(ExampleEventAdapter).FullName + @", Akka.Persistence.Tests""
+  }
+  event-adapter-bindings {
+    ""Some.NonExistent.Type, NoSuchAssembly"" = example
+  }
+}");
+            var combinedConfig = badConfig.GetConfig("akka.persistence.journal.inmem");
+
+            var ex = Assert.Throws<ConfigurationException>(() => EventAdapters.Create(_extendedActorSystem, combinedConfig));
+            ex.Message.Should().Contain("Some.NonExistent.Type, NoSuchAssembly");
         }
 
         [Fact]

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="VersionVector.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Akka.Cluster;
 using Akka.Util.Internal;
 
@@ -47,7 +48,7 @@ namespace Akka.DistributedData
             return new MultiVersionVector(versions);
         }
 
-        protected static readonly AtomicCounterLong Counter = new AtomicCounterLong(1L);
+        protected static readonly AtomicCounterLong Counter = new(1L);
 
         /// <summary>
         /// Marker to signal that we have reached the end of a version vector.
@@ -93,7 +94,7 @@ namespace Akka.DistributedData
 
         public abstract VersionVector PruningCleanup(UniqueAddress removedNode);
 
-        /// <inheritdoc/>
+        
         public bool Equals(VersionVector other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -102,8 +103,19 @@ namespace Akka.DistributedData
             return CompareOnlyTo(other, Ordering.Same) == Ordering.Same;
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => obj is VersionVector vector && Equals(vector);
+
+        public override int GetHashCode()
+        {
+            var hash = 373;
+            foreach (var (addr, ver) in InternalVersions)
+            {
+                hash = hash * 31 + addr.GetHashCode();
+                hash = hash * 31 + ver.GetHashCode();
+            }
+            return hash;
+        }
 
         /// <summary>
         /// Returns true if this VersionVector has the same history
@@ -162,14 +174,17 @@ namespace Akka.DistributedData
         {
             if (ReferenceEquals(this, other)) return Ordering.Same;
 
-            return Compare(InternalVersionEnumerator, other.InternalVersionEnumerator,
-                order == Ordering.Concurrent ? Ordering.FullOrder : order);
+            using var ie1 = InternalVersionEnumerator;
+            using var ie2 = other.InternalVersionEnumerator;
+            return Compare(ie1, ie2, order == Ordering.Concurrent ? Ordering.FullOrder : order);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static T NextOrElse<T>(IEnumerator<T> enumerator, T defaultValue) =>
             enumerator.MoveNext() ? enumerator.Current : defaultValue;
 
-        private Ordering Compare(IEnumerator<(UniqueAddress addr, long version)> i1,
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Ordering Compare(IEnumerator<(UniqueAddress addr, long version)> i1,
             IEnumerator<(UniqueAddress addr, long version)> i2, Ordering requestedOrder)
         {
             var nt1 = NextOrElse(i1, EndMarker);
@@ -229,7 +244,7 @@ namespace Akka.DistributedData
                 Current = new KeyValuePair<UniqueAddress, long>(node, version);
             }
 
-            /// <inheritdoc/>
+            
             public void Dispose() { }
 
             public bool MoveNext()
@@ -295,7 +310,9 @@ namespace Akka.DistributedData
                 {
                     var v2 = vector1.Versions.GetValueOrDefault(Node, 0L);
                     var mergedVersions = v2 >= Version ? vector1.Versions : vector1.Versions.SetItem(Node, Version);
-                    return new MultiVersionVector(mergedVersions);
+                    // Canonicalize single-entry results so logically single-dot
+                    // vectors do not leak into the MVV/MVV ORSet merge path.
+                    return VersionVector.Create(mergedVersions);
                 }
                 case SingleVersionVector vector when Node == vector.Node:
                     return Version >= vector.Version ? this : new SingleVersionVector(vector.Node, vector.Version);
@@ -356,8 +373,12 @@ namespace Akka.DistributedData
         internal override IEnumerable<(UniqueAddress addr, long version)> InternalVersions =>
             Versions.Select(x => (x.Key, x.Value));
 
+        // Construct results through VersionVector.Create so single-entry
+        // dictionaries canonicalize to SingleVersionVector. That keeps
+        // pruning and merge rewrites from manufacturing MultiVersionVector
+        // instances that route ORSet through the wrong MVV/MVV branch.
         public override VersionVector Increment(UniqueAddress node) =>
-            new MultiVersionVector(Versions.SetItem(node, Counter.GetAndIncrement()));
+            VersionVector.Create(Versions.SetItem(node, Counter.GetAndIncrement()));
 
         public override long VersionAt(UniqueAddress node) => Versions.GetValueOrDefault(node, 0L);
 
@@ -377,13 +398,13 @@ namespace Akka.DistributedData
                             merged[pair.Key] = pair.Value;
                     }
 
-                    return new MultiVersionVector(merged.ToImmutable());
+                    return VersionVector.Create(merged.ToImmutable());
                 }
                 case SingleVersionVector vector:
                 {
                     var v1 = Versions.GetValueOrDefault(vector.Node, 0L);
                     var merged = v1 >= vector.Version ? Versions : Versions.SetItem(vector.Node, vector.Version);
-                    return new MultiVersionVector(merged);
+                    return VersionVector.Create(merged);
                 }
                 default:
                     throw new NotSupportedException("MultiVersionVector doesn't support merge with provided version vector");
@@ -395,16 +416,16 @@ namespace Akka.DistributedData
         public override bool NeedPruningFrom(UniqueAddress removedNode) => Versions.ContainsKey(removedNode);
 
         public override VersionVector Prune(UniqueAddress removedNode, UniqueAddress collapseInto) =>
-            new MultiVersionVector(Versions.Remove(removedNode)).Increment(collapseInto);
+            VersionVector.Create(Versions.Remove(removedNode)).Increment(collapseInto);
 
         public override VersionVector PruningCleanup(UniqueAddress removedNode) =>
-            new MultiVersionVector(Versions.Remove(removedNode));
+            VersionVector.Create(Versions.Remove(removedNode));
 
-        /// <inheritdoc/>
+        
         public override string ToString() =>
             $"VersionVector({string.Join(";", Versions.Select(kv => $"({kv.Key}->{kv.Value})"))})";
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked

@@ -1,17 +1,19 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="QuickRestartSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Threading;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Cluster.TestKit;
 using Akka.Configuration;
+using Akka.Event;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using Akka.TestKit;
 using Akka.Util;
@@ -33,6 +35,15 @@ namespace Akka.Cluster.Tests.MultiNode
             CommonConfig = DebugConfig(false)
                 .WithFallback(ConfigurationFactory.ParseString(@"
                     akka.cluster.auto-down-unreachable-after = off
+                    # Dilate every Within/AwaitAssert window in this spec uniformly. The
+                    # same-address rejoin each round is a multi-step convergence dance (leader
+                    # downs the old incarnation, removes it, the new incarnation's seed join
+                    # RETRIES on a 5-10s cadence, then Up + gossip to every observer), so the
+                    # role-replacement checks routinely need 5-15s on a healthy box and can
+                    # exhaust a hard 20s window on a loaded Windows CI agent. A prior de-flake
+                    # (#8183) widened a sibling window and the flake relocated here; scaling the
+                    # whole spec keeps every window proportionate instead of hand-tuning one.
+                    akka.test.timefactor = 2.0
                 "))
                 .WithFallback(MultiNodeClusterSpec.ClusterConfig());
         }
@@ -61,15 +72,15 @@ namespace Akka.Cluster.Tests.MultiNode
         }
 
         [MultiNodeFact]
-        public void QuicklyRestartingNodeMust()
+        public async Task QuicklyRestartingNodeMust()
         {
-            SetupStableSeedNodes();
-            JoinAndRestart();
+            await SetupStableSeedNodes();
+            await JoinAndRestart();
         }
 
-        private void SetupStableSeedNodes()
+        private async Task SetupStableSeedNodes()
         {
-            Within(TimeSpan.FromSeconds(15), () =>
+            await WithinAsync(TimeSpan.FromSeconds(15), async () =>
             {
                 Cluster.JoinSeedNodes(_seedNodes.Value);
                 AwaitMembersUp(Roles.Count);
@@ -77,7 +88,7 @@ namespace Akka.Cluster.Tests.MultiNode
             });
         }
 
-        private void JoinAndRestart()
+        private async Task JoinAndRestart()
         {
             var totalNumberOfNodes = Roles.Count + 1;
             ActorSystem restartingSystem = null; // only used on second
@@ -85,20 +96,24 @@ namespace Akka.Cluster.Tests.MultiNode
             {
                 var round = i; //non-loop variable closure
                 Log.Info("Round-{0}", i);
-                RunOn(() =>
+                await RunOnAsync(async () =>
                 {
                     restartingSystem = restartingSystem == null
                         ? ActorSystem.Create(Sys.Name, ConfigurationFactory.ParseString($"akka.cluster.roles=[round-{round}]")
                             .WithFallback(Sys.Settings.Config))
                         : ActorSystem.Create(Sys.Name, ConfigurationFactory.ParseString($"akka.cluster.roles=[round-{round}]")
                             .WithFallback(
-                                $"akka.remote.dot-netty.tcp.port={Cluster.Get(restartingSystem).SelfAddress.Port}")
+                                // Pin the restarted system to the SAME wire address for BOTH transports - under
+                                // AKKA_MNTR_TRANSPORT=artery the classic dot-netty key is inert and the fresh
+                                // system would bind a random artery canonical.port instead.
+                                $"akka.remote.dot-netty.tcp.port={Cluster.Get(restartingSystem).SelfAddress.Port}\n" +
+                                $"akka.remote.artery.canonical.port={Cluster.Get(restartingSystem).SelfAddress.Port}")
                             .WithFallback(Sys.Settings.Config));
                     Log.Info("Restarting node has address {0}", Cluster.Get(restartingSystem).SelfUniqueAddress);
                     Cluster.Get(restartingSystem).JoinSeedNodes(_seedNodes.Value);
-                    Within(TimeSpan.FromSeconds(20), () =>
+                    await WithinAsync(TimeSpan.FromSeconds(20), async () =>
                     {
-                        AwaitAssert(() =>
+                        await AwaitAssertAsync(() =>
                         {
                             Cluster.Get(restartingSystem).State.Members.Count.ShouldBe(totalNumberOfNodes);
                             Cluster.Get(restartingSystem).State.Members.All(x => x.Status == MemberStatus.Up).ShouldBeTrue();
@@ -107,9 +122,9 @@ namespace Akka.Cluster.Tests.MultiNode
                 }, _config.Second);
 
                 EnterBarrier("joined-"+i);
-                Within(TimeSpan.FromSeconds(20), () =>
+                await WithinAsync(TimeSpan.FromSeconds(20), async () =>
                 {
-                    AwaitAssert(() =>
+                    await AwaitAssertAsync(() =>
                     {
                         Cluster.Get(Sys).State.Members.Count.ShouldBe(totalNumberOfNodes);
                         Cluster.Get(Sys).State.Members.All(x => x.Status == MemberStatus.Up).ShouldBeTrue();
@@ -119,18 +134,24 @@ namespace Akka.Cluster.Tests.MultiNode
                 });
                 EnterBarrier("members-up-"+i);
 
-                // gating occurred after a while
+                // intentional delay to simulate gating — not timeout jiggling [slopwatch:SW004]
                 if (i > 1)
-                    Thread.Sleep(ThreadLocalRandom.Current.Next(15) * 1000);
+                    await Task.Delay(TimeSpan.FromSeconds(ThreadLocalRandom.Current.Next(15)));
 
-                Cluster.Get(Sys).State.Members.Count.ShouldBe(totalNumberOfNodes);
-                Cluster.Get(Sys).State.Members.All(x => x.Status == MemberStatus.Up).ShouldBeTrue();
-                Cluster.Get(Sys).State.Unreachable.Count.ShouldBe(0);
+                await WithinAsync(TimeSpan.FromSeconds(20), async () =>
+                {
+                    await AwaitAssertAsync(() =>
+                    {
+                        Cluster.Get(Sys).State.Members.Count.ShouldBe(totalNumberOfNodes);
+                        Cluster.Get(Sys).State.Members.All(x => x.Status == MemberStatus.Up).ShouldBeTrue();
+                        Cluster.Get(Sys).State.Unreachable.Count.ShouldBe(0);
+                    });
+                });
 
                 EnterBarrier("before-terminate-"+i);
-                RunOn(() =>
+                await RunOnAsync(async () =>
                 {
-                    restartingSystem.Terminate().Wait(RemainingOrDefault).ShouldBeTrue("Timed out when terminating actorsystem");
+                    await restartingSystem.Terminate().WaitAsync(RemainingOrDefault);
                 }, _config.Second);
 
                 // don't wait for it to be removed, new incarnation will join in next round
@@ -141,4 +162,3 @@ namespace Akka.Cluster.Tests.MultiNode
 
     }
 }
-

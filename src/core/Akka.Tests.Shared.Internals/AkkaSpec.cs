@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AkkaSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,9 +17,7 @@ using Akka.Actor.Setup;
 using Akka.Configuration;
 using Akka.TestKit.Internal.StringMatcher;
 using Akka.TestKit.TestEvent;
-using Akka.Util;
 using Akka.Util.Internal;
-using Xunit;
 using Xunit.Abstractions;
 using Xunit.Sdk;
 
@@ -28,13 +26,14 @@ namespace Akka.TestKit
 {
     public abstract class AkkaSpec : Xunit2.TestKit    //AkkaSpec is not part of TestKit
     {
-        private static Regex _nameReplaceRegex = new Regex("[^a-zA-Z0-9]", RegexOptions.Compiled);
+        private static Regex _nameReplaceRegex = new("[^a-zA-Z0-9]", RegexOptions.Compiled);
         private static readonly Config _akkaSpecConfig = ConfigurationFactory.ParseString(@"
           akka {
             loglevel = WARNING
             stdout-loglevel = WARNING
             serialize-messages = on
             actor {
+              ask-timeout = 20s
               #default-dispatcher {
               #  executor = fork-join-executor
               #  fork-join-executor {
@@ -50,6 +49,14 @@ namespace Akka.TestKit
 
         private static int _systemNumber = 0;
 
+        private static ActorSystemSetup FromActorSystemSetup(ActorSystemSetup setup)
+        {
+            var bootstrapOptions = setup.Get<BootstrapSetup>();
+            var bootstrap = bootstrapOptions.HasValue ? bootstrapOptions.Value : BootstrapSetup.Create();
+            bootstrap = bootstrap.WithConfigFallback(_akkaSpecConfig);
+            return setup.And(bootstrap);
+        }
+        
         public AkkaSpec(string config, ITestOutputHelper output = null)
             : this(ConfigurationFactory.ParseString(config).WithFallback(_akkaSpecConfig), output)
         {
@@ -62,7 +69,7 @@ namespace Akka.TestKit
         }
 
         public AkkaSpec(ActorSystemSetup setup, ITestOutputHelper output = null)
-            : base(setup, GetCallerName(), output)
+            : base(FromActorSystemSetup(setup), GetCallerName(), output)
         {
             BeforeAll();
         }
@@ -94,53 +101,162 @@ namespace Akka.TestKit
 
         protected virtual void AtStartup() { }
 
-        protected virtual void BeforeTermination() { }
+        protected virtual void BeforeTermination()
+        {
+        }
 
-        protected virtual void AfterTermination() { }
+        protected virtual void AfterTermination()
+        {
+        }
 
         private static string GetCallerName()
         {
             var systemNumber = Interlocked.Increment(ref _systemNumber);
             var stackTrace = new StackTrace(0);
-            var name = stackTrace.GetFrames().
-                Select(f => f.GetMethod()).
-                Where(m => m.DeclaringType != null).
-                SkipWhile(m => m.DeclaringType.Name == "AkkaSpec").
-                Select(m => _nameReplaceRegex.Replace(m.DeclaringType.Name + "-" + systemNumber, "-")).
-                FirstOrDefault() ?? "test";
+            var name = stackTrace.GetFrames()?
+                .Select(f => f.GetMethod())
+                .Where(m => m.DeclaringType != null)
+                .SkipWhile(m => m.DeclaringType.Name == "AkkaSpec")
+                .Select(m => _nameReplaceRegex.Replace(m.DeclaringType.Name + "-" + systemNumber, "-"))
+                .FirstOrDefault() ?? "test";
 
             return name;
         }
 
         public static Config AkkaSpecConfig { get { return _akkaSpecConfig; } }
 
-        protected T ExpectMsgPf<T>(TimeSpan? timeout, string hint, Func<object, T> function)
-            => ExpectMsgPf(timeout, hint, this, function);
+        protected T ExpectMsgOf<T>(
+            TimeSpan? timeout,
+            string hint,
+            Func<object, T> function,
+            CancellationToken cancellationToken = default)
+            => ExpectMsgOfAsync(timeout, hint, this, function, cancellationToken)
+                .ConfigureAwait(false).GetAwaiter().GetResult();
+
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            TimeSpan? timeout,
+            string hint,
+            Func<object, T> function,
+            CancellationToken cancellationToken = default)
+            => await ExpectMsgOfAsync(timeout, hint, this, function, cancellationToken)
+                .ConfigureAwait(false);
+
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            TimeSpan? timeout,
+            string hint,
+            Func<object, Task<T>> function,
+            CancellationToken cancellationToken = default)
+            => await ExpectMsgOfAsync(timeout, hint, this, function, cancellationToken)
+                .ConfigureAwait(false);
         
-        protected T ExpectMsgPf<T>(TimeSpan? timeout, string hint, TestKitBase probe, Func<object, T> function)
+        protected T ExpectMsgOf<T>(
+            TimeSpan? timeout,
+            string hint,
+            TestKitBase probe,
+            Func<object, T> function,
+            CancellationToken cancellationToken = default)
+            => ExpectMsgOfAsync(timeout, hint, probe, function, cancellationToken)
+                .ConfigureAwait(false).GetAwaiter().GetResult();
+        
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            TimeSpan? timeout,
+            string hint,
+            TestKitBase probe,
+            Func<object, T> function,
+            CancellationToken cancellationToken = default)
+            => await ExpectMsgOfAsync(timeout, hint, probe, o => Task.FromResult(function(o)), cancellationToken)
+                .ConfigureAwait(false);
+        
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            TimeSpan? timeout,
+            string hint,
+            TestKitBase probe,
+            Func<object, Task<T>> function,
+            CancellationToken cancellationToken = default)
         {
-            MessageEnvelope envelope;
-            var success = probe.TryReceiveOne(out envelope, timeout);
+            var (success, envelope) = await probe.TryReceiveOneAsync(timeout, cancellationToken)
+                .ConfigureAwait(false);
 
             if(!success)
-                Assertions.Fail(string.Format("expected message of type {0} but timed out after {1}", typeof(T), GetTimeoutOrDefault(timeout)));
+                Assertions.Fail($"expected message of type {typeof(T)} but timed out after {GetTimeoutOrDefault(timeout)}");
+            
             var message = envelope.Message;
-            Assertions.AssertTrue(message != null, string.Format("expected {0} but got null message", hint));
+            Assertions.AssertTrue(message != null, $"expected {hint} but got null message");
             //TODO: Check next line. 
-            Assertions.AssertTrue(function.GetMethodInfo().GetParameters().Any(x => x.ParameterType.IsInstanceOfType(message)), string.Format("expected {0} but got {1} instead", hint, message));
-            return function.Invoke(message);
+            Assertions.AssertTrue(
+                function.GetMethodInfo().GetParameters().Any(x => x.ParameterType.IsInstanceOfType(message)),
+                $"expected {hint} but got {message} instead");
+            
+            return await function(message).ConfigureAwait(false);
         }
 
-        protected T ExpectMsgPf<T>(string hint, Func<object, T> pf)
-            => ExpectMsgPf(hint, this, pf);
+        protected T ExpectMsgOf<T>(
+            string hint,
+            TestKitBase probe,
+            Func<object, T> pf,
+            CancellationToken cancellationToken = default)
+            => ExpectMsgOfAsync(hint, probe, pf, cancellationToken)
+                .ConfigureAwait(false).GetAwaiter().GetResult();
 
-        protected T ExpectMsgPf<T>(string hint, TestKitBase probe, Func<object, T> pf)
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            string hint,
+            TestKitBase probe,
+            Func<object, T> pf,
+            CancellationToken cancellationToken = default)
+            => await ExpectMsgOfAsync(hint, probe, o => Task.FromResult(pf(o)), cancellationToken)
+                .ConfigureAwait(false);
+        
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            string hint,
+            TestKitBase probe,
+            Func<object, Task<T>> pf,
+            CancellationToken cancellationToken = default)
         {
-            var t = probe.ExpectMsg<T>();
+            var t = await probe.ExpectMsgAsync<T>(cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            
             //TODO: Check if this really is needed:
-            Assertions.AssertTrue(pf.GetMethodInfo().GetParameters().Any(x => x.ParameterType.IsInstanceOfType(t)), string.Format("expected {0} but got {1} instead", hint, t));
-            return pf.Invoke(t);
+            Assertions.AssertTrue(pf.GetMethodInfo().GetParameters().Any(x => x.ParameterType.IsInstanceOfType(t)),
+                $"expected {hint} but got {t} instead");
+            return await pf(t);
         }
+
+        protected T ExpectMsgOf<T>(
+            string hint,
+            Func<object, T> pf,
+            CancellationToken cancellationToken = default)
+            => ExpectMsgOfAsync(hint, this, pf, cancellationToken)
+                .ConfigureAwait(false).GetAwaiter().GetResult();
+        
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            string hint,
+            Func<object, T> pf,
+            CancellationToken cancellationToken = default)
+            => await ExpectMsgOfAsync(hint, this, pf, cancellationToken)
+                .ConfigureAwait(false);
+        
+        protected async Task<T> ExpectMsgOfAsync<T>(
+            string hint,
+            Func<object, Task<T>> pf,
+            CancellationToken cancellationToken = default)
+            => await ExpectMsgOfAsync(hint, this, pf, cancellationToken)
+                .ConfigureAwait(false);
+        
+        [Obsolete("Method name typo, please use ExpectMsgOf instead")]
+        protected T ExpectMsgPf<T>(TimeSpan? timeout, string hint, Func<object, T> function)
+            => ExpectMsgOf(timeout, hint, this, function);
+        
+        [Obsolete("Method name typo, please use ExpectMsgOf instead")]
+        protected T ExpectMsgPf<T>(TimeSpan? timeout, string hint, TestKitBase probe, Func<object, T> function)
+            => ExpectMsgOf(timeout, hint, probe, function);
+
+        [Obsolete("Method name typo, please use ExpectMsgOf instead")]
+        protected T ExpectMsgPf<T>(string hint, Func<object, T> pf)
+            => ExpectMsgOf(hint, this, pf);
+
+        [Obsolete("Method name typo, please use ExpectMsgOf instead")]
+        protected T ExpectMsgPf<T>(string hint, TestKitBase probe, Func<object, T> pf)
+            => ExpectMsgOf(hint, probe, pf);
 
         /// <summary>
         /// Intercept and return an exception that's expected to be thrown by the passed function value. The thrown
@@ -161,23 +277,12 @@ namespace Akka.TestKit
         /// <exception cref="ThrowsException">If the passed action does not complete abruptly with an exception that's an instance of the specified type.</exception>
         protected T Intercept<T>(Action actionThatThrows) where T : Exception
         {
-            try
-            {
-                actionThatThrows();
-            }
-            catch (Exception ex)
-            {
-                var exception = ex is AggregateException aggregateException
-                    ? aggregateException.Flatten().InnerExceptions[0]
-                    : ex;
+            return Assertions.AssertThrows<T>(actionThatThrows);
+        }
 
-                var exceptionType = typeof(T);
-                return exceptionType == exception.GetType()
-                    ? (T)exception
-                    : throw new ThrowsException(exceptionType, exception);
-            }
-
-            throw new ThrowsException(typeof(T));
+        protected Task<T> InterceptAsync<T>(Func<Task> funcThatThrows) where T : Exception
+        {
+            return Assertions.AssertThrowsAsync<T>(funcThatThrows);
         }
 
         /// <summary>
@@ -198,48 +303,46 @@ namespace Akka.TestKit
         /// <exception cref="ThrowsException">If the passed action does not complete abruptly with an exception that's an instance of the specified type.</exception>
         protected void AssertThrows<T>(Action actionThatThrows) where T : Exception
         {
-            try
-            {
-                actionThatThrows();
-            }
-            catch (Exception ex)
-            {
-                var exception = ex is AggregateException aggregateException
-                    ? aggregateException.Flatten().InnerExceptions[0]
-                    : ex;
-
-                var exceptionType = typeof(T);
-                if (exceptionType == exception.GetType())
-                    return;
-
-                throw new ThrowsException(exceptionType, exception);
-            }
-
-            throw new ThrowsException(typeof(T));
+            Intercept<T>(actionThatThrows); 
         }
 
-        [Obsolete("Use AssertThrows instead.")]
-        protected void Intercept(Action actionThatThrows)
+        protected async Task AssertThrowsAsync(Func<Task> funcThatThrows, Exception expected)
         {
-            try
+            var exception = await Assertions.AssertThrowsAsync(funcThatThrows);
+            
+            // NOTE:
+            // This is how FluentAssertions do exception equality, more or less
+            // It unwraps AggregateException and checks to see if any of the internal exceptions
+            // matches the expected exception.
+            // Without this code, some unit tests will fail.
+            if (exception is AggregateException ae)
             {
-                actionThatThrows();
+                exception = ae.InnerExceptions[0];
             }
-            catch(Exception)
-            {
-                return;
-            }
-            throw new ThrowsException(typeof(Exception));
+            Assertions.AssertEqual(expected, exception);
+        }
+        
+        protected Task<T> AssertThrowsAsync<T>(Func<Task> funcThatThrows) where T : Exception
+        {
+            return Assertions.AssertThrowsAsync<T>(funcThatThrows);
+        }
+        
+        protected Task<Exception> AssertThrowsAsync(Func<Task> funcThatThrows)
+        {
+            return Assertions.AssertThrowsAsync(funcThatThrows);
         }
 
         protected void MuteDeadLetters(params Type[] messageClasses)
+            => MuteDeadLetters(Sys, messageClasses);
+
+        protected void MuteDeadLetters(ActorSystem sys, params Type[] messageClasses)
         {
-            if (!Sys.Log.IsDebugEnabled)
+            if (!sys.Log.IsDebugEnabled)
                 return;
 
             Action<Type> mute =
                 clazz =>
-                    Sys.EventStream.Publish(
+                    sys.EventStream.Publish(
                         new Mute(new DeadLettersFilter(new PredicateMatcher(_ => true),
                             new PredicateMatcher(_ => true),
                             letter => clazz == typeof(object) || letter.Message.GetType() == clazz)));

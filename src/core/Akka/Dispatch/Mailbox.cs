@@ -1,16 +1,18 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Mailbox.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Akka.Actor;
+using Akka.Actor.Internal;
 using Akka.Configuration;
 using Akka.Dispatch.MessageQueues;
 using Akka.Dispatch.SysMsg;
@@ -32,39 +34,44 @@ namespace Akka.Dispatch
         {
             // primary status
             /// <summary>
-            /// TBD
+            /// Primary status indicating that the mailbox is open.
             /// </summary>
             public const int Open = 0; // _status is not initialized in AbstractMailbox, so default must be zero!
+
             /// <summary>
-            /// TBD
+            /// Primary status indicating that the mailbox is closed.
             /// </summary>
             public const int Closed = 1;
 
             // secondary status
             /// <summary>
-            /// TBD
+            /// Status bit indicating that the dispatcher has scheduled the mailbox.
             /// </summary>
             public const int Scheduled = 2;
 
             // shifted by 2 - the suspend count
             /// <summary>
-            /// TBD
+            /// Mask for the low status bits that identify open, closed, or already-scheduled state.
             /// </summary>
             public const int ShouldScheduleMask = 3;
+
             /// <summary>
-            /// TBD
+            /// Mask used to determine whether the mailbox may process a message while accounting for the scheduled bit.
             /// </summary>
             public const int ShouldNotProcessMask = ~2;
+
             /// <summary>
-            /// TBD
+            /// Mask that selects the suspension-count portion of the mailbox status.
             /// </summary>
             public const int SuspendMask = ~3;
+
             /// <summary>
-            /// TBD
+            /// Increment applied to the status for each suspension.
             /// </summary>
             public const int SuspendUnit = 4;
+
             /// <summary>
-            /// TBD
+            /// Bit mask that excludes the suspension increment bit from the status.
             /// </summary>
             public const int SuspendAwaitTask = ~4;
         }
@@ -79,14 +86,14 @@ namespace Akka.Dispatch
          * ANOTHER THING, IMPORTANT:
          *
          * ActorCell.start() publishes actorCell & self to the dispatcher, which
-         * means that messages may be processed theoretically before self’s constructor
+         * means that messages may be processed theoretically before self's constructor
          * ends. The JMM guarantees visibility for final fields only after the end
          * of the constructor, so safe publication requires that THIS WRITE BELOW
          * stay as it is.
          */
         private volatile ActorCell _actor = null;
         private volatile SystemMessage _systemQueueDoNotCallMeDirectly = null; // null by default
-        private volatile int _statusDotNotCallMeDirectly; //0 by default
+        private int _statusDotNotCallMeDirectly; //0 by default
 
         /// <summary>
         /// The queue used for user-defined messages inside this mailbox
@@ -113,22 +120,22 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Attempts to remove the next user-message envelope from this mailbox's message queue.
         /// </summary>
-        /// <param name="msg">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="msg">When this method returns <c>true</c>, contains the dequeued envelope; otherwise, the value is determined by the message queue.</param>
+        /// <returns><c>true</c> if an envelope was dequeued; otherwise, <c>false</c>.</returns>
         internal bool TryDequeue(out Envelope msg)
         {
             return MessageQueue.TryDequeue(out msg);
         }
 
         /// <summary>
-        /// TBD
+        /// Gets whether the user-message queue contains any messages.
         /// </summary>
         internal bool HasMessages => MessageQueue.HasMessages;
 
         /// <summary>
-        /// TBD
+        /// Gets the number of user messages currently in the queue.
         /// </summary>
         internal int NumberOfMessages => MessageQueue.Count;
 
@@ -142,16 +149,16 @@ namespace Akka.Dispatch
             {
                 // Note: contrary how it looks, there is no allocation here, as SystemMessageList is a value class and as such
                 // it just exists as a typed view during compile-time. The actual return type is still SystemMessage.
-                return new LatestFirstSystemMessageList(Volatile.Read(ref _systemQueueDoNotCallMeDirectly));
+                return new LatestFirstSystemMessageList(_systemQueueDoNotCallMeDirectly);
             }
         }
 
         /// <summary>
-        /// TBD
+        /// Atomically replaces the system-message queue if it still matches the supplied current queue.
         /// </summary>
-        /// <param name="old">TBD</param>
-        /// <param name="newQueue">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="old">The expected current system-message queue.</param>
+        /// <param name="newQueue">The replacement system-message queue.</param>
+        /// <returns><c>true</c> if the current queue matched <paramref name="old"/> and was replaced; otherwise, <c>false</c>.</returns>
         internal bool SystemQueuePut(LatestFirstSystemMessageList old, LatestFirstSystemMessageList newQueue)
         {
             // Note: calling .head is not actually existing on the bytecode level as the parameters _old and _new
@@ -162,15 +169,15 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
-        /// TBD
+        /// Determines whether the mailbox can be scheduled, using queue-state hints before checking the queues themselves.
         /// </summary>
-        /// <param name="hasMessageHint">TBD</param>
-        /// <param name="hasSystemMessageHint">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="hasMessageHint">Whether the caller has observed a queued user message.</param>
+        /// <param name="hasSystemMessageHint">Whether the caller has observed a queued system message.</param>
+        /// <returns><c>false</c> for a closed mailbox; for a suspended mailbox, <c>true</c> only when a system message is hinted or queued; otherwise, whether either kind of message is hinted or queued.</returns>
         internal bool CanBeScheduledForExecution(bool hasMessageHint, bool hasSystemMessageHint)
         {
             var currentStatus = CurrentStatus();
-            if (currentStatus == MailboxStatus.Open || currentStatus == MailboxStatus.Scheduled)
+            if (currentStatus is MailboxStatus.Open or MailboxStatus.Scheduled)
                 return hasMessageHint || hasSystemMessageHint || HasSystemMessages || HasMessages;
             if (currentStatus == MailboxStatus.Closed) return false;
             return hasSystemMessageHint || HasSystemMessages;
@@ -191,41 +198,56 @@ namespace Akka.Dispatch
         /// <summary>
         ///     Attaches an ActorCell to the Mailbox.
         /// </summary>
-        /// <param name="actorCell">TBD</param>
+        /// <param name="actorCell">The actor cell that owns and processes this mailbox.</param>
         public virtual void SetActor(ActorCell actorCell)
         {
             _actor = actorCell;
         }
 
         /// <summary>
-        /// TBD
+        /// Reads the current mailbox status using a volatile read.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal int CurrentStatus() { return Volatile.Read(ref _statusDotNotCallMeDirectly); }
+        internal int CurrentStatus()
+        {
+            return Volatile.Read(ref _statusDotNotCallMeDirectly);
+        }
 
         /// <summary>
-        /// TBD
+        /// Gets whether the current mailbox status permits processing a user message.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool ShouldProcessMessage() { return (CurrentStatus() & MailboxStatus.ShouldNotProcessMask) == 0; }
+        internal bool ShouldProcessMessage()
+        {
+            return (CurrentStatus() & MailboxStatus.ShouldNotProcessMask) == 0;
+        }
 
         /// <summary>
         /// Returns the number of times this mailbox is currently suspended.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal int SuspendCount() { return CurrentStatus() / MailboxStatus.SuspendUnit; }
+        internal int SuspendCount()
+        {
+            return CurrentStatus() / MailboxStatus.SuspendUnit;
+        }
 
         /// <summary>
         /// Returns <c>true</c> if the mailbox is currently suspended from processing. <c>false</c> otherwise.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool IsSuspended() { return (CurrentStatus() & MailboxStatus.SuspendMask) != 0; }
+        internal bool IsSuspended()
+        {
+            return (CurrentStatus() & MailboxStatus.SuspendMask) != 0;
+        }
 
         /// <summary>
         /// Returns <c>true</c> if the mailbox is closed. <c>false</c> otherwise.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool IsClosed() { return (CurrentStatus() == MailboxStatus.Closed); }
+        internal bool IsClosed()
+        {
+            return (CurrentStatus() == MailboxStatus.Closed);
+        }
 
         /// <summary>
         /// Returns <c>true</c> if the mailbox is scheduled for execution on a <see cref="Dispatcher"/>. <c>false</c> otherwise.
@@ -307,6 +329,7 @@ namespace Akka.Dispatch
                 SetStatus(MailboxStatus.Closed);
                 return false;
             }
+
             return UpdateStatus(status, MailboxStatus.Closed) || BecomeClosed();
         }
 
@@ -350,19 +373,26 @@ namespace Akka.Dispatch
         {
             try
             {
-                if (!IsClosed()) // Volatile read, needed here
+                if (IsClosed()) return; // Volatile read, needed here
+                
+                var tmp = InternalCurrentActorCellKeeper.Current;
+                InternalCurrentActorCellKeeper.Current = Actor;
+                try
                 {
-                    Actor.UseThreadContext(() =>
-                    {
-                        ProcessAllSystemMessages(); // First, deal with any system messages
-                        ProcessMailbox(); // Then deal with messages
-                    });
+                    ProcessAllSystemMessages(); // First, deal with any system messages
+                    ProcessMailbox(); // Then deal with messages
+                }
+                finally
+                {
+                    //ensure we set back the old context
+                    InternalCurrentActorCellKeeper.Current = tmp;
                 }
             }
             finally
             {
                 SetAsIdle(); // Volatile write, needed here
-                Dispatcher.RegisterForExecution(this, false, false); // schedule to run again if there are more messages, possibly
+                Dispatcher.RegisterForExecution(this, false,
+                    false); // schedule to run again if there are more messages, possibly
             }
         }
 
@@ -382,11 +412,13 @@ namespace Akka.Dispatch
                 // not going to bother catching ThreadAbortExceptions here, since they'll get rethrown anyway
                 Actor.Invoke(next);
                 ProcessAllSystemMessages();
-                if (left > 0 && (Dispatcher.ThroughputDeadlineTime.HasValue == false || (MonotonicClock.GetTicks() - deadlineTicks) < 0))
+                if (left > 0 && (Dispatcher.ThroughputDeadlineTime.HasValue == false ||
+                                 (MonotonicClock.GetTicks() - deadlineTicks) < 0))
                 {
                     left = left - 1;
                     continue;
                 }
+
                 break;
             }
         }
@@ -407,7 +439,8 @@ namespace Akka.Dispatch
                 var msg = messageList.Head;
                 messageList = messageList.Tail;
                 msg.Unlink();
-                DebugPrint("{0} processing system message {1} with {2}", Actor.Self, msg, string.Join(",", Actor.GetChildren()));
+                DebugPrint("{0} processing system message {1} with {2}", Actor.Self, msg,
+                    string.Join(",", Actor.GetChildren()));
                 // we know here that SystemInvoke ensures that only "fatal" exceptions get rethrown
                 Actor.SystemInvoke(msg);
 
@@ -432,7 +465,8 @@ namespace Akka.Dispatch
                 }
                 catch (Exception ex)
                 {
-                    Actor.System.EventStream.Publish(new Error(ex, GetType().FullName, GetType(), $"error while enqueuing {msg} to deadletters: {ex.Message}"));
+                    Actor.System.EventStream.Publish(new Error(ex, GetType().FullName, GetType(),
+                        $"error while enqueuing {msg} to deadletters: {ex.Message}"));
                 }
             }
 
@@ -524,17 +558,24 @@ namespace Akka.Dispatch
 
         /// <summary>
         /// Prints a message tosStandard out if the Compile symbol "MAILBOXDEBUG" has been set.
-        /// If the symbol is not set all invocations to this method will be removed by the compiler.
+        /// If the symbol is not set, calls to this method are omitted by the compiler.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <param name="args">TBD</param>
+        /// <param name="message">The message text or composite format string to print.</param>
+        /// <param name="args">The values used to format <paramref name="message"/> when any are supplied.</param>
         [Conditional("MAILBOXDEBUG")]
         public static void DebugPrint(string message, params object[] args)
         {
             var formattedMessage = args.Length == 0 ? message : string.Format(message, args);
-            Console.WriteLine("[MAILBOX][{0}][Thread {1:0000}] {2}", DateTime.Now.ToString("o"), Thread.CurrentThread.ManagedThreadId, formattedMessage);
+            Console.WriteLine("[MAILBOX][{0}][Thread {1:0000}] {2}", DateTime.Now.ToString("o"),
+                Thread.CurrentThread.ManagedThreadId, formattedMessage);
         }
 
+#if !NETSTANDARD
+        public void Execute()
+        {
+            Run();
+        }
+#endif
     }
 
     /// <summary>
@@ -550,7 +591,13 @@ namespace Akka.Dispatch
     /// dummy queue to the real mailbox.
     ///
     /// Implemented as an abstract class in order to enforce constructor requirements.
+    ///
+    /// Annotated with <see cref="DynamicallyAccessedMemberTypes.Interfaces"/> because
+    /// <c>Mailboxes.ProducesMessageQueue</c> and <c>Mailboxes.GetProducedMessageQueueType</c> read the interface
+    /// list off whichever <see cref="MailboxType"/> they are handed, so trimming has to keep
+    /// <see cref="IProducesMessageQueue{TQueue}"/> on every subclass.
     /// </remarks>
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
     public abstract class MailboxType
     {
         /// <summary>
@@ -587,7 +634,21 @@ namespace Akka.Dispatch
     /// Compliment to <see cref="IRequiresMessageQueue{T}"/>
     /// </summary>
     /// <typeparam name="TQueue">The type of <see cref="IMessageQueue"/> produced by this class.</typeparam>
-    public interface IProducesMessageQueue<TQueue> where TQueue : IMessageQueue { }
+    public interface IProducesMessageQueue<TQueue> where TQueue : IMessageQueue
+    {
+    }
+
+    /// <summary>
+    /// INTERNAL API
+    /// <para>
+    /// Used to determine mailbox factories which create <see cref="IBoundedMessageQueueSemantics"/>
+    /// mailboxes, and thus should be validated that the `pushTimeOut` is greater than 0.
+    /// </para>
+    /// </summary>
+    public interface IProducesPushTimeoutSemanticsMailbox
+    {
+        TimeSpan PushTimeout { get; }
+    }
 
     /// <summary>
     /// UnboundedMailbox is the default <see cref="MailboxType"/> used by Akka.NET Actors
@@ -617,7 +678,9 @@ namespace Akka.Dispatch
     /// <summary>
     /// The default bounded mailbox implementation
     /// </summary>
-    public sealed class BoundedMailbox : MailboxType, IProducesMessageQueue<BoundedMessageQueue>
+    public sealed class BoundedMailbox : MailboxType, 
+        IProducesMessageQueue<BoundedMessageQueue>, 
+        IProducesPushTimeoutSemanticsMailbox
     {
         /// <summary>
         /// The capacity of this mailbox.
@@ -634,7 +697,8 @@ namespace Akka.Dispatch
         /// This exception is thrown if the 'mailbox-capacity' in <paramref name="config"/>
         /// or the 'mailbox-push-timeout-time' in <paramref name="config"/> is negative.
         /// </exception>
-        public BoundedMailbox(Settings settings, Config config) : base(settings, config)
+        public BoundedMailbox(Settings settings, Config config) 
+            : base(settings, config)
         {
             if (config.IsNullOrEmpty())
                 throw ConfigurationException.NullOrEmptyConfig<BoundedMailbox>();
@@ -642,15 +706,15 @@ namespace Akka.Dispatch
             Capacity = config.GetInt("mailbox-capacity", 0);
             PushTimeout = config.GetTimeSpan("mailbox-push-timeout-time", TimeSpan.FromSeconds(-1));
 
-            if (Capacity < 0) throw new ArgumentException("The capacity for BoundedMailbox cannot be negative", nameof(config));
-            if (PushTimeout.TotalSeconds < 0) throw new ArgumentException("The push time-out for BoundedMailbox cannot be be negative", nameof(config));
+            if (Capacity < 0)
+                throw new ArgumentException("The capacity for BoundedMailbox cannot be negative", nameof(config));
+            if (PushTimeout.TotalSeconds < 0)
+                throw new ArgumentException("The push time-out for BoundedMailbox cannot be be negative", nameof(config));
         }
 
         /// <inheritdoc cref="MailboxType"/>
-        public override IMessageQueue Create(IActorRef owner, ActorSystem system)
-        {
-            return new BoundedMessageQueue(Capacity, PushTimeout);
-        }
+        public override IMessageQueue Create(IActorRef owner, ActorSystem system) => 
+            new BoundedMessageQueue(Capacity, PushTimeout);
     }
 
     /// <summary>
@@ -699,7 +763,8 @@ namespace Akka.Dispatch
     /// The value returned by the <see cref="PriorityGenerator"/> method will be used to order the message in the mailbox.
     /// Lower values will be delivered first. Messages ordered by the same number will remain in delivery order.
     /// </summary>
-    public abstract class UnboundedStablePriorityMailbox : MailboxType, IProducesMessageQueue<UnboundedStablePriorityMessageQueue>
+    public abstract class UnboundedStablePriorityMailbox : MailboxType,
+        IProducesMessageQueue<UnboundedStablePriorityMessageQueue>
     {
         /// <summary>
         /// Function responsible for generating the priority value of a message based on its type and content.
@@ -751,7 +816,9 @@ namespace Akka.Dispatch
     /// <summary>
     /// BoundedDequeBasedMailbox is an bounded <see cref="MailboxType"/> backed by a double-ended queue. Used for stashing.
     /// </summary>
-    public sealed class BoundedDequeBasedMailbox : MailboxType, IProducesMessageQueue<BoundedDequeMessageQueue>
+    public class BoundedDequeBasedMailbox : MailboxType, 
+        IProducesMessageQueue<BoundedDequeMessageQueue>, 
+        IProducesPushTimeoutSemanticsMailbox
     {
         /// <summary>
         /// The capacity of this mailbox.
@@ -769,7 +836,8 @@ namespace Akka.Dispatch
         /// This exception is thrown if the 'mailbox-capacity' in <paramref name="config"/>
         /// or the 'mailbox-push-timeout-time' in <paramref name="config"/> is negative.
         /// </exception>
-        public BoundedDequeBasedMailbox(Settings settings, Config config) : base(settings, config)
+        public BoundedDequeBasedMailbox(Settings settings, Config config) 
+            : base(settings, config)
         {
             if (config.IsNullOrEmpty())
                 throw ConfigurationException.NullOrEmptyConfig<BoundedDequeBasedMailbox>();
@@ -777,8 +845,10 @@ namespace Akka.Dispatch
             Capacity = config.GetInt("mailbox-capacity", 0);
             PushTimeout = config.GetTimeSpan("mailbox-push-timeout-time", TimeSpan.FromSeconds(-1));
 
-            if (Capacity < 0) throw new ArgumentException("The capacity for BoundedMailbox cannot be negative", nameof(config));
-            if (PushTimeout.TotalSeconds < 0) throw new ArgumentException("The push time-out for BoundedMailbox cannot be null", nameof(config));
+            if (Capacity < 0)
+                throw new ArgumentException("The capacity for BoundedMailbox cannot be negative", nameof(config));
+            if (PushTimeout.TotalSeconds < 0)
+                throw new ArgumentException("The push time-out for BoundedMailbox cannot be null", nameof(config));
         }
 
         /// <inheritdoc cref="MailboxType"/>
@@ -787,6 +857,4 @@ namespace Akka.Dispatch
             return new BoundedDequeMessageQueue(Capacity, PushTimeout);
         }
     }
-
 }
-

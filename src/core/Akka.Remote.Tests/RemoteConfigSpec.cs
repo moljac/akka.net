@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemoteConfigSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Akka.Configuration;
 using Akka.Remote.Transport.DotNetty;
 using Akka.TestKit;
 using Akka.Util.Internal;
@@ -64,8 +65,8 @@ namespace Akka.Remote.Tests
 
             var remoteSettingsAdaptersStandart = new List<KeyValuePair<string, Type>>()
             {
-                new KeyValuePair<string, Type>("gremlin", typeof(FailureInjectorProvider)),
-                new KeyValuePair<string, Type>("trttl", typeof(ThrottlerProvider))
+                new("gremlin", typeof(FailureInjectorProvider)),
+                new("trttl", typeof(ThrottlerProvider))
             };
 
             var remoteSettingsAdapters =
@@ -114,12 +115,36 @@ namespace Akka.Remote.Tests
         }
 
         [Fact]
+        public void SSL_should_have_secure_defaults_when_enabled()
+        {
+            // Simple test - just enable SSL and check the defaults from reference.conf
+            var certPath = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Resources", "akka-validcert.pfx");
+            var config = ConfigurationFactory.ParseString($@"
+                akka.remote.dot-netty.tcp.enable-ssl = true
+                akka.remote.dot-netty.tcp.ssl.certificate {{
+                    path = ""{certPath.Replace("\\", "\\\\")}""
+                    password = ""password""
+                }}
+            ").WithFallback(RARP.For(Sys).Provider.RemoteSettings.Config);
+
+            var c = config.GetConfig("akka.remote.dot-netty.tcp");
+            var s = DotNettyTransportSettings.Create(c);
+
+            // Verify SSL is enabled
+            Assert.True(s.EnableSsl);
+
+            // Verify secure defaults
+            Assert.True(s.Ssl.RequireMutualAuthentication, "Mutual TLS should be enabled by default");
+            Assert.False(s.Ssl.SuppressValidation, "Certificate validation should not be suppressed by default");
+        }
+
+        [Fact]
         public void When_remoting_works_in_Mono_ip_enforcement_should_be_defaulted_to_true()
         {
             if (!IsMono) return; // skip IF NOT using Mono
             var c = RARP.For(Sys).Provider.RemoteSettings.Config.GetConfig("akka.remote.dot-netty.tcp");
             var s = DotNettyTransportSettings.Create(c);
-            
+
             Assert.True(s.EnforceIpFamily);
         }
 
@@ -170,13 +195,25 @@ namespace Akka.Remote.Tests
         [Fact]
         public void Remoting_should_contain_correct_BatchWriter_settings_in_ReferenceConf()
         {
-            var c = RARP.For(Sys).Provider.RemoteSettings.Config.GetConfig("akka.remote.dot-netty.tcp");
+            var c = Akka.Remote.Configuration.RemoteConfigFactory.Default().GetConfig("akka.remote.dot-netty.tcp");
             var s = DotNettyTransportSettings.Create(c);
 
             s.BatchWriterSettings.EnableBatching.Should().BeTrue();
             s.BatchWriterSettings.MaxExplicitFlushes.Should().Be(BatchWriterSettings.DefaultMaxPendingWrites);
         }
-        
+
+        [Fact]
+        public void Remoting_should_apply_TestKit_batching_override_to_the_running_system()
+        {
+            // The Akka.TestKit reference.conf (src/core/Akka.TestKit/Internal/Reference.conf) turns
+            // batching off for test systems, so the running system's settings should reflect that
+            // override rather than the Akka.Remote reference config default asserted above.
+            var c = RARP.For(Sys).Provider.RemoteSettings.Config.GetConfig("akka.remote.dot-netty.tcp");
+            var s = DotNettyTransportSettings.Create(c);
+
+            s.BatchWriterSettings.EnableBatching.Should().BeFalse();
+        }
+
         [Fact]
         public void Remoting_should_contain_correct_PrimitiveSerializer_settings_in_ReferenceConf()
         {

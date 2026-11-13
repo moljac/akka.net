@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UdpManager.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -51,9 +51,9 @@ namespace Akka.IO
         private readonly UdpExt _udp;
 
         /// <summary>
-        /// TBD
+        /// Initializes a new instance of the <see cref="UdpManager"/> class.
         /// </summary>
-        /// <param name="udp">TBD</param>
+        /// <param name="udp">The UDP extension providing settings and socket event argument pooling.</param>
         public UdpManager(UdpExt udp)
         {
             _udp = udp;

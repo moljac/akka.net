@@ -1,12 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="CurrentPersistenceIdsSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Persistence.Query;
@@ -14,11 +15,10 @@ using Akka.Streams;
 using Akka.Streams.TestKit;
 using Akka.Util.Internal;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Persistence.TCK.Query
 {
-    public abstract class CurrentPersistenceIdsSpec : Akka.TestKit.Xunit2.TestKit
+    public abstract class CurrentPersistenceIdsSpec : XTestKit
     {
         protected ActorMaterializer Materializer { get; }
 
@@ -105,10 +105,10 @@ namespace Akka.Persistence.TCK.Query
             return pref;
         }
 
-        protected override void Dispose(bool disposing)
+        protected override void AfterAll()
         {
             Materializer.Dispose();
-            base.Dispose(disposing);
+            base.AfterAll();
         }
     }
 }

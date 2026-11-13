@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Graph.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -33,8 +33,8 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    /// <typeparam name="TOut">TBD</typeparam>
+    /// <typeparam name="TIn">The element type accepted by each input.</typeparam>
+    /// <typeparam name="TOut">The element type emitted by the output; it must accept <typeparamref name="TIn"/> values.</typeparam>
     public class Merge<TIn, TOut> : GraphStage<UniformFanInShape<TIn, TOut>> where TIn : TOut
     {
         #region graph stage logic
@@ -58,9 +58,7 @@ namespace Akka.Streams.Dsl
                     {
                         if (IsAvailable(outlet))
                         {
-                            // isAvailable(out) implies !pending
-                            // -> grab and push immediately
-                            Push(outlet, Grab(inlet));
+                            GrabAndPushFanIn(inlet, outlet);
                             TryPull(inlet);
                         }
                         else _pendingQueue.Enqueue(inlet);
@@ -111,7 +109,7 @@ namespace Akka.Streams.Dsl
                 }
                 else if (IsAvailable(inlet))
                 {
-                    Push(_stage.Out, Grab(inlet));
+                    GrabAndPushFanIn(inlet, _stage.Out);
                     if(AreUpstreamsClosed && !IsPending)
                         CompleteStage();
                     else
@@ -132,8 +130,8 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="Merge{TIn, TOut}"/> class.
         /// </summary>
-        /// <param name="inputPorts">TBD</param>
-        /// <param name="eagerComplete">TBD</param>
+        /// <param name="inputPorts">The number of input ports to merge.</param>
+        /// <param name="eagerComplete">If <c>true</c>, stops the other inputs when one completes and completes after pending elements drain; otherwise waits for all inputs.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="inputPorts"/> is less than one.
         /// </exception>
@@ -144,7 +142,7 @@ namespace Akka.Streams.Dsl
             _inputPorts = inputPorts;
             _eagerComplete = eagerComplete;
 
-            var ins = ImmutableArray<Inlet<TIn>>.Empty.ToBuilder();
+            var ins = ImmutableArray.CreateBuilder<Inlet<TIn>>();
             for (var i = 0; i < inputPorts; i++)
                 ins.Add(new Inlet<TIn>("Merge.in" + i));
 
@@ -153,38 +151,38 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the input port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based input port index.</param>
+        /// <returns>The input port at <paramref name="id"/>.</returns>
         public Inlet<TIn> In(int id) => Shape.In(id);
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits elements from the merged inputs.
         /// </summary>
         public Outlet<TOut> Out { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes used to name this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = Attributes.CreateName("Merge");
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanInShape<TIn, TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic for merging the input ports.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that pulls from inputs and emits available elements.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(Shape, this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>Merge</c>.</returns>
         public override string ToString() => "Merge";
     }
 
@@ -200,14 +198,14 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type accepted and emitted by the merged streams.</typeparam>
     public sealed class Merge<T> : Merge<T, T>
     {
         /// <summary>
         /// Initializes a new instance of the <see cref="Merge{T}"/> class.
         /// </summary>
-        /// <param name="inputPorts">TBD</param>
-        /// <param name="eagerComplete">TBD</param>
+        /// <param name="inputPorts">The number of input ports to merge.</param>
+        /// <param name="eagerComplete">If <c>true</c>, stops the other inputs when one completes and completes after pending elements drain; otherwise waits for all inputs.</param>
         public Merge(int inputPorts, bool eagerComplete = false) : base(inputPorts, eagerComplete)
         {
         }
@@ -228,23 +226,23 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type accepted and emitted by the merge.</typeparam>
     public sealed class MergePreferred<T> : GraphStage<MergePreferred<T>.MergePreferredShape>
     {
         #region internal classes
 
         /// <summary>
-        /// TBD
+        /// Describes the shape of a preferred merge, including its preferred input and secondary inputs.
         /// </summary>
         public sealed class MergePreferredShape : UniformFanInShape<T, T>
         {
             private readonly int _secondaryPorts;
 
             /// <summary>
-            /// TBD
+            /// Creates a shape with the specified number of secondary inputs.
             /// </summary>
-            /// <param name="secondaryPorts">TBD</param>
-            /// <param name="init">TBD</param>
+            /// <param name="secondaryPorts">The number of secondary inputs, excluding the preferred input.</param>
+            /// <param name="init">The initialization data used to name and copy the shape.</param>
             public MergePreferredShape(int secondaryPorts, IInit init) : base(secondaryPorts, init)
             {
                 _secondaryPorts = secondaryPorts;
@@ -253,21 +251,21 @@ namespace Akka.Streams.Dsl
             }
 
             /// <summary>
-            /// TBD
+            /// Creates a shape with the specified name and number of secondary inputs.
             /// </summary>
-            /// <param name="secondaryPorts">TBD</param>
-            /// <param name="name">TBD</param>
+            /// <param name="secondaryPorts">The number of secondary inputs, excluding the preferred input.</param>
+            /// <param name="name">The name used to identify the shape's ports.</param>
             public MergePreferredShape(int secondaryPorts, string name) : this(secondaryPorts, new InitName(name)) { }
 
             /// <summary>
-            /// TBD
+            /// Creates a copy of this shape using the supplied initialization data.
             /// </summary>
-            /// <param name="init">TBD</param>
-            /// <returns>TBD</returns>
+            /// <param name="init">The initialization data for the copied shape.</param>
+            /// <returns>A shape with the same number of secondary inputs.</returns>
             protected override FanInShape<T> Construct(IInit init) => new MergePreferredShape(_secondaryPorts, init);
 
             /// <summary>
-            /// TBD
+            /// Gets the input that receives preferred elements.
             /// </summary>
             public Inlet<T> Preferred { get; }
         }
@@ -312,7 +310,7 @@ namespace Akka.Streams.Dsl
                              /* blocked */
                         }
                         else
-                            Emit(_stage.Out, Grab(port), pullPort);
+                            GrabAndEmitFanIn(port, _stage.Out, pullPort);
                     },
                     onUpstreamFinish: OnComplete);
                 }
@@ -339,7 +337,7 @@ namespace Akka.Streams.Dsl
             private void EmitPreferred()
             {
                 _preferredEmitting++;
-                Emit(_stage.Out, Grab(_stage.Preferred), Emitted);
+                GrabAndEmitFanIn(_stage.Preferred, _stage.Out, Emitted);
                 TryPull(_stage.Preferred);
             }
 
@@ -355,7 +353,8 @@ namespace Akka.Streams.Dsl
                 for (int i = 0; i < _stage._secondaryPorts; i++)
                 {
                     var port = _stage.In(i);
-                    if (IsAvailable(port)) Emit(_stage.Out, Grab(port), _pullMe[i]);
+                    if (IsAvailable(port))
+                        GrabAndEmitFanIn(port, _stage.Out, _pullMe[i]);
                 }
             }
 
@@ -374,8 +373,8 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="MergePreferred{T}"/> class.
         /// </summary>
-        /// <param name="secondaryPorts">TBD</param>
-        /// <param name="eagerClose">TBD</param>
+        /// <param name="secondaryPorts">The number of secondary inputs, in addition to the preferred input.</param>
+        /// <param name="eagerClose">If <c>true</c>, completes when any input completes; otherwise waits for all inputs.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="secondaryPorts"/> is less than one.
         /// </exception>
@@ -389,37 +388,37 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes used to name this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = Attributes.CreateName("MergePreferred");
 
         /// <summary>
-        /// TBD
+        /// Gets the shape containing the preferred input, secondary inputs, and output.
         /// </summary>
         public override MergePreferredShape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the secondary input port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based secondary input index.</param>
+        /// <returns>The secondary input port at <paramref name="id"/>.</returns>
         public Inlet<T> In(int id) => Shape.In(id);
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits elements from the preferred and secondary inputs.
         /// </summary>
         public Outlet<T> Out => Shape.Out;
 
         /// <summary>
-        /// TBD
+        /// Gets the preferred input port.
         /// </summary>
         public Inlet<T> Preferred => Shape.Preferred;
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that merges preferred and secondary inputs.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that applies the preferred-input policy and emits available elements.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(Shape, this);
     }
 
@@ -449,7 +448,7 @@ namespace Akka.Streams.Dsl
             private readonly MergePrioritized<T> _stage;
             private readonly List<FixedSizeBuffer<Inlet<T>>> _allBuffers;
             private int _runningUpstreams;
-            private readonly Random _randomGen = new Random();
+            private readonly Random _randomGen = new();
 
             public MergePrioritizedLogic(MergePrioritized<T> stage) : base(stage.Shape)
             {
@@ -468,7 +467,7 @@ namespace Akka.Streams.Dsl
 
                     SetHandler(inlet, onPush: () =>
                     {
-                        if (IsAvailable(_stage.Out) && !HasPending)
+                        if (IsAvailable(_stage.Out) && !HasOtherInletAvailable(inlet))
                         {
                             Push(_stage.Out, Grab(inlet));
                             TryPull(inlet);
@@ -503,6 +502,9 @@ namespace Akka.Streams.Dsl
             }
 
             public bool HasPending => _allBuffers.Any(c => c.NonEmpty);
+
+            private bool HasOtherInletAvailable(Inlet<T> excludeInlet) =>
+                _stage.In.Any(i => i != excludeInlet && IsAvailable(i));
 
             public bool UpstreamsClosed => _runningUpstreams == 0;
 
@@ -589,18 +591,18 @@ namespace Akka.Streams.Dsl
     }
 
     /// <summary>
-    /// TBD
+    /// Creates an interleave stage with a fixed number of input ports and elements per turn.
     /// </summary>
     public static class Interleave
     {
         /// <summary>
-        /// TBD
+        /// Creates a graph that emits a segment from each input in turn, cycling through the inputs.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        /// <param name="inputPorts">TBD</param>
-        /// <param name="segmentSize">TBD</param>
-        /// <param name="eagerClose">TBD</param>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T">The element type accepted and emitted by the stage.</typeparam>
+        /// <param name="inputPorts">The number of input ports; this must be greater than one.</param>
+        /// <param name="segmentSize">The number of elements to emit from each input before advancing to the next open input.</param>
+        /// <param name="eagerClose">If <c>true</c>, completes when any input completes; otherwise it continues with open inputs.</param>
+        /// <returns>A graph with <paramref name="inputPorts"/> inputs and one output.</returns>
         public static IGraph<UniformFanInShape<T, T>, NotUsed> Create<T>(int inputPorts, int segmentSize,
             bool eagerClose = false)
         {
@@ -620,8 +622,8 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    /// <typeparam name="TOut">TBD</typeparam>
+    /// <typeparam name="TIn">The element type accepted by each input.</typeparam>
+    /// <typeparam name="TOut">The element type emitted by the output; it must accept <typeparamref name="TIn"/> values.</typeparam>
     public sealed class Interleave<TIn, TOut> : GraphStage<UniformFanInShape<TIn, TOut>> where TIn : TOut
     {
         #region stage logic
@@ -714,11 +716,11 @@ namespace Akka.Streams.Dsl
         private readonly bool _eagerClose;
 
         /// <summary>
-        /// TBD
+        /// Creates an interleave stage with the specified input count and segment size.
         /// </summary>
-        /// <param name="inputPorts">TBD</param>
-        /// <param name="segmentSize">TBD</param>
-        /// <param name="eagerClose">TBD</param>
+        /// <param name="inputPorts">The number of input ports; this must be greater than one.</param>
+        /// <param name="segmentSize">The number of elements to emit from each input before advancing to the next open input.</param>
+        /// <param name="eagerClose">If <c>true</c>, completes when any input completes; otherwise it continues with open inputs.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when either the specified <paramref name="inputPorts"/> is less than or equal to one
         /// or the specified <paramref name="segmentSize"/> is less than or equal to zero.
@@ -742,33 +744,33 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits segments from the input streams in turn.
         /// </summary>
         public Outlet<TOut> Out { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the input port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based input port index.</param>
+        /// <returns>The input port at <paramref name="id"/>.</returns>
         public Inlet<TIn> In(int id) => Shape.In(id);
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanInShape<TIn, TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that selects the current input and emits its elements.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that cycles between open inputs after each segment.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(Shape, this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>Interleave</c>.</returns>
         public override string ToString() => "Interleave";
     }
 
@@ -783,7 +785,7 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type emitted by both inputs and the output.</typeparam>
     public sealed class MergeSorted<T> : GraphStage<FanInShape<T, T, T>>
     {
         #region stage logic
@@ -859,7 +861,7 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="MergeSorted{T}"/> class.
         /// </summary>
-        /// <param name="compare">TBD</param>
+        /// <param name="compare">Compares values from the two inputs to select which value is emitted next.</param>
         public MergeSorted(Func<T, T, int> compare)
         {
             _compare = compare;
@@ -867,30 +869,30 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the left input of the sorted merge.
         /// </summary>
-        public readonly Inlet<T> Left = new Inlet<T>("left");
+        public readonly Inlet<T> Left = new("left");
 
         /// <summary>
-        /// TBD
+        /// Gets the right input of the sorted merge.
         /// </summary>
-        public readonly Inlet<T> Right = new Inlet<T>("right");
+        public readonly Inlet<T> Right = new("right");
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits values selected from the sorted inputs.
         /// </summary>
-        public readonly Outlet<T> Out = new Outlet<T>("out");
+        public readonly Outlet<T> Out = new("out");
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's two-input, one-output shape.
         /// </summary>
         public override FanInShape<T, T, T> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that compares values from the two inputs.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that merges the input values according to the comparison function.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
     }
 
@@ -906,7 +908,7 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when If eagerCancel is enabled: when any downstream cancels; otherwise: when all downstreams cancel
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type broadcast unchanged to each connected output.</typeparam>
     public sealed class Broadcast<T> : GraphStage<UniformFanOutShape<T, T>>
     {
         #region stage logic
@@ -939,13 +941,13 @@ namespace Akka.Streams.Dsl
                         _pendingCount--;
                         TryPull();
                     },
-                    onDownstreamFinish: () =>
+                    onDownstreamFinish: cause =>
                     {
-                        if (stage._eagerCancel) CompleteStage();
+                        if (stage._eagerCancel) CancelStage(cause);
                         else
                         {
                             _downstreamsRunning--;
-                            if (_downstreamsRunning == 0) CompleteStage();
+                            if (_downstreamsRunning == 0) CancelStage(cause);
                             else if (_pending[i])
                             {
                                 _pending[i] = false;
@@ -990,8 +992,8 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="Broadcast{T}"/> class.
         /// </summary>
-        /// <param name="outputPorts">TBD</param>
-        /// <param name="eagerCancel">TBD</param>
+        /// <param name="outputPorts">The number of output ports to create.</param>
+        /// <param name="eagerCancel">If <c>true</c>, cancels upstream when any output cancels; otherwise waits until all outputs cancel.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="outputPorts"/> is less than one.
         /// </exception>
@@ -1009,38 +1011,38 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the input that supplies elements to every output.
         /// </summary>
-        public readonly Inlet<T> In = new Inlet<T>("Broadcast.in");
+        public readonly Inlet<T> In = new("Broadcast.in");
 
         /// <summary>
-        /// TBD
+        /// Gets the output port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based output port index.</param>
+        /// <returns>The output port at <paramref name="id"/>.</returns>
         public Outlet<T> Out(int id) => Shape.Out(id);
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes used to name this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = Attributes.CreateName("Broadcast");
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanOutShape<T, T> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that waits for demand from each active output before pulling upstream.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that broadcasts each input element to the active outputs.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(Shape, this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>Broadcast</c>.</returns>
         public override string ToString() => "Broadcast";
     }
 
@@ -1054,9 +1056,9 @@ namespace Akka.Streams.Dsl
     /// <para>
     /// Completes when upstream completes and no output is pending
     /// </para>
-    /// Cancels when when all downstreams cancel
+    /// Cancels when all downstreams cancel
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type routed to one selected output.</typeparam>
     public sealed class Partition<T> : GraphStage<UniformFanOutShape<T, T>>
     {
         #region internal classes
@@ -1099,19 +1101,18 @@ namespace Akka.Streams.Dsl
                         }
                         else if (!HasBeenPulled(stage.In))
                             Pull(stage.In);
-                    }, onDownstreamFinish: () =>
+                    }, onDownstreamFinish: cause =>
                     {
                         downstreamRunning--;
                         if(downstreamRunning == 0)
-                            CompleteStage();
-                        else if (_outPendingElement != null)
+                            CancelStage(cause);
+                        else if (_outPendingElement != null && index == _outPendingIndex)
                         {
-                            if (index == _outPendingIndex)
-                            {
-                                _outPendingElement = null;
-                                if(!HasBeenPulled(stage.In))
-                                    Pull(stage.In);
-                            }
+                            _outPendingElement = null;
+                            if(IsClosed(stage.In))
+                                CancelStage(cause);
+                            else if(!HasBeenPulled(stage.In))
+                                Pull(stage.In);
                         }
                     });
                 }
@@ -1159,8 +1160,8 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="Partition{T}"/> class.
         /// </summary>
-        /// <param name="outputPorts">TBD</param>
-        /// <param name="partitioner">TBD</param>
+        /// <param name="outputPorts">The number of output ports available to the partitioner.</param>
+        /// <param name="partitioner">Returns the zero-based output index for each element; an out-of-range index fails the stage.</param>
         public Partition(int outputPorts, Func<T, int> partitioner)
         {
             _outputPorts = outputPorts;
@@ -1170,39 +1171,39 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the input whose elements are routed by the partitioner.
         /// </summary>
-        public readonly Inlet<T> In = new Inlet<T>("Partition.in");
+        public readonly Inlet<T> In = new("Partition.in");
 
         /// <summary>
-        /// TBD
+        /// Gets the output port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based output port index.</param>
+        /// <returns>The output port at <paramref name="id"/>.</returns>
         public Outlet<T> Out(int id) => Shape.Out(id);
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanOutShape<T, T> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that applies the partitioner to each input element.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that emits each element to its selected output.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
 
         /// <summary>
-        /// TBD
+        /// Returns a stage name that includes the output count.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The stage name in the form <c>Partition(count)</c>.</returns>
         public override string ToString() => $"Partition({_outputPorts})";
 
     }
 
     /// <summary>
-    /// TBD
+    /// Indicates that a partitioner returned an index outside the available output range.
     /// </summary>
     public sealed class PartitionOutOfBoundsException : Exception
     {
@@ -1220,7 +1221,7 @@ namespace Akka.Streams.Dsl
         /// </summary>
         /// <param name="info">The <see cref="SerializationInfo" /> that holds the serialized object data about the exception being thrown.</param>
         /// <param name="context">The <see cref="StreamingContext" /> that contains contextual information about the source or destination.</param>
-        protected PartitionOutOfBoundsException(SerializationInfo info, StreamingContext context) : base(info, context) { }
+        public PartitionOutOfBoundsException(SerializationInfo info, StreamingContext context) : base(info, context) { }
     }
 
     /// <summary>
@@ -1238,7 +1239,7 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when all downstreams cancel
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type distributed to available outputs.</typeparam>
     public sealed class Balance<T> : GraphStage<UniformFanOutShape<T, T>>
     {
         #region stage logic
@@ -1282,10 +1283,10 @@ namespace Akka.Streams.Dsl
                         }
                         else _pendingQueue.Enqueue(outlet);
                     },
-                    onDownstreamFinish: () =>
+                    onDownstreamFinish: cause =>
                     {
                         downstreamsRunning--;
-                        if (downstreamsRunning == 0) CompleteStage();
+                        if (downstreamsRunning == 0) CancelStage(cause);
                         else if (!hasPulled && needDownstreamPulls > 0)
                         {
                             needDownstreamPulls--;
@@ -1329,8 +1330,8 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="Balance{T}"/> class.
         /// </summary>
-        /// <param name="outputPorts">TBD</param>
-        /// <param name="waitForAllDownstreams">TBD</param>
+        /// <param name="outputPorts">The number of output ports to create.</param>
+        /// <param name="waitForAllDownstreams">If <c>true</c>, waits for each active output to request an element before pulling upstream. An output canceled before its first request no longer blocks the initial pull.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="outputPorts"/> is less than one.
         /// </exception>
@@ -1348,38 +1349,38 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the input that supplies elements for distribution.
         /// </summary>
-        public Inlet<T> In { get; } = new Inlet<T>("Balance.in");
+        public Inlet<T> In { get; } = new("Balance.in");
 
         /// <summary>
-        /// TBD
+        /// Gets the output port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based output port index.</param>
+        /// <returns>The output port at <paramref name="id"/>.</returns>
         public Outlet<T> Out(int id) => Shape.Out(id);
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes used to name this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = Attributes.CreateName("Balance");
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanOutShape<T, T> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that distributes each input element to a requesting output.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that routes elements to available outputs.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(Shape, this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>Balance</c>.</returns>
         public override string ToString() => "Balance";
     }
 
@@ -1396,8 +1397,8 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="T1">TBD</typeparam>
-    /// <typeparam name="T2">TBD</typeparam>
+    /// <typeparam name="T1">The element type accepted by the left input and stored in the first tuple item.</typeparam>
+    /// <typeparam name="T2">The element type accepted by the right input and stored in the second tuple item.</typeparam>
     public sealed class Zip<T1, T2> : ZipWith<T1, T2, (T1, T2)>
     {
         /// <summary>
@@ -1406,9 +1407,9 @@ namespace Akka.Streams.Dsl
         public Zip() : base((a, b) => (a, b)) { }
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>Zip</c>.</returns>
         public override string ToString() => "Zip";
     }
 
@@ -1428,7 +1429,7 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// The singleton instance of <see cref="ZipWith"/>.
         /// </summary>
-        public static readonly ZipWith Instance = new ZipWith();
+        public static readonly ZipWith Instance = new();
         private ZipWith() { }
     }
 
@@ -1445,8 +1446,8 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when any downstream cancels
     /// </summary>
-    /// <typeparam name="T1">TBD</typeparam>
-    /// <typeparam name="T2">TBD</typeparam>
+    /// <typeparam name="T1">The type of the first item in each input pair and the elements emitted by the left output.</typeparam>
+    /// <typeparam name="T2">The type of the second item in each input pair and the elements emitted by the right output.</typeparam>
     public sealed class UnZip<T1, T2> : UnzipWith<KeyValuePair<T1, T2>, T1, T2>
     {
         /// <summary>
@@ -1455,9 +1456,9 @@ namespace Akka.Streams.Dsl
         public UnZip() : base(kv => (kv.Key, kv.Value)) { }
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>Unzip</c>.</returns>
         public override string ToString() => "Unzip";
     }
 
@@ -1477,21 +1478,21 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// The singleton instance of <see cref="UnzipWith"/>.
         /// </summary>
-        public static readonly UnzipWith Instance = new UnzipWith();
+        public static readonly UnzipWith Instance = new();
         private UnzipWith() { }
     }
 
     /// <summary>
-    /// TBD
+    /// Factories for stages that zip a fixed number of streams.
     /// </summary>
     public static class ZipN
     {
         /// <summary>
         /// Create a new <see cref="ZipN{T}"/>.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        /// <param name="n">TBD</param>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T">The element type accepted by each input and collected in the output list.</typeparam>
+        /// <param name="n">The number of input ports.</param>
+        /// <returns>A graph that emits one immutable list containing one element from each input per output element.</returns>
         public static IGraph<UniformFanInShape<T, IImmutableList<T>>> Create<T>(int n) => new ZipN<T>(n);
     }
 
@@ -1508,41 +1509,41 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type accepted by each input and collected in each output list.</typeparam>
     public sealed class ZipN<T> : ZipWithN<T, IImmutableList<T>>
     {
         /// <summary>
         /// Initializes a new instance of the <see cref="ZipN{T}"/> class.
         /// </summary>
-        /// <param name="n">TBD</param>
+        /// <param name="n">The number of input ports to zip.</param>
         public ZipN(int n) : base(x => x, n)
         {
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes for this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = DefaultAttributes.ZipN;
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>ZipN</c>.</returns>
         public override string ToString() => "ZipN";
     }
 
     /// <summary>
-    /// TBD
+    /// Factories for stages that combine values from a fixed number of input streams.
     /// </summary>
     public static class ZipWithN
     {
         /// <summary>
         /// Creates a new <see cref="ZipWithN{TIn,TOut}"/>
         /// </summary>
-        /// <typeparam name="TIn">TBD</typeparam>
-        /// <typeparam name="TOut">TBD</typeparam>
-        /// <param name="zipper">TBD</param>
-        /// <param name="n">TBD</param>
+        /// <typeparam name="TIn">The element type accepted by every input port.</typeparam>
+        /// <typeparam name="TOut">The element type returned by the zipper.</typeparam>
+        /// <param name="zipper">Combines the ordered list of one element from each input.</param>
+        /// <param name="n">The number of input ports.</param>
         public static IGraph<UniformFanInShape<TIn, TOut>> Create<TIn, TOut>(Func<IImmutableList<TIn>, TOut> zipper,
             int n) => new ZipWithN<TIn, TOut>(zipper, n);
     }
@@ -1559,8 +1560,8 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    /// <typeparam name="TOut">TBD</typeparam>
+    /// <typeparam name="TIn">The element type accepted by every input port.</typeparam>
+    /// <typeparam name="TOut">The element type returned by the zipper for each input set.</typeparam>
     public class ZipWithN<TIn, TOut> : GraphStage<UniformFanInShape<TIn, TOut>>
     {
         #region Logic 
@@ -1623,8 +1624,8 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="ZipWithN{TIn, TOut}"/> class.
         /// </summary>
-        /// <param name="zipper">TBD</param>
-        /// <param name="n">TBD</param>
+        /// <param name="zipper">Combines one element from each input, in input-port order.</param>
+        /// <param name="n">The number of input ports.</param>
         public ZipWithN(Func<IImmutableList<TIn>, TOut> zipper, int n)
         {
             _zipper = zipper;
@@ -1635,56 +1636,56 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes for this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = DefaultAttributes.ZipWithN;
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits values produced by the zipper.
         /// </summary>
         public Outlet<TOut> Out { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the input ports in the order passed to the zipper.
         /// </summary>
         public IImmutableList<Inlet<TIn>> Inlets { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the input port at the specified index.
         /// </summary>
-        /// <param name="i">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="i">The zero-based input port index.</param>
+        /// <returns>The input port at <paramref name="i"/>.</returns>
         public Inlet<TIn> In(int i) => Inlets[i];
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanInShape<TIn, TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that waits for one value from each input and applies the zipper.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that combines corresponding input elements.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>ZipWithN</c>.</returns>
         public override string ToString() => "ZipWithN";
     }
 
     /// <summary>
-    /// TBD
+    /// Factories for stages that concatenate their input streams in order.
     /// </summary>
     public static class Concat
     {
         /// <summary>
-        /// TBD
+        /// Creates a graph that emits all elements from each input in order, starting with the first input.
         /// </summary>
-        /// <param name="inputPorts">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inputPorts">The number of ordered input ports; this must be greater than one.</param>
+        /// <returns>A graph with the specified number of input ports and one output.</returns>
         public static IGraph<UniformFanInShape<T, T>, NotUsed> Create<T>(int inputPorts = 2)
         {
             return GraphStages.WithDetachedInputs(new Concat<T, T>(inputPorts));
@@ -1706,8 +1707,8 @@ namespace Akka.Streams.Dsl
     /// </para>
     /// Cancels when downstream cancels
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    /// <typeparam name="TOut">TBD</typeparam>
+    /// <typeparam name="TIn">The element type accepted by each input.</typeparam>
+    /// <typeparam name="TOut">The element type emitted by the output; it must accept <typeparamref name="TIn"/> values.</typeparam>
     public class Concat<TIn, TOut> : GraphStage<UniformFanInShape<TIn, TOut>> where TIn : TOut
     {
         #region stage logic
@@ -1727,7 +1728,7 @@ namespace Akka.Streams.Dsl
                     var i = inEnumerator.Current;
                     var idx = iidx;
                     SetHandler(i,
-                        onPush: () => Push(stage.Out, Grab(i)),
+                        onPush: () => GrabAndPushFanIn(i, stage.Out),
                         onUpstreamFinish: () =>
                         {
                             if (idx == _activeStream)
@@ -1755,7 +1756,7 @@ namespace Akka.Streams.Dsl
         /// <summary>
         /// Initializes a new instance of the <see cref="Concat{TIn, TOut}"/> class.
         /// </summary>
-        /// <param name="inputPorts">TBD</param>
+        /// <param name="inputPorts">The number of ordered input ports; this must be greater than one.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="inputPorts"/> is less than or equal to one.
         /// </exception>
@@ -1772,45 +1773,45 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the input port at the specified index.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The zero-based input port index.</param>
+        /// <returns>The input port at <paramref name="id"/>.</returns>
         public Inlet<TIn> In(int id) => Shape.In(id);
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits elements from each input in order.
         /// </summary>
-        public Outlet<TOut> Out { get; } = new Outlet<TOut>("Concat.out");
+        public Outlet<TOut> Out { get; } = new("Concat.out");
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes used to name this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = Attributes.CreateName("Concat");
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's input and output ports.
         /// </summary>
         public override UniformFanInShape<TIn, TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that consumes inputs sequentially.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that advances to the next input after the current input completes.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
     }
 
     /// <summary>
-    /// TBD
+    /// Factories for stages that use a secondary stream only if the primary stream completes without emitting an element.
     /// </summary>
     public static class OrElse
     {
         /// <summary>
-        /// TBD
+        /// Creates a graph that uses the secondary input only when the primary completes without emitting an element.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        /// <returns>TBD</returns>
+        /// <typeparam name="T">The element type accepted and emitted by both inputs.</typeparam>
+        /// <returns>A graph with primary and secondary inputs and one output.</returns>
         public static IGraph<UniformFanInShape<T, T>, NotUsed> Create<T>() => new OrElse<T>();
     }
 
@@ -1832,7 +1833,7 @@ namespace Akka.Streams.Dsl
     ///
     /// '''Cancels when''' downstream cancels
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The element type accepted by both inputs and emitted by the output.</typeparam>
     public sealed class OrElse<T> : GraphStage<UniformFanInShape<T, T>>
     {
         #region Logic
@@ -1897,52 +1898,52 @@ namespace Akka.Streams.Dsl
         public OrElse() => Shape = new UniformFanInShape<T, T>(Out, Primary, Secondary);
 
         /// <summary>
-        /// TBD
+        /// Gets the initial attributes for this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = DefaultAttributes.OrElse;
 
         /// <summary>
-        /// TBD
+        /// Gets the preferred input. Its first element commits the stage to this input and cancels the secondary input; if it completes without an element, the secondary input is selected.
         /// </summary>
-        public Inlet<T> Primary { get; }   = new Inlet<T>("OrElse.primary");
+        public Inlet<T> Primary { get; }   = new("OrElse.primary");
 
         /// <summary>
-        /// TBD
+        /// Gets the fallback input, used if the primary completes without emitting an element.
         /// </summary>
-        public Inlet<T> Secondary { get; } = new Inlet<T>("OrElse.secondary");
+        public Inlet<T> Secondary { get; } = new("OrElse.secondary");
 
         /// <summary>
-        /// TBD
+        /// Gets the output that emits values from the selected input.
         /// </summary>
-        public Outlet<T> Out { get; } = new Outlet<T>("OrElse.out");
+        public Outlet<T> Out { get; } = new("OrElse.out");
 
         /// <summary>
-        /// TBD
+        /// Gets this stage's two-input, one-output shape.
         /// </summary>
         public override UniformFanInShape<T, T> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic that selects between the primary and fallback inputs.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that switches to the secondary input when the primary completes empty.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>OrElse</c>.</returns>
         public override string ToString() => "OrElse";
     }
     
     public static class WireTap
     {
         /// <summary>
-        /// TBD
-        /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        /// <returns>TBD</returns>
-        public static WireTap<T> Create<T>() => new WireTap<T>();
+    /// Creates a wire-tap stage that copies elements to a tap output when it has demand.
+    /// </summary>
+        /// <typeparam name="T">The element type passed through the main output and optionally copied to the tap output.</typeparam>
+        /// <returns>A wire-tap stage.</returns>
+        public static WireTap<T> Create<T>() => new();
     }
 
     /// <summary>
@@ -1977,7 +1978,7 @@ namespace Akka.Streams.Dsl
                         _pendingTap = elem;
                 });
                 
-                SetHandler(stage.OutMain, () => Pull(stage.In), CompleteStage);
+                SetHandler(stage.OutMain, () => Pull(stage.In), CancelStage);
                 
                 // The 'tap' output can neither backpressure, nor cancel, the stage.
                 SetHandler(stage.OutTap, 
@@ -1992,7 +1993,7 @@ namespace Akka.Streams.Dsl
                         Push(stage.OutTap, _pendingTap.Value);
                         _pendingTap = Option<T>.None;
                     },
-                    () =>
+                    _ =>
                     {
                         SetHandler(stage.In, () => Push(stage.OutMain, Grab(stage.In)));
                         // Allow any outstanding element to be garbage-collected
@@ -2008,25 +2009,25 @@ namespace Akka.Streams.Dsl
         /// </summary>
         public WireTap() => Shape = new FanOutShape<T, T, T>(In, OutMain, OutTap);
         
-        public Inlet<T> In { get; }   = new Inlet<T>("WireTap.In");
-        public Outlet<T> OutMain { get; } = new Outlet<T>("WireTap.OutMain");
-        public Outlet<T> OutTap { get; } = new Outlet<T>("WireTap.OutTap");
+        public Inlet<T> In { get; }   = new("WireTap.In");
+        public Outlet<T> OutMain { get; } = new("WireTap.OutMain");
+        public Outlet<T> OutTap { get; } = new("WireTap.OutTap");
 
         public override FanOutShape<T, T, T> Shape { get; }
         
         protected override Attributes InitialAttributes => DefaultAttributes.WireTap;
 
         /// <summary>
-        /// TBD
+        /// Creates the interpreter logic for forwarding elements and optionally copying them to the tap.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited by this stage.</param>
+        /// <returns>The logic that drives the main output and best-effort tap output.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
         
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>WireTap</c>.</returns>
         public override string ToString() => "WireTap";
     }
 }

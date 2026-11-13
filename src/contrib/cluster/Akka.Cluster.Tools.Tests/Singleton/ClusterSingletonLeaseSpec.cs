@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterSingletonLeaseSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,7 +15,6 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Cluster.Tools.Singleton;
 using Akka.Configuration;
-using Akka.Coordination.Tests;
 using Akka.Event;
 using Akka.TestKit;
 using Akka.TestKit.TestActors;
@@ -70,21 +69,16 @@ namespace Akka.Cluster.Tools.Tests.Singleton
                 : base(message, innerEx)
             {
             }
-
-            protected TestException(SerializationInfo info, StreamingContext context)
-                : base(info, context)
-            {
-            }
         }
 
-        private Cluster cluster;
-        private TestLeaseExt testLeaseExt;
+        private readonly Cluster _cluster;
+        private readonly TestLeaseExt _testLeaseExt;
 
-        private AtomicCounter counter = new AtomicCounter(0);
-        private TimeSpan shortDuration = TimeSpan.FromMilliseconds(50);
-        private string leaseOwner;
+        private readonly AtomicCounter _counter = new(0);
+        private readonly TimeSpan _shortDuration = TimeSpan.FromMilliseconds(50);
+        private readonly string _leaseOwner;
 
-        public ClusterSingletonLeaseSpec() : base(ConfigurationFactory.ParseString(@"
+        public ClusterSingletonLeaseSpec(ITestOutputHelper output) : base(ConfigurationFactory.ParseString(@"
               #akka.loglevel = INFO
               akka.loglevel = DEBUG
               akka.actor.provider = ""cluster""
@@ -99,22 +93,22 @@ namespace Akka.Cluster.Tools.Tests.Singleton
                   hostname = ""127.0.0.1""
                   port = 0
                 }
-              }").WithFallback(TestLease.Configuration))
+              }").WithFallback(TestLease.Configuration), output)
         {
 
-            cluster = Cluster.Get(Sys);
-            testLeaseExt = TestLeaseExt.Get(Sys);
+            _cluster = Cluster.Get(Sys);
+            _testLeaseExt = TestLeaseExt.Get(Sys);
 
-            leaseOwner = cluster.SelfMember.Address.HostPort();
+            _leaseOwner = _cluster.SelfMember.Address.HostPort();
 
-            cluster.Join(cluster.SelfAddress);
+            _cluster.Join(_cluster.SelfAddress);
             AwaitAssert(() =>
             {
-                cluster.SelfMember.Status.ShouldBe(MemberStatus.Up);
+                _cluster.SelfMember.Status.ShouldBe(MemberStatus.Up);
             });
         }
 
-        private string NextName() => $"important-{counter.GetAndIncrement()}";
+        private string NextName() => $"important-{_counter.GetAndIncrement()}";
 
         private ClusterSingletonManagerSettings NextSettings() => ClusterSingletonManagerSettings.Create(Sys).WithSingletonName(NextName());
 
@@ -133,10 +127,10 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
-            probe.ExpectNoMsg(shortDuration);
+            probe.ExpectNoMsg(_shortDuration);
             testLease.InitialPromise.SetResult(true);
             probe.ExpectMsg("preStart");
         }
@@ -154,12 +148,12 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
-            probe.ExpectNoMsg(shortDuration);
+            probe.ExpectNoMsg(_shortDuration);
             testLease.InitialPromise.SetResult(false);
-            probe.ExpectNoMsg(shortDuration);
+            probe.ExpectNoMsg(_shortDuration);
         }
 
         [Fact]
@@ -175,17 +169,17 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
-            singletonProbe.ExpectNoMsg(shortDuration);
-            TaskCompletionSource<bool> nextResponse = new TaskCompletionSource<bool>();
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
+            singletonProbe.ExpectNoMsg(_shortDuration);
+            var nextResponse = new TaskCompletionSource<bool>();
 
             testLease.SetNextAcquireResult(nextResponse.Task);
             testLease.InitialPromise.SetResult(false);
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
-            singletonProbe.ExpectNoMsg(shortDuration);
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
+            singletonProbe.ExpectNoMsg(_shortDuration);
             nextResponse.SetResult(true);
             singletonProbe.ExpectMsg("preStart");
         }
@@ -203,13 +197,13 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
 
-            probe.ExpectNoMsg(shortDuration);
+            probe.ExpectNoMsg(_shortDuration);
             testLease.InitialPromise.SetException(new TestException("no lease for you"));
-            probe.ExpectNoMsg(shortDuration);
+            probe.ExpectNoMsg(_shortDuration);
         }
 
         [Fact]
@@ -225,16 +219,16 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
-            singletonProbe.ExpectNoMsg(shortDuration);
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
+            singletonProbe.ExpectNoMsg(_shortDuration);
             TaskCompletionSource<bool> nextResponse = new TaskCompletionSource<bool>();
             testLease.SetNextAcquireResult(nextResponse.Task);
             testLease.InitialPromise.SetException(new TestException("no lease for you"));
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
-            singletonProbe.ExpectNoMsg(shortDuration);
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
+            singletonProbe.ExpectNoMsg(_shortDuration);
             nextResponse.SetResult(true);
             singletonProbe.ExpectMsg("preStart");
         }
@@ -252,19 +246,19 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
             testLease.InitialPromise.SetResult(true);
             lifecycleProbe.ExpectMsg("preStart");
             var callback = testLease.GetCurrentCallback();
             callback(null);
             lifecycleProbe.ExpectMsg("postStop");
-            testLease.Probe.ExpectMsg(new TestLease.ReleaseReq(leaseOwner));
+            testLease.Probe.ExpectMsg(new TestLease.ReleaseReq(_leaseOwner));
 
             // should try and reacquire lease
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
             lifecycleProbe.ExpectMsg("preStart");
         }
 
@@ -281,15 +275,46 @@ namespace Akka.Cluster.Tools.Tests.Singleton
             TestLease testLease = null;
             AwaitAssert(() =>
             {
-                testLease = testLeaseExt.GetTestLease(LeaseNameFor(settings));
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
             }); // allow singleton manager to create the lease
 
-            singletonProbe.ExpectNoMsg(shortDuration);
-            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(leaseOwner));
+            singletonProbe.ExpectNoMsg(_shortDuration);
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
             testLease.InitialPromise.SetResult(true);
             singletonProbe.ExpectMsg("preStart");
-            cluster.Leave(cluster.SelfAddress);
-            testLease.Probe.ExpectMsg(new TestLease.ReleaseReq(leaseOwner));
+            _cluster.Leave(_cluster.SelfAddress);
+            testLease.Probe.ExpectMsg(new TestLease.ReleaseReq(_leaseOwner));
+        }
+
+        [Fact]
+        public void ClusterSingleton_with_lease_should_log_error_when_lease_release_fails_on_leaving_oldest()
+        {
+            var singletonProbe = CreateTestProbe();
+            var settings = NextSettings();
+
+            Sys.ActorOf(
+                ClusterSingletonManager.Props(Props.Create(() => new ImportantSingleton(singletonProbe.Ref)), PoisonPill.Instance, settings),
+                settings.SingletonName);
+
+            TestLease testLease = null;
+            AwaitAssert(() =>
+            {
+                testLease = _testLeaseExt.GetTestLease(LeaseNameFor(settings));
+            });
+
+            singletonProbe.ExpectNoMsg(_shortDuration);
+            testLease.Probe.ExpectMsg(new TestLease.AcquireReq(_leaseOwner));
+            testLease.InitialPromise.SetResult(true);
+            singletonProbe.ExpectMsg("preStart");
+
+            // Make release return a faulted task
+            testLease.SetNextReleaseResult(Task.FromException<bool>(new TestException("lease release failed")));
+
+            EventFilter.Error(contains: "Failed to release lease").ExpectOne(() =>
+            {
+                _cluster.Leave(_cluster.SelfAddress);
+                testLease.Probe.ExpectMsg(new TestLease.ReleaseReq(_leaseOwner));
+            });
         }
     }
 }

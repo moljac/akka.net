@@ -1,14 +1,15 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="IScheduler.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 namespace Akka.Actor
 {
     /// <summary>
-    /// TBD
+    /// Primary scheduler interface combining message-based scheduling via <see cref="ITellScheduler"/>
+    /// and time access via <see cref="ITimeProvider"/>. Accessed through <see cref="ActorSystem.Scheduler"/>.
     /// </summary>
     public interface IScheduler : ITellScheduler, ITimeProvider
     {

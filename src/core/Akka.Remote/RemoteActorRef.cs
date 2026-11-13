@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemoteActorRef.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -44,6 +44,30 @@ namespace Akka.Remote
         /// The props
         /// </summary>
         private readonly Props _props;
+
+        /// <summary>
+        /// INTERNAL API.
+        ///
+        /// Cached outbound send-routing decision for Akka.Remote.Artery TCP remoting (Pekko's
+        /// <c>cachedSendQueueIndex</c>, <c>RemoteActorRef.scala</c>): computed once per ref, on its
+        /// first ordinary send, by <c>Akka.Remote.Artery.ArteryRemoting.EnqueueOutbound</c> and
+        /// reused for every subsequent send to this same ref -- avoiding repeating the
+        /// large-message-destination pattern match / lane hash on every single message. Encodes
+        /// either "route to the large-message stream" or an ordinary-outbound lane index; see
+        /// <c>ArteryRemoting</c>'s private <c>UnresolvedSendRoute</c>/<c>LargeMessageRoute</c>
+        /// constants for the exact encoding.
+        ///
+        /// <para>
+        /// Sentinel <c>-1</c> means "not yet resolved". Meaningless -- and never read -- for
+        /// classic DotNetty remoting, which has no lanes/large-message-stream concept. Deliberately
+        /// a plain (non-volatile) field, matching Pekko's own <c>cachedSendQueueIndex</c>: the
+        /// computed value is a pure, idempotent function of this ref's (immutable) path and the
+        /// transport's (fixed for the process's lifetime) settings, so a benign race where two
+        /// threads compute and write the same value concurrently is harmless -- no synchronization
+        /// needed.
+        /// </para>
+        /// </summary>
+        internal int CachedSendQueueIndex = -1;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RemoteActorRef"/> class.
@@ -98,15 +122,15 @@ namespace Akka.Remote
         /// Obsolete. Use <see cref="Watch"/> or <see cref="ReceiveActor.Receive{T}(Action{T}, Predicate{T})">Receive&lt;<see cref="Akka.Actor.Terminated"/>&gt;</see>
         /// </summary>
         [Obsolete("Use Context.Watch and Receive<Terminated> [1.1.0]")]
+#pragma warning disable CS0809
         public override bool IsTerminated => false;
-
+#pragma warning restore CS0809
 
         /// <summary>
         /// Gets the child.
         /// </summary>
         /// <param name="name">The name.</param>
         /// <returns>ActorRef.</returns>
-        /// <exception cref="System.NotImplementedException">TBD</exception>
         public override IActorRef GetChild(IReadOnlyList<string> name)
         {
             switch (name.FirstOrDefault())
@@ -154,7 +178,7 @@ namespace Akka.Remote
             SendSystemMessage(new Akka.Dispatch.SysMsg.Suspend());
         }
 
-        /// <inheritdoc cref="IInternalActorRef"/>
+        
         public override bool IsLocal => false;
 
         /// <inheritdoc cref="IActorRef"/>
@@ -202,7 +226,7 @@ namespace Akka.Remote
         /// </summary>
         /// <param name="message">The message.</param>
         /// <param name="sender">The sender.</param>
-        /// <exception cref="InvalidMessageException">TBD</exception>
+        /// <exception cref="InvalidMessageException">The message is <c>null</c>.</exception>
         protected override void TellInternal(object message, IActorRef sender)
         {
             if(message == null) throw new InvalidMessageException("Message is null.");
@@ -215,7 +239,7 @@ namespace Akka.Remote
         /// </summary>
         /// <param name="watchee">The actor being watched.</param>
         /// <param name="watcher">The actor watching.</param>
-        /// <returns>TBD</returns>
+        /// <returns><c>true</c> if the watch is intercepted for this remote actor; otherwise, <c>false</c>.</returns>
         public bool IsWatchIntercepted(IActorRef watchee, IActorRef watcher)
         {
             return !watcher.Equals(RemoteProvider.RemoteWatcher) && watchee.Equals(this);

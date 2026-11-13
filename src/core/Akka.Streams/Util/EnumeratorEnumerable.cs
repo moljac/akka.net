@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="EnumeratorEnumerable.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,9 +12,9 @@ using System.Collections.Generic;
 namespace Akka.Streams.Util
 {
     /// <summary>
-    /// TBD
+    /// Enumerable that creates an enumerator from a supplied factory.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">Type of elements produced by the enumerator.</typeparam>
     public class EnumeratorEnumerable<T> : IEnumerable<T>
     {
         private readonly Func<IEnumerator<T>> _enumeratorFactory;
@@ -28,20 +28,20 @@ namespace Akka.Streams.Util
             _enumeratorFactory = enumeratorFactory;
         }
 
-        /// <inheritdoc/>
+        
         public IEnumerator<T> GetEnumerator() => _enumeratorFactory();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     /// <summary>
-    /// TBD
+    /// Enumerable backed by one enumerator that restarts with a factory-created sequence when the current sequence ends.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">Type of elements produced by each enumerator.</typeparam>
     public class ContinuallyEnumerable<T> : IEnumerable<T>
     {
         /// <summary>
-        /// TBD
+        /// Enumerator that starts a new factory-created sequence when the current sequence ends.
         /// </summary>
         public sealed class ContinuallyEnumerator : IEnumerator<T>
         {
@@ -57,10 +57,9 @@ namespace Akka.Streams.Util
                 _enumeratorFactory = enumeratorFactory;
             }
 
-            /// <inheritdoc/>
+           
             public void Dispose() => _enumeratorFactory = null;
 
-            /// <inheritdoc/>
             /// <exception cref="ArgumentException">
             /// This exception is thrown when the enumerator has passed the end of an enumerable.
             /// </exception>
@@ -76,10 +75,10 @@ namespace Akka.Streams.Util
                 return true;
             }
 
-            /// <inheritdoc/>
+           
             public void Reset() => _current = _enumeratorFactory();
 
-            /// <inheritdoc/>
+           
             public T Current => _current.Current;
 
             object IEnumerator.Current => Current;
@@ -96,7 +95,7 @@ namespace Akka.Streams.Util
             _continuallyEnumerator = new ContinuallyEnumerator(enumeratorFactory);
         }
 
-        /// <inheritdoc/>
+       
         public IEnumerator<T> GetEnumerator() => _continuallyEnumerator;
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Queue.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Streams.Util;
 using Akka.Util;
@@ -15,7 +16,7 @@ namespace Akka.Streams
     /// <summary>
     /// This interface allows to have the queue as a data source for some stream.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">Type of elements offered to the stream.</typeparam>
     public interface ISourceQueue<in T>
     {
         /// <summary>
@@ -33,32 +34,45 @@ namespace Akka.Streams
         /// you need to wait for last offer call task completion.</para>
         /// </summary>
         /// <param name="element">element to send to a stream</param>
-        /// <returns>TBD</returns>
+        /// <returns>A task that completes with an <see cref="IQueueOfferResult"/> when the offer is handled, including a <see cref="QueueOfferResult.Failure"/> result when enqueueing fails. It can fault when the offer violates the queue's rules or when the stage detaches.</returns>
         Task<IQueueOfferResult> OfferAsync(T element);
+
+        /// <summary>
+        /// Cancellable variant of <see cref="OfferAsync(T)"/>.
+        /// Cancelling <paramref name="cancellationToken"/> while the offer is pending under
+        /// <see cref="OverflowStrategy.Backpressure"/> removes the pending offer from the stage
+        /// and completes the returned task as canceled. If the offer has already completed
+        /// (Enqueued, Dropped, QueueClosed, or failed), cancellation is a no-op.
+        /// Awaiters observe an <see cref="OperationCanceledException"/> carrying the supplied token.
+        /// </summary>
+        /// <param name="element">Element to send to a stream.</param>
+        /// <param name="cancellationToken">Token used to cancel a pending offer.</param>
+        /// <returns>A task that completes with the offer result, fails, or is canceled.</returns>
+        Task<IQueueOfferResult> OfferAsync(T element, CancellationToken cancellationToken);
 
         /// <summary>
         /// Method returns <see cref="Task"/> that will be completed if the stream completes,
         /// or will be failed when the stage faces an internal failure.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A task that completes when the stream completes successfully, or fails with the stream failure.</returns>
         Task WatchCompletionAsync();
     }
 
     /// <summary>
     /// This interface adds completion support to <see cref="ISourceQueue{T}"/>
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">Type of elements offered to the stream.</typeparam>
     public interface ISourceQueueWithComplete<in T> : ISourceQueue<T>
     {
         /// <summary>
-        /// Complete the stream normally. Use <see cref="ISourceQueue{T}.WatchCompletionAsync"/> to be notified of this operation’s success.
+        /// Complete the stream normally. Use <see cref="ISourceQueue{T}.WatchCompletionAsync"/> to be notified of this operation's success.
         /// </summary>
         void Complete();
 
         /// <summary>
-        /// Complete the stream with a failure. Use <see cref="ISourceQueue{T}.WatchCompletionAsync"/> to be notified of this operation’s success.
+        /// Complete the stream with a failure. Use <see cref="ISourceQueue{T}.WatchCompletionAsync"/> to be notified of this operation's success.
         /// </summary>
-        /// <param name="ex">TBD</param>
+        /// <param name="ex">Failure that terminates the stream.</param>
         void Fail(Exception ex);
 
         /// <summary>
@@ -73,16 +87,16 @@ namespace Akka.Streams
     /// Trait allows to have the queue as a sink for some stream.
     /// "SinkQueue" pulls data from stream with backpressure mechanism.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">Type of elements emitted by the stream.</typeparam>
     public interface ISinkQueue<T>
     {
         /// <summary>
         /// Method pulls elements from stream and returns task that:
-        /// <para>- fails if stream is finished</para>
-        /// <para>- completes with None in case if stream is completed after we got task</para>
+        /// <para>- completes with None after buffered elements are drained and upstream completion is observed</para>
+        /// <para>- fails if the stream fails, or if a pull is made after completion has already been reported</para>
         /// <para>- completes with `Some(element)` in case next element is available from stream.</para>
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A task that completes with the next available element, or an empty option after buffered elements are drained and upstream completion is observed.</returns>
         Task<Option<T>> PullAsync();
     }
 }

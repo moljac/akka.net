@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ConsistentHashRouter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -26,7 +26,7 @@ namespace Akka.Routing
         /// <summary>
         /// Default empty <see cref="ConsistentHashMapping"/> implementation
         /// </summary>
-        public static readonly ConsistentHashMapping EmptyConsistentHashMapping = key => null;
+        public static readonly ConsistentHashMapping EmptyConsistentHashMapping = _ => null;
     }
 
     /// <summary>
@@ -118,8 +118,7 @@ namespace Akka.Routing
         private readonly ActorSystem _system;
 
         private readonly AtomicReference<Tuple<Routee[], ConsistentHash<ConsistentRoutee>>> _consistentHashRef =
-            new AtomicReference<Tuple<Routee[], ConsistentHash<ConsistentRoutee>>>(
-                (Tuple.Create<Routee[], ConsistentHash<ConsistentRoutee>>(null, null)));
+            new(Tuple.Create<Routee[], ConsistentHash<ConsistentRoutee>>(null, null));
 
         private readonly Address _selfAddress;
         private readonly int _vnodes;
@@ -264,10 +263,10 @@ namespace Akka.Routing
     internal sealed class ConsistentRoutee
     {
         /// <summary>
-        /// TBD
+        /// Creates a routee wrapper whose string identity includes a full actor address when needed.
         /// </summary>
-        /// <param name="routee">TBD</param>
-        /// <param name="selfAddress">TBD</param>
+        /// <param name="routee">The routee represented on the consistent hash ring.</param>
+        /// <param name="selfAddress">The local system address used to qualify paths without a host and port.</param>
         public ConsistentRoutee(Routee routee, Address selfAddress)
         {
             SelfAddress = selfAddress;
@@ -275,12 +274,12 @@ namespace Akka.Routing
         }
 
         /// <summary>
-        /// TBD
+        /// The routee represented by this ring node.
         /// </summary>
         public Routee Routee { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// The local address used to qualify local actor paths for the ring identity.
         /// </summary>
         public Address SelfAddress { get; private set; }
 
@@ -502,7 +501,7 @@ namespace Akka.Routing
         /// <returns>The router configured with the auxiliary information.</returns>
         public override RouterConfig WithFallback(RouterConfig routerConfig)
         {
-            if (routerConfig is FromConfig || routerConfig is NoRouter)
+            if (routerConfig is FromConfig or NoRouter)
             {
                 return OverrideUnsetConfig(routerConfig);
             }
@@ -644,19 +643,6 @@ namespace Akka.Routing
         }
 
         /// <summary>
-        /// Obsolete. Use <see cref="ConsistentHashingGroup(IEnumerable{System.String})"/> instead.
-        /// <code>
-        /// new ConsistentHashingGroup(actorRefs.Select(c => c.Path.ToString()))
-        /// </code>
-        /// </summary>
-        /// <param name="routees">N/A</param>
-        [Obsolete("Use new ConsistentHashingGroup(actorRefs.Select(c => c.Path.ToString())) instead [1.1.0]")]
-        public ConsistentHashingGroup(IEnumerable<IActorRef> routees)
-            : this(routees.Select(c => c.Path.ToString()))
-        {
-        }
-
-        /// <summary>
         /// Initializes a new instance of the <see cref="ConsistentHashingGroup"/> class.
         /// </summary>
         /// <param name="paths">An enumeration of actor paths used by the group router.</param>
@@ -765,7 +751,7 @@ namespace Akka.Routing
         /// <returns>The router configured with the auxiliary information.</returns>
         public override RouterConfig WithFallback(RouterConfig routerConfig)
         {
-            if (routerConfig is FromConfig || routerConfig is NoRouter)
+            if (routerConfig is FromConfig or NoRouter)
             {
                 return base.WithFallback(routerConfig);
             }

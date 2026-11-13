@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="WriteJournal.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -14,14 +14,14 @@ using Akka.Annotations;
 namespace Akka.Persistence.Journal
 {
     /// <summary>
-    /// TBD
+    /// Base class for the journal persistence
     /// </summary>
     public abstract class WriteJournalBase : ActorBase
     {
         private readonly EventAdapters _eventAdapters;
 
         /// <summary>
-        /// TBD
+        /// Initializes the journal base and loads the event adapters registered for this journal plugin.
         /// </summary>
         protected WriteJournalBase()
         {
@@ -30,20 +30,38 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a sequence of atomic writes from the supplied persistent envelopes.
+        /// Applies any registered event adapters to each persistent message's payload.
         /// </summary>
-        /// <param name="resequenceables">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="resequenceables">The persistent envelopes to prepare for writing.</param>
+        /// <returns>
+        /// A lazily generated sequence containing one adapted <see cref="AtomicWrite"/> for each
+        /// input envelope that is an <see cref="AtomicWrite"/>. Other envelope types are skipped.
+        /// Each persistent message is copied with its sender set to <see cref="ActorRefs.NoSender"/>
+        /// before its payload is adapted. The copy retains the payload and manifest and uses the
+        /// source sequence number, persistence identifier, deletion flag, and writer GUID; its
+        /// timestamp is not copied. Event adapters may then change the payload or manifest.
+        /// </returns>
         protected IEnumerable<AtomicWrite> PreparePersistentBatch(IEnumerable<IPersistentEnvelope> resequenceables)
         {
-            return resequenceables
-               .OfType<AtomicWrite>()
-               .Select(aw => new AtomicWrite(((IEnumerable<IPersistentRepresentation>)aw.Payload)
-                    .Select(p => AdaptToJournal(p.Update(p.SequenceNr, p.PersistenceId, p.IsDeleted, ActorRefs.NoSender, p.WriterGuid))).ToImmutableList()));
+            foreach (var resequenceable in resequenceables)
+            {
+                if (resequenceable is not AtomicWrite) continue;
+                
+                var result = ImmutableList.CreateBuilder<IPersistentRepresentation>();
+
+                foreach (var representation in (IEnumerable<IPersistentRepresentation>)resequenceable.Payload)
+                {
+                    var adapted = AdaptToJournal(representation.Update(representation.SequenceNr, representation.PersistenceId, representation.IsDeleted,
+                        ActorRefs.NoSender, representation.WriterGuid));
+                    result.Add(adapted);
+                }
+                yield return new AtomicWrite(result.ToImmutable());
+            }
         }
 
         /// <summary>
-        /// INTERNAL API
+        /// Apply registered eventadapter to the data payload
         /// </summary>
         [InternalApi]
         protected IEnumerable<IPersistentRepresentation> AdaptFromJournal(IPersistentRepresentation representation)
@@ -55,7 +73,7 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// INTERNAL API
+        /// Apply any registered eventadapter to the data payload
         /// </summary>
         protected IPersistentRepresentation AdaptToJournal(IPersistentRepresentation representation)
         {

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterSettings.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -22,8 +22,8 @@ namespace Akka.Cluster
     /// </summary>
     public sealed class ClusterSettings
     {
-        readonly Config _failureDetectorConfig;
-        readonly string _useDispatcher;
+        private readonly Config _failureDetectorConfig;
+        private readonly string _useDispatcher;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ClusterSettings"/> class.
@@ -34,8 +34,8 @@ namespace Akka.Cluster
         {
             //TODO: Requiring!
             var clusterConfig = config.GetConfig("akka.cluster");
-            if (clusterConfig.IsNullOrEmpty())
-                throw ConfigurationException.NullOrEmptyConfig<ClusterSettings>("akka.cluster");
+            if (clusterConfig?.GetConfig("failure-detector") == null)
+                throw new ConfigurationException($"Failed to instantiate {nameof(ClusterSettings)}: Configuration does not contain `akka.cluster` node. Did you forgot to set the 'akka.cluster.provider' HOCON property to 'cluster'?");
 
             LogInfoVerbose = clusterConfig.GetBoolean("log-info-verbose", false);
             LogInfo = LogInfoVerbose || clusterConfig.GetBoolean("log-info", false);
@@ -53,6 +53,10 @@ namespace Akka.Cluster
             GossipInterval = clusterConfig.GetTimeSpan("gossip-interval", null);
             GossipTimeToLive = clusterConfig.GetTimeSpan("gossip-time-to-live", null);
             LeaderActionsInterval = clusterConfig.GetTimeSpan("leader-actions-interval", null);
+            PruneGossipTombstonesAfter = clusterConfig.GetTimeSpan("prune-gossip-tombstones-after", null);
+            if (PruneGossipTombstonesAfter <= TimeSpan.Zero)
+                throw new ConfigurationException(
+                    $"[akka.cluster.prune-gossip-tombstones-after] must be a timespan greater than 0s. Received [{PruneGossipTombstonesAfter}]");
             UnreachableNodesReaperInterval = clusterConfig.GetTimeSpan("unreachable-nodes-reaper-interval", null);
             PublishStatsInterval = clusterConfig.GetTimeSpanWithOffSwitch("publish-stats-interval");
 
@@ -66,7 +70,9 @@ namespace Akka.Cluster
                 ) ? TimeSpan.Zero :
                 clusterConfig.GetTimeSpan("down-removal-margin", null);
 
+#pragma warning disable CS0618
             AutoDownUnreachableAfter = clusterConfig.GetTimeSpanWithOffSwitch("auto-down-unreachable-after");
+#pragma warning restore CS0618
 
             Roles = clusterConfig.GetStringList("roles", new string[] { }).ToImmutableHashSet();
             AppVersion = Util.AppVersion.Create(clusterConfig.GetString("app-version"));
@@ -89,14 +95,15 @@ namespace Akka.Cluster
             var downingProviderClassName = clusterConfig.GetString("downing-provider-class", null);
             if (!string.IsNullOrEmpty(downingProviderClassName))
                 DowningProviderType = Type.GetType(downingProviderClassName, true);
+#pragma warning disable CS0618
             else if (AutoDownUnreachableAfter.HasValue)
+#pragma warning restore CS0618
                 DowningProviderType = typeof(AutoDowning);
             else
                 DowningProviderType = typeof(NoDowning);
 
             RunCoordinatedShutdownWhenDown = clusterConfig.GetBoolean("run-coordinated-shutdown-when-down", false);
-
-            // TODO: replace with a switch expression when we upgrade to C#8 or later
+            
             TimeSpan GetWeaklyUpDuration()
             {
                 var cKey = "allow-weakly-up-members";
@@ -118,6 +125,7 @@ namespace Akka.Cluster
 
             WeaklyUpAfter = GetWeaklyUpDuration();
 
+            UseLegacyHeartbeatMessage = clusterConfig.GetBoolean("use-legacy-heartbeat-message", false);
         }
 
         /// <summary>
@@ -151,7 +159,7 @@ namespace Akka.Cluster
         public TimeSpan HeartbeatExpectedResponseAfter { get; }
 
         /// <summary>
-        /// TBD
+        /// The number of cluster members each node is configured to monitor with heartbeats.
         /// </summary>
         public int MonitoredByNrOfMembers { get; }
 
@@ -161,22 +169,22 @@ namespace Akka.Cluster
         public ImmutableList<Address> SeedNodes { get; }
 
         /// <summary>
-        /// TBD
+        /// The timeout used by the seed-node process while waiting for seed-node responses.
         /// </summary>
         public TimeSpan SeedNodeTimeout { get; }
 
         /// <summary>
-        /// TBD
+        /// The delay before retrying a failed cluster join, or <c>null</c> when retries are disabled.
         /// </summary>
         public TimeSpan? RetryUnsuccessfulJoinAfter { get; }
 
         /// <summary>
-        /// TBD
+        /// The delay before shutting down after seed-node joining fails, or <c>null</c> when shutdown is disabled.
         /// </summary>
         public TimeSpan? ShutdownAfterUnsuccessfulJoinSeedNodes { get; }
 
         /// <summary>
-        /// TBD
+        /// The configured initial delay before periodic cluster tasks begin.
         /// </summary>
         public TimeSpan PeriodicTasksInitialDelay { get; }
 
@@ -186,32 +194,42 @@ namespace Akka.Cluster
         public TimeSpan GossipInterval { get; }
 
         /// <summary>
-        /// TBD
+        /// The configured time to live for gossip messages.
         /// </summary>
         public TimeSpan GossipTimeToLive { get; }
 
         /// <summary>
-        /// TBD
+        /// The interval between periodic leader actions.
         /// </summary>
         public TimeSpan LeaderActionsInterval { get; }
 
         /// <summary>
-        /// TBD
+        /// How long the gossip remembers that it removed a member.
+        ///
+        /// The record stops a peer that has not caught up from putting the removed member back into the
+        /// gossip. A partition that outlasts this window re-opens that hole, so the value should sit well
+        /// above the longest partition the cluster is expected to heal from. Defaults to 24 hours.
+        /// </summary>
+        public TimeSpan PruneGossipTombstonesAfter { get; }
+
+        /// <summary>
+        /// The interval at which the cluster checks the failure detector and updates local reachability observations for members.
         /// </summary>
         public TimeSpan UnreachableNodesReaperInterval { get; }
 
         /// <summary>
-        /// TBD
+        /// The interval for publishing internal cluster statistics, or <c>null</c> when periodic publication is disabled.
         /// </summary>
         public TimeSpan? PublishStatsInterval { get; }
 
         /// <summary>
-        /// TBD
+        /// Obsolete. No longer used as of Akka.NET v1.5.
         /// </summary>
+        [Obsolete(message:"Deprecated as of Akka.NET v1.5.2 - clustering defaults to using KeepMajority SBR instead")]
         public TimeSpan? AutoDownUnreachableAfter { get; }
 
         /// <summary>
-        /// TBD
+        /// The roles configured for this actor system's cluster member.
         /// </summary>
         public ImmutableHashSet<string> Roles { get; }
 
@@ -221,45 +239,41 @@ namespace Akka.Cluster
         public AppVersion AppVersion { get; }
 
         /// <summary>
-        /// TBD
+        /// The configured probability of choosing a node with a different gossip view as a gossip recipient.
         /// </summary>
         public double GossipDifferentViewProbability { get; }
 
         /// <summary>
-        /// TBD
+        /// The cluster-size threshold at which the different-view gossip probability begins to decrease.
         /// </summary>
         public int ReduceGossipDifferentViewProbability { get; }
 
         /// <summary>
-        /// TBD
+        /// The dispatcher identifier used for cluster actors.
         /// </summary>
         public string UseDispatcher => _useDispatcher;
 
         /// <summary>
-        /// TBD
+        /// The duration of one tick in the cluster scheduler's timing wheel.
         /// </summary>
         public TimeSpan SchedulerTickDuration { get; }
 
         /// <summary>
-        /// TBD
+        /// The number of ticks in the cluster scheduler's timing wheel.
         /// </summary>
         public int SchedulerTicksPerWheel { get; }
 
         /// <summary>
-        /// TBD
+        /// The minimum number of cluster members required for the cluster to become operational.
         /// </summary>
         public int MinNrOfMembers { get; }
 
         /// <summary>
-        /// TBD
+        /// The minimum member count required for each configured role.
         /// </summary>
         public ImmutableDictionary<string, int> MinNrOfMembersOfRole { get; }
 
-        /// <summary>
-        /// Obsolete. Use <see cref="P:Cluster.DowningProvider.DownRemovalMargin"/>.
-        /// </summary>
-        [Obsolete("Use Cluster.DowningProvider.DownRemovalMargin [1.1.2]")]
-        public TimeSpan DownRemovalMargin { get; }
+        internal TimeSpan DownRemovalMargin { get; }
 
         /// <summary>
         /// Determine whether or not to log heartbeat message in verbose mode.
@@ -272,7 +286,7 @@ namespace Akka.Cluster
         public bool VerboseGossipReceivedLogging { get; }
 
         /// <summary>
-        /// TBD
+        /// The type of the configured downing provider, selected from configuration and legacy auto-down settings.
         /// </summary>
         public Type DowningProviderType { get; }
 
@@ -300,6 +314,12 @@ namespace Akka.Cluster
         /// The leader will move <see cref="MemberStatus.WeaklyUp"/> members to <see cref="MemberStatus.Up"/> status once convergence has been reached.
         /// </summary>
         public TimeSpan WeaklyUpAfter { get; }
+        
+        /// <summary>
+        /// Enable/disable legacy pre-1.4.19 <see cref="ClusterHeartbeatSender.Heartbeat"/> and
+        /// <see cref="ClusterHeartbeatSender.HeartbeatRsp"/> wire format serialization support.
+        /// Set this to true if you're doing a rolling update from Akka.NET version older than 1.4.19.
+        /// </summary>
+        public bool UseLegacyHeartbeatMessage { get; }
     }
 }
-

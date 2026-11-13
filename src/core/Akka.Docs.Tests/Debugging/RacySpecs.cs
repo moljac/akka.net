@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RacySpecs.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,10 +15,9 @@ using Akka.Actor.Dsl;
 using Akka.Streams;
 using Akka.Streams.Dsl;
 using Akka.TestKit;
-using Akka.TestKit.Xunit2;
+using Akka.TestKit.Xunit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace DocsExamples.Debugging
 {
@@ -37,7 +36,7 @@ namespace DocsExamples.Debugging
             {
                 return Sys.ActorOf(act =>
                 {
-                    act.ReceiveAny((o, context) =>
+                    act.ReceiveAny((o, _) =>
                     {
                         actorRef.Forward(o);
                     });
@@ -78,7 +77,7 @@ namespace DocsExamples.Debugging
             {
                 return Sys.ActorOf(act =>
                 {
-                    act.ReceiveAny((o, context) =>
+                    act.ReceiveAny((o, _) =>
                     {
                         actorRef.Forward(o);
                     });
@@ -102,7 +101,7 @@ namespace DocsExamples.Debugging
             // assert
 
             // no raciness - ExpectMsgAllOf doesn't care about order
-            ExpectMsgAllOf("hit1a1", "hit2a1");
+            ExpectMsgAllOf(new []{ "hit1a1", "hit2a1" });
         }
         // </FixedMsgOrdering>
         
@@ -114,7 +113,7 @@ namespace DocsExamples.Debugging
             {
                 return Sys.ActorOf(act =>
                 {
-                    act.ReceiveAny((o, context) =>
+                    act.ReceiveAny((o, _) =>
                     {
                         actorRef.Forward(o);
                     });

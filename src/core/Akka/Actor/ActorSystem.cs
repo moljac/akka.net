@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorSystem.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor.Internal;
@@ -45,7 +46,7 @@ namespace Akka.Actor
             {
             }
 
-            public static readonly Local Instance = new Local();
+            public static readonly Local Instance = new();
         }
 
         public sealed class Remote : ProviderSelection
@@ -54,7 +55,7 @@ namespace Akka.Actor
             {
             }
 
-            public static readonly Remote Instance = new Remote();
+            public static readonly Remote Instance = new();
         }
 
         public sealed class Cluster : ProviderSelection
@@ -63,7 +64,7 @@ namespace Akka.Actor
             {
             }
 
-            public static readonly Cluster Instance = new Cluster();
+            public static readonly Cluster Instance = new();
         }
 
         public sealed class Custom : ProviderSelection
@@ -74,6 +75,23 @@ namespace Akka.Actor
             }
         }
 
+        /// <summary>
+        /// The three built-in providers, keyed by their bare type name. <see cref="GetProvider"/> normalizes
+        /// <c>akka.actor.provider</c> through <see cref="TypeExtensions.TrySplitTypeName"/> before probing this
+        /// table, so every spelling <see cref="Type.GetType(string)"/> itself accepts - no assembly, no space
+        /// after the comma, any assembly identity (version/culture/token) - maps to the same
+        /// <see cref="ProviderSelection"/> instead of being misclassified as <see cref="Custom"/>. Local is
+        /// also accepted with no assembly at all, since it ships bare in <c>akka.conf</c>; Remote and Cluster
+        /// need their assembly to disambiguate a bare name that could belong to any assembly.
+        /// </summary>
+        private static readonly Dictionary<string, (ProviderSelection Selection, string Assembly)> BuiltInProviders =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.Actor.LocalActorRefProvider"] = (Local.Instance, "Akka"),
+                ["Akka.Remote.RemoteActorRefProvider"] = (Remote.Instance, "Akka.Remote"),
+                ["Akka.Cluster.ClusterActorRefProvider"] = (Cluster.Instance, "Akka.Cluster"),
+            };
+
         internal static ProviderSelection GetProvider(string providerClass)
         {
             switch (providerClass)
@@ -81,14 +99,21 @@ namespace Akka.Actor
                 case "local":
                     return Local.Instance;
                 case "remote":
-                case RemoteActorRefProvider: // additional case for older configurations
                     return Remote.Instance;
                 case "cluster":
-                case ClusterActorRefProvider: // additional case for older configurations
                     return Cluster.Instance;
-                default:
-                    return new Custom(providerClass);
             }
+
+            if (TypeExtensions.TrySplitTypeName(providerClass, out var name, out var assembly) &&
+                BuiltInProviders.TryGetValue(name, out var row) &&
+                (assembly is null
+                    ? row.Selection is Local
+                    : string.Equals(assembly, row.Assembly, StringComparison.OrdinalIgnoreCase)))
+            {
+                return row.Selection;
+            }
+
+            return new Custom(providerClass);
         }
     }
 
@@ -113,10 +138,13 @@ namespace Akka.Actor
             ActorRefProvider = actorRefProvider;
         }
 
+#pragma warning disable CS1574, CS1584, CS1581, CS1580
         /// <summary>
         /// Configuration to use for the <see cref="ActorSystem"/>. If no <see cref="Config"/> is given, the default reference
-        /// configuration will be loaded via <see cref="ConfigurationFactory.Load"/>.
+        /// configuration will be loaded via <see cref="ConfigurationFactory.Default()"/> in .NET Core or
+        /// <see cref="ConfigurationFactory.Load()"/> in .NET Standard.
         /// </summary>
+#pragma warning restore CS1574, CS1584, CS1581, CS1580
         public Option<Config> Config { get; }
 
         /// <summary>
@@ -259,8 +287,11 @@ namespace Akka.Actor
         public static ActorSystem Create(string name, ActorSystemSetup setup)
         {
             var bootstrapSetup = setup.Get<BootstrapSetup>();
-            var appConfig = bootstrapSetup.FlatSelect(_ => _.Config).GetOrElse(ConfigurationFactory.Load());
-
+            #if NETSTANDARD
+            var appConfig = bootstrapSetup.FlatSelect(s => s.Config).GetOrElse(ConfigurationFactory.Load());
+            #else
+            var appConfig = bootstrapSetup.FlatSelect(s => s.Config).GetOrElse(ConfigurationFactory.Default());
+            #endif
             return CreateAndStartSystem(name, appConfig, setup);
         }
 
@@ -364,7 +395,7 @@ namespace Akka.Actor
         /// </returns>
         public abstract Task Terminate();
 
-        internal abstract void FinalTerminate();
+        internal abstract Task FinalTerminate();
 
         /// <summary>
         /// Returns a task which will be completed after the <see cref="ActorSystem"/> has been
@@ -385,7 +416,6 @@ namespace Akka.Actor
 
         private bool _isDisposed; //Automatically initialized to false;
 
-        /// <inheritdoc/>
         public void Dispose()
         {
             Dispose(true);
@@ -400,26 +430,19 @@ namespace Akka.Actor
             // runtime from inside the finalizer and you should not reference
             // other objects. Only unmanaged resources can be disposed.
 
-            try
+            //Make sure Dispose does not get called more than once, by checking the disposed field
+            if (!_isDisposed)
             {
-                //Make sure Dispose does not get called more than once, by checking the disposed field
-                if (!_isDisposed)
+                if (disposing)
                 {
-                    if (disposing)
-                    {
-                        Log.Debug("Disposing system");
-                        Terminate().Wait(); // System needs to be disposed before method returns
-                    }
-
-                    //Clean up unmanaged resources
+                    Log.Debug("Disposing system");
+                    Terminate().Wait(); // System needs to be disposed before method returns
                 }
 
-                _isDisposed = true;
+                //Clean up unmanaged resources
             }
-            finally
-            {
 
-            }
+            _isDisposed = true;
         }
 
         /// <summary>

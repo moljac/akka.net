@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="GraphBackedFlowSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,7 +13,6 @@ using Akka.Streams.TestKit;
 using Akka.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 // ReSharper disable InvokeAsExtensionMethod
 
 namespace Akka.Streams.Tests.Dsl
@@ -92,7 +91,7 @@ namespace Akka.Streams.Tests.Dsl
 
             var flow =
                 Flow.FromGraph(GraphDsl.Create(PartialGraph(),
-                    (b, partial) => new FlowShape<int, string>(partial.Inlet, partial.Outlet)));
+                    (_, partial) => new FlowShape<int, string>(partial.Inlet, partial.Outlet)));
 
             Source1.Via(flow).Select(int.Parse).To(Sink.FromSubscriber(probe)).Run(Materializer);
 
@@ -106,11 +105,11 @@ namespace Akka.Streams.Tests.Dsl
 
             var flow1 =
                 Flow.FromGraph(GraphDsl.Create(PartialGraph(),
-                    (b, partial) => new FlowShape<int, string>(partial.Inlet, partial.Outlet)));
+                    (_, partial) => new FlowShape<int, string>(partial.Inlet, partial.Outlet)));
 
             var flow2 =
                 Flow.FromGraph(GraphDsl.Create(Flow.Create<string>().Select(int.Parse),
-                    (b, importFlow) => new FlowShape<string, int>(importFlow.Inlet, importFlow.Outlet)));
+                    (_, importFlow) => new FlowShape<string, int>(importFlow.Inlet, importFlow.Outlet)));
 
             Source1.Via(flow1).Via(flow2).To(Sink.FromSubscriber(probe)).Run(Materializer);
 
@@ -124,7 +123,7 @@ namespace Akka.Streams.Tests.Dsl
 
             var flow =
                 Flow.FromGraph(GraphDsl.Create(Flow.Create<int>().Select(x=>x*2),
-                    (b, importFlow) => new FlowShape<int, int>(importFlow.Inlet, importFlow.Outlet)));
+                    (_, importFlow) => new FlowShape<int, int>(importFlow.Inlet, importFlow.Outlet)));
 
             RunnableGraph.FromGraph(GraphDsl.Create(b =>
             {
@@ -199,7 +198,7 @@ namespace Akka.Streams.Tests.Dsl
 
             var flow =
                 Flow.FromGraph(GraphDsl.Create(Flow.Create<string>().Select(int.Parse),
-                    (b, importFlow) => new FlowShape<string, int>(importFlow.Inlet, importFlow.Outlet)));
+                    (_, importFlow) => new FlowShape<string, int>(importFlow.Inlet, importFlow.Outlet)));
 
             source.Via(flow).To(Sink.FromSubscriber(probe)).Run(Materializer);
 
@@ -256,7 +255,7 @@ namespace Akka.Streams.Tests.Dsl
             var probe = this.CreateManualSubscriberProbe<int>();
             var pubSink = Sink.AsPublisher<int>(false);
 
-            var sink = Sink.FromGraph(GraphDsl.Create(pubSink, (b, p) => new SinkShape<int>(p.Inlet)));
+            var sink = Sink.FromGraph(GraphDsl.Create(pubSink, (_, p) => new SinkShape<int>(p.Inlet)));
             var mm = Source1.RunWith(sink, Materializer);
             Source.FromPublisher(mm).To(Sink.FromSubscriber(probe)).Run(Materializer);
 
@@ -293,7 +292,7 @@ namespace Akka.Streams.Tests.Dsl
 
             var flow =
                 Flow.FromGraph(GraphDsl.Create(PartialGraph(),
-                    (b, partial) => new FlowShape<int, string>(partial.Inlet, partial.Outlet)));
+                    (_, partial) => new FlowShape<int, string>(partial.Inlet, partial.Outlet)));
 
             var sink = Sink.FromGraph(GraphDsl.Create(Flow.Create<string>().Select(int.Parse), (b, f) =>
             {
@@ -357,9 +356,9 @@ namespace Akka.Streams.Tests.Dsl
             var inSource = Source.AsSubscriber<int>();
             var outSink = Sink.AsPublisher<int>(false);
 
-            var source = Source.FromGraph(GraphDsl.Create(inSource, (b, src) => new SourceShape<int>(src.Outlet)));
+            var source = Source.FromGraph(GraphDsl.Create(inSource, (_, src) => new SourceShape<int>(src.Outlet)));
 
-            var sink = Sink.FromGraph(GraphDsl.Create(outSink, (b, s) => new SinkShape<int>(s.Inlet)));
+            var sink = Sink.FromGraph(GraphDsl.Create(outSink, (_, s) => new SinkShape<int>(s.Inlet)));
 
             var t = RunnableGraph.FromGraph(GraphDsl.Create(source, sink, Keep.Both, (b, src, snk) =>
             {

@@ -1,20 +1,21 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ByteArraySerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using Akka.Actor;
 
 namespace Akka.Serialization
 {
     /// <summary>
-    /// This is a special <see cref="Serializer"/> that serializes and deserializes byte arrays only
-    /// (just returns the byte array unchanged/uncopied).
+    /// This is a special <see cref="Serializer"/> that serializes and deserializes byte arrays only.
+    /// Legacy byte-array APIs return the supplied array unchanged.
     /// </summary>
-    public class ByteArraySerializer : Serializer
+    public class ByteArraySerializer : SerializerV2
     {
         /// <summary>
         /// Initializes a new instance of the <see cref="ByteArraySerializer" /> class.
@@ -25,10 +26,59 @@ namespace Akka.Serialization
         {
         }
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// A subclass keeps resolving its own id from HOCON via <see cref="Serializer.Identifier"/>.
+        /// </remarks>
+        public override int Identifier => GetType() == typeof(ByteArraySerializer) ? 4 : base.Identifier;
+
         /// <summary>
-        /// Returns whether this serializer needs a manifest in the fromBinary method
+        /// Byte arrays preserve their legacy empty manifest for wire compatibility.
         /// </summary>
-        public override bool IncludeManifest => false;
+        public override string Manifest(object obj)
+        {
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Returns the exact byte array length when <paramref name="obj"/> is a byte array.
+        /// </summary>
+        public override int SizeHint(object obj)
+        {
+            if (obj == null)
+                return 0;
+            if (obj is byte[] bytes)
+                return bytes.Length;
+            throw new NotSupportedException("The object to convert is not a byte array.");
+        }
+
+        /// <summary>
+        /// Serializes the given byte array directly into <paramref name="writer"/>.
+        /// </summary>
+        public override int Serialize(object obj, IBufferWriter<byte> writer)
+        {
+            if (obj == null)
+                return 0;
+
+            if (obj is not byte[] bytes)
+                throw new NotSupportedException("The object to convert is not a byte array.");
+
+            if (bytes.Length == 0)
+                return 0;
+
+            var span = writer.GetSpan(bytes.Length);
+            bytes.CopyTo(span);
+            writer.Advance(bytes.Length);
+            return bytes.Length;
+        }
+
+        /// <summary>
+        /// Deserializes bytes into a byte array.
+        /// </summary>
+        public override object Deserialize(ReadOnlySequence<byte> bytes, string manifest)
+        {
+            return bytes.ToArray();
+        }
 
         /// <summary>
         /// Serializes the given object into a byte array
@@ -42,18 +92,15 @@ namespace Akka.Serialization
         {
             if (obj == null)
                 return null;
-            if (obj is byte[])
-                return (byte[]) obj;
+            if (obj is byte[] bytes)
+                return bytes;
             throw new NotSupportedException("The object to convert is not a byte array.");
         }
 
         /// <summary>
-        /// Deserializes a byte array into an object of type <paramref name="type"/>.
+        /// Deserializes a byte array without copying for legacy compatibility callers.
         /// </summary>
-        /// <param name="bytes">The array containing the serialized object</param>
-        /// <param name="type">The type of object contained in the array</param>
-        /// <returns>The object contained in the array</returns>
-        public override object FromBinary(byte[] bytes, Type type)
+        public override object FromBinary(byte[] bytes, string manifest)
         {
             return bytes;
         }

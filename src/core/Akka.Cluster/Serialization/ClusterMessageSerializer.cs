@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterMessageSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -55,6 +55,16 @@ namespace Akka.Cluster.Serialization
         internal const string GossipEnvelopeManifest = "Akka.Cluster.GossipEnvelope, Akka.Cluster";
         internal const string ClusterRouterPoolManifest = "Akka.Cluster.Routing.ClusterRouterPool, Akka.Cluster";
 
+        private Option<bool> _useLegacyHeartbeatMessageDontUseDirectly = Option<bool>.None;
+        private bool UseLegacyHeartbeatMessage
+        {
+            get
+            {
+                if(_useLegacyHeartbeatMessageDontUseDirectly.IsEmpty)
+                    _useLegacyHeartbeatMessageDontUseDirectly = Cluster.Get(system).Settings.UseLegacyHeartbeatMessage;
+                return _useLegacyHeartbeatMessageDontUseDirectly.Value;
+            }
+        }
 
         public ClusterMessageSerializer(ExtendedActorSystem system) : base(system)
         {
@@ -62,14 +72,24 @@ namespace Akka.Cluster.Serialization
            
         }
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// A subclass keeps resolving its own id from HOCON via <see cref="Serializer.Identifier"/>.
+        /// </remarks>
+        public override int Identifier => GetType() == typeof(ClusterMessageSerializer) ? 5 : base.Identifier;
+
         public override byte[] ToBinary(object obj)
         {
             switch (obj)
             {
                 case ClusterHeartbeatSender.Heartbeat heartbeat:
-                    return AddressToProto(heartbeat.From).ToByteArray();
+                    return UseLegacyHeartbeatMessage
+                        ? AddressToProto(heartbeat.From).ToByteArray()
+                        : HeartbeatToProto(heartbeat).ToByteArray();
                 case ClusterHeartbeatSender.HeartbeatRsp heartbeatRsp:
-                    return UniqueAddressToProto(heartbeatRsp.From).ToByteArray();
+                    return UseLegacyHeartbeatMessage 
+                        ? UniqueAddressToProto(heartbeatRsp.From).ToByteArray() 
+                        : HeartbeatRspToProto(heartbeatRsp).ToByteArray();
                 case GossipEnvelope gossipEnvelope:
                     return GossipEnvelopeToProto(gossipEnvelope);
                 case GossipStatus gossipStatus:
@@ -159,9 +179,9 @@ namespace Akka.Cluster.Serialization
                 case InternalClusterAction.InitJoinNack _:
                     return InitJoinNackManifest;
                 case ClusterHeartbeatSender.Heartbeat _:
-                    return HeartBeatManifestPre1419;
+                    return UseLegacyHeartbeatMessage ? HeartBeatManifestPre1419 : HeartBeatManifest;
                 case ClusterHeartbeatSender.HeartbeatRsp _:
-                    return HeartBeatRspManifestPre1419;
+                    return UseLegacyHeartbeatMessage ? HeartBeatRspManifestPre1419 : HeartBeatRspManifest;
                 case InternalClusterAction.ExitingConfirmed _:
                     return ExitingConfirmedManifest;
                 case GossipStatus _:
@@ -309,19 +329,98 @@ namespace Akka.Cluster.Serialization
 
         private static Proto.Msg.Gossip GossipToProto(Gossip gossip)
         {
-            var allMembers = gossip.Members.ToList();
-            var allAddresses = gossip.Members.Select(x => x.UniqueAddress).ToList();
-            var addressMapping = allAddresses.ZipWithIndex();
-            var allRoles = allMembers.Aggregate(ImmutableHashSet.Create<string>(), (set, member) => set.Union(member.Roles));
-            var roleMapping = allRoles.ZipWithIndex();
-            var allHashes = gossip.Version.Versions.Keys.Select(x => x.ToString()).ToList();
-            var hashMapping = allHashes.ZipWithIndex();
-            var allAppVersions = allMembers.Select(i => i.AppVersion.Version).ToImmutableHashSet();
-            var appVersionMapping = allAppVersions.ZipWithIndex();
+            var allMembers = gossip.Members;
+            
+            // rather than call a bunch of individual LINQ operations, we're going to do it all in one go
+            var allRoles = new HashSet<string>();
+            var addressesToProto = new List<Proto.Msg.UniqueAddress>(gossip.Members.Count);
+            var allAppVersions = new HashSet<string>();
+            var addressMapping = new Dictionary<UniqueAddress, int>();
+            var addrIndex = 0;
+            var roleMapping = new Dictionary<string, int>();
+            var roleIndex = 0;
+            var membersProtos = new List<Proto.Msg.Member>(gossip.Members.Count);
+            var appVersionMapping = new Dictionary<string, int>();
+            var appVersionIndex = 0;
 
-            int MapUniqueAddress(UniqueAddress address) => MapWithErrorMessage(addressMapping, address, "address");
+            foreach (var m in allMembers)
+            {
+                if (!addressMapping.ContainsKey(m.UniqueAddress))
+                {
+                    addressMapping.Add(m.UniqueAddress, addrIndex);
+                    addrIndex += 1;
+                }
+                addressesToProto.Add(UniqueAddressToProto(m.UniqueAddress));
+                var previousRoleCount = allRoles.Count;
+                allRoles.UnionWith(m.Roles);
+                if (allRoles.Count > previousRoleCount) // found a new role
+                {
+                    foreach(var role in m.Roles)
+                    {
+                        // TODO: TryAdd would be nice here
+                        if (roleMapping.ContainsKey(role)) continue;
+                        roleMapping.Add(role, roleIndex);
+                        roleIndex += 1;
+                    }
+                }
+                
+                allAppVersions.Add(m.AppVersion.Version);
+                if (!appVersionMapping.ContainsKey(m.AppVersion.Version))
+                {
+                    appVersionMapping.Add(m.AppVersion.Version, appVersionIndex);
+                    appVersionIndex += 1;
+                }
+                
+                
+                membersProtos.Add(MemberToProto(m));
+            }
+
+            // A tombstoned node is never a member, so its address is missing from the table the
+            // member loop just built. Append it, so the tombstone can index into the same table.
+            var tombstoneProtos = new List<Proto.Msg.Tombstone>(gossip.Tombstones.Count);
+            foreach (var t in gossip.Tombstones)
+            {
+                if (!addressMapping.ContainsKey(t.Key))
+                {
+                    addressMapping.Add(t.Key, addrIndex);
+                    addrIndex += 1;
+                    addressesToProto.Add(UniqueAddressToProto(t.Key));
+                }
+
+                tombstoneProtos.Add(new Proto.Msg.Tombstone
+                {
+                    AddressIndex = MapUniqueAddress(t.Key),
+                    Timestamp = t.Value
+                });
+            }
+
+            //var addressMapping = allAddresses.ZipWithIndex();
+            //var roleMapping = allRoles.ZipWithIndex();
+            var allHashes = gossip.Version.Versions.Keys.Select(x => x.ToString()).ToArray();
+            var hashMapping = allHashes.ZipWithIndex();
+
+            var reachabilityProto = ReachabilityToProto(gossip.Overview.Reachability, addressMapping);
+            //var membersProtos = gossip.Members.Select(c => MemberToProto(c));
+            var seenProtos = gossip.Overview.Seen.Select((Func<UniqueAddress, int>)MapUniqueAddress);
+
+            var overview = new Proto.Msg.GossipOverview();
+            overview.Seen.AddRange(seenProtos);
+            overview.ObserverReachability.AddRange(reachabilityProto);
+
+            var message = new Proto.Msg.Gossip();
+            message.AllAddresses.AddRange(addressesToProto);
+            message.AllRoles.AddRange(allRoles);
+            message.AllHashes.AddRange(allHashes);
+            message.Members.AddRange(membersProtos);
+            message.Overview = overview;
+            message.Version = VectorClockToProto(gossip.Version, hashMapping);
+            message.Tombstones.AddRange(tombstoneProtos);
+            message.AllAppVersions.AddRange(allAppVersions);
+            return message;
 
             int MapAppVersion(AppVersion appVersion) => MapWithErrorMessage(appVersionMapping, appVersion.Version, "appVersion");
+
+            int MapUniqueAddress(UniqueAddress address) => MapWithErrorMessage(addressMapping, address, "address");
 
             Proto.Msg.Member MemberToProto(Member m)
             {
@@ -333,32 +432,33 @@ namespace Akka.Cluster.Serialization
                 protoMember.AppVersionIndex = MapAppVersion(m.AppVersion);
                 return protoMember;
             }
-
-            var reachabilityProto = ReachabilityToProto(gossip.Overview.Reachability, addressMapping);
-            var membersProtos = gossip.Members.Select((Func<Member, Proto.Msg.Member>)MemberToProto);
-            var seenProtos = gossip.Overview.Seen.Select((Func<UniqueAddress, int>)MapUniqueAddress);
-
-            var overview = new Proto.Msg.GossipOverview();
-            overview.Seen.AddRange(seenProtos);
-            overview.ObserverReachability.AddRange(reachabilityProto);
-
-            var message = new Proto.Msg.Gossip();
-            message.AllAddresses.AddRange(allAddresses.Select(UniqueAddressToProto));
-            message.AllRoles.AddRange(allRoles);
-            message.AllHashes.AddRange(allHashes);
-            message.Members.AddRange(membersProtos);
-            message.Overview = overview;
-            message.Version = VectorClockToProto(gossip.Version, hashMapping);
-            message.AllAppVersions.AddRange(allAppVersions);
-            return message;
         }
 
         private static Gossip GossipFrom(Proto.Msg.Gossip gossip)
         {
             var addressMapping = gossip.AllAddresses.Select(UniqueAddressFrom).ToList();
-            var roleMapping = gossip.AllRoles.ToList();
-            var hashMapping = gossip.AllHashes.ToList();
+            var roleMapping = gossip.AllRoles;
+            var hashMapping = gossip.AllHashes;
             var appVersionMapping = gossip.AllAppVersions.Select(i => AppVersion.Create(i)).ToList();
+
+            var members = gossip.Members.Select((Func<Proto.Msg.Member, Member>)MemberFromProto).ToImmutableSortedSet(Member.Ordering);
+            var reachability = ReachabilityFromProto(gossip.Overview.ObserverReachability, addressMapping);
+            var seen = gossip.Overview.Seen.Select(x => addressMapping[x]).ToImmutableHashSet();
+            var overview = new GossipOverview(seen, reachability);
+
+            // gossip written before tombstones existed simply carries none
+            var tombstones = ImmutableDictionary<UniqueAddress, long>.Empty;
+            if (gossip.Tombstones.Count > 0)
+            {
+                var builder = tombstones.ToBuilder();
+                foreach (var t in gossip.Tombstones)
+                {
+                    builder[addressMapping[t.AddressIndex]] = t.Timestamp;
+                }
+                tombstones = builder.ToImmutable();
+            }
+
+            return new Gossip(members, overview, VectorClockFrom(gossip.Version, hashMapping), tombstones);
 
             Member MemberFromProto(Proto.Msg.Member member) =>
                 Member.Create(
@@ -367,14 +467,7 @@ namespace Akka.Cluster.Serialization
                     (MemberStatus)member.Status,
                     member.RolesIndexes.Select(x => roleMapping[x]).ToImmutableHashSet(),
                     appVersionMapping.Any() ? appVersionMapping[member.AppVersionIndex] : AppVersion.Zero
-                    );
-
-            var members = gossip.Members.Select((Func<Proto.Msg.Member, Member>)MemberFromProto).ToImmutableSortedSet(Member.Ordering);
-            var reachability = ReachabilityFromProto(gossip.Overview.ObserverReachability, addressMapping);
-            var seen = gossip.Overview.Seen.Select(x => addressMapping[x]).ToImmutableHashSet();
-            var overview = new GossipOverview(seen, reachability);
-
-            return new Gossip(members, overview, VectorClockFrom(gossip.Version, hashMapping));
+                );
         }
 
         private static IEnumerable<Proto.Msg.ObserverReachability> ReachabilityToProto(Reachability reachability, Dictionary<UniqueAddress, int> addressMapping)
@@ -445,7 +538,7 @@ namespace Akka.Cluster.Serialization
 
         private static int MapWithErrorMessage<T>(Dictionary<T, int> map, T value, string unknown)
         {
-            if (map.TryGetValue(value, out int mapIndex))
+            if (map.TryGetValue(value, out var mapIndex))
                 return mapIndex;
 
             throw new ArgumentException($"Unknown {unknown} [{value}] in cluster message");
@@ -460,6 +553,14 @@ namespace Akka.Cluster.Serialization
             return new ClusterHeartbeatSender.HeartbeatRsp(uniqueAddress, -1, -1);
         }
 
+        private static Proto.Msg.HeartBeatResponse HeartbeatRspToProto(ClusterHeartbeatSender.HeartbeatRsp heartbeatRsp)
+            => new()
+            {
+                From = UniqueAddressToProto(heartbeatRsp.From),
+                CreationTime = heartbeatRsp.CreationTimeNanos,
+                SequenceNr = heartbeatRsp.SequenceNr
+            };
+
         private static ClusterHeartbeatSender.HeartbeatRsp DeserializeHeartbeatRsp(byte[] bytes)
         {
             var hbsp = HeartBeatResponse.Parser.ParseFrom(bytes);
@@ -470,6 +571,14 @@ namespace Akka.Cluster.Serialization
         {
             return new ClusterHeartbeatSender.Heartbeat(AddressFrom(AddressData.Parser.ParseFrom(bytes)), -1, -1);
         }
+
+        private static Proto.Msg.Heartbeat HeartbeatToProto(ClusterHeartbeatSender.Heartbeat heartbeat)
+            => new()
+            {
+                From = AddressToProto(heartbeat.From), 
+                CreationTime = heartbeat.CreationTimeNanos, 
+                SequenceNr = heartbeat.SequenceNr
+            };
 
         private static ClusterHeartbeatSender.Heartbeat DeserializeHeartbeat(byte[] bytes)
         {
@@ -507,25 +616,20 @@ namespace Akka.Cluster.Serialization
         {
             var message = new Proto.Msg.UniqueAddress();
             message.Address = AddressToProto(uniqueAddress.Address);
-            message.Uid = (uint)uniqueAddress.Uid;
+            message.Uid = (ulong)uniqueAddress.Uid;
             return message;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static UniqueAddress UniqueAddressFrom(Proto.Msg.UniqueAddress uniqueAddressProto)
         {
-            return new UniqueAddress(AddressFrom(uniqueAddressProto.Address), (int)uniqueAddressProto.Uid);
+            return new UniqueAddress(AddressFrom(uniqueAddressProto.Address), (long)uniqueAddressProto.Uid);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static string GetObjectManifest(Serializer serializer, object obj)
         {
-            if (serializer is SerializerWithStringManifest manifestSerializer)
-            {
-                return manifestSerializer.Manifest(obj);
-            }
-
-            return obj.GetType().TypeQualifiedName();
+            return Akka.Serialization.Serialization.ManifestFor(serializer, obj);
         }
     }
 }

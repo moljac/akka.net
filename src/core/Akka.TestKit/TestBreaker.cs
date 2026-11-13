@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TestBreaker.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,31 +15,31 @@ using Akka.Pattern;
 namespace Akka.TestKit
 {
     /// <summary>
-    /// TBD
+    /// Exposes circuit-breaker state changes through waitable countdown events for tests.
     /// </summary>
     public class TestBreaker
     {
         /// <summary>
-        /// TBD
+        /// Gets the latch signaled when the circuit breaker enters the half-open state.
         /// </summary>
         public CountdownEvent HalfOpenLatch { get; private set; }
         /// <summary>
-        /// TBD
+        /// Gets the latch signaled when the circuit breaker opens.
         /// </summary>
         public CountdownEvent OpenLatch { get; private set; }
         /// <summary>
-        /// TBD
+        /// Gets the latch signaled when the circuit breaker closes.
         /// </summary>
         public CountdownEvent ClosedLatch { get; private set; }
         /// <summary>
-        /// TBD
+        /// Gets the circuit breaker observed by this test helper.
         /// </summary>
         public CircuitBreaker Instance { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Creates a test helper and registers callbacks for the circuit breaker's state transitions.
         /// </summary>
-        /// <param name="instance">TBD</param>
+        /// <param name="instance">The circuit breaker to observe.</param>
         public TestBreaker(CircuitBreaker instance)
         {
             HalfOpenLatch = new CountdownEvent(1);

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="MultiNodeClusterSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Actor.Setup;
 using Akka.Cluster.Tests.MultiNode;
@@ -19,7 +21,6 @@ using Akka.Dispatch.SysMsg;
 using Akka.Remote.TestKit;
 using Akka.Remote.Transport;
 using Akka.TestKit;
-using Akka.TestKit.Xunit2;
 using Akka.Util.Internal;
 using Xunit;
 
@@ -54,6 +55,12 @@ namespace Akka.Cluster.TestKit
                     publish-stats-interval              = 0 s # always, when it happens
                     failure-detector.heartbeat-interval = 500 ms
                     run-coordinated-shutdown-when-down = off
+
+                    sharding {
+                        retry-interval = 200ms
+                        waiting-for-state-timeout = 200ms
+                    }
+                    #downing-provider-class = """" # disable default SBR
                 }
                 akka.loglevel = INFO
                 akka.log-dead-letters = off
@@ -76,47 +83,26 @@ namespace Akka.Cluster.TestKit
             public sealed class SendEnd
             {
                 private SendEnd() { }
-                private static readonly SendEnd _instance = new SendEnd();
-                public static SendEnd Instance
-                {
-                    get
-                    {
-                        return _instance;
-                    }
-                }
+                public static SendEnd Instance { get; } = new();
             }
 
             public sealed class End
             {
                 private End() { }
-                private static readonly End _instance = new End();
-                public static End Instance
-                {
-                    get
-                    {
-                        return _instance;
-                    }
-                }
+                public static End Instance { get; } = new();
             }
 
             public sealed class EndAck
             {
                 private EndAck() { }
-                private static readonly EndAck _instance = new EndAck();
-                public static EndAck Instance
-                {
-                    get
-                    {
-                        return _instance;
-                    }
-                }
+                public static EndAck Instance { get; } = new();
             }
 
             readonly IActorRef _testActor;
             readonly Address _target;
 
             /// <summary>
-            /// 
+            ///
             /// </summary>
             /// <param name="testActor">A reference to a <see cref="TestActor"/> or <see cref="TestProbe"/>.</param>
             /// <param name="target">CAN BE NULL</param>
@@ -184,8 +170,7 @@ namespace Akka.Cluster.TestKit
             get { return Roles.Count; }
         }
 
-        readonly ConcurrentDictionary<RoleName, Address> _cachedAddresses =
-            new ConcurrentDictionary<RoleName, Address>();
+        readonly ConcurrentDictionary<RoleName, Address> _cachedAddresses = new();
 
         protected override void AtStartup()
         {
@@ -216,11 +201,11 @@ namespace Akka.Cluster.TestKit
                 foreach (var pattern in patterns)
                     EventFilter.Info(new Regex(pattern)).Mute();
 
-                MuteDeadLetters(sys, 
+                MuteDeadLetters(sys,
                     typeof(ClusterHeartbeatSender.Heartbeat),
                     typeof(ClusterHeartbeatSender.HeartbeatRsp),
                     typeof(GossipEnvelope),
-                    typeof(GossipStatus), 
+                    typeof(GossipStatus),
                     typeof(GossipStatus),
                     typeof(InternalClusterAction.ITick),
                     typeof(PoisonPill),
@@ -275,9 +260,23 @@ namespace Akka.Cluster.TestKit
         }
 
         /// <summary>
+        /// Use this method for the initial startup of the cluster node
+        /// </summary>
+        public async Task StartClusterNodeAsync(CancellationToken cancellationToken = default)
+        {
+            if (ClusterView.Members.IsEmpty)
+            {
+                // !!! NOTE: Do not convert this to JoinAsync() !!!
+                // ReSharper disable once MethodHasAsyncOverloadWithCancellation
+                Cluster.Join(GetAddress(Myself));
+                await AwaitAssertAsync(() => Assert.Contains(GetAddress(Myself), ClusterView.Members.Select(m => m.Address)), cancellationToken: cancellationToken);
+            }
+        }
+
+        /// <summary>
         /// Initialize the cluster of the specified member nodes (<paramref name="roles"/>)
         /// and wait until all joined and <see cref="MemberStatus.Up"/>.
-        /// 
+        ///
         /// First node will be started first and others will join the first.
         /// </summary>
         public void AwaitClusterUp(params RoleName[] roles)
@@ -295,7 +294,41 @@ namespace Akka.Cluster.TestKit
             EnterBarrier(roles.Select(r => r.Name).Aggregate((a, b) => a + "-" + b) + "-joined");
         }
 
-        public void JoinWithin(RoleName joinNode, TimeSpan? max = null, TimeSpan? interval = null)
+        /// <summary>
+        /// Initialize the cluster of the specified member nodes (<paramref name="roles"/>)
+        /// and wait until all joined and <see cref="MemberStatus.Up"/>.
+        ///
+        /// First node will be started first and others will join the first.
+        /// </summary>
+        public async Task AwaitClusterUpAsync(CancellationToken cancellationToken, params RoleName[] roles)
+        {
+            // make sure that the node-to-join is started before other join
+            await RunOnAsync(async () => await StartClusterNodeAsync(cancellationToken), roles.First());
+
+            await EnterBarrierAsync(cancellationToken, roles.First().Name + "-started");
+            if (roles.Skip(1).Contains(Myself))
+                await Cluster.JoinAsync(GetAddress(roles.First()), cancellationToken);
+
+            if (roles.Contains(Myself))
+            {
+                await AwaitMembersUpAsync(roles.Length, cancellationToken: cancellationToken);
+            }
+            await EnterBarrierAsync(cancellationToken, roles.Select(r => r.Name).Aggregate((a, b) => a + "-" + b) + "-joined");
+        }
+
+        /// <summary>
+        /// Initialize the cluster of the specified member nodes (<paramref name="roles"/>)
+        /// and wait until all joined and <see cref="MemberStatus.Up"/>.
+        ///
+        /// First node will be started first and others will join the first.
+        /// </summary>
+        /// <remarks>
+        /// Convenience overload that passes <see cref="CancellationToken.None"/>.
+        /// </remarks>
+        public Task AwaitClusterUpAsync(params RoleName[] roles)
+            => AwaitClusterUpAsync(CancellationToken.None, roles);
+
+        public void JoinWithin(RoleName joinNode, [AutoDilate] TimeSpan? max = null, TimeSpan? interval = null)
         {
             if (max == null) max = RemainingOrDefault;
             if (interval == null) interval = TimeSpan.FromSeconds(1);
@@ -351,7 +384,7 @@ namespace Akka.Cluster.TestKit
         /// Assert that the cluster has elected the correct leader
         /// out of all nodes in the cluster. First
         /// member in the cluster ring is expected leader.
-        ///   
+        ///
         /// Note that this can only be used for a cluster with all members
         /// in Up status, i.e. use `awaitMembersUp` before using this method.
         /// The reason for that is that the cluster leader is preferably a
@@ -367,15 +400,14 @@ namespace Akka.Cluster.TestKit
             var leader = ClusterView.Leader;
             var isLeader = leader == ClusterView.SelfAddress;
             _assertions.AssertTrue(isLeader == IsNode(expectedLeader), "expected leader {0}, got leader {1}, members{2}", expectedLeader, leader, ClusterView.Members);
-            _assertions.AssertTrue(ClusterView.Status == MemberStatus.Up ||
-                                   ClusterView.Status == MemberStatus.Leaving,
+            _assertions.AssertTrue(ClusterView.Status is MemberStatus.Up or MemberStatus.Leaving,
                 "Expected cluster view status Up or Leaving but got {0}", ClusterView.Status);
         }
 
         public void AwaitMembersUp(
             int numbersOfMembers,
             ImmutableHashSet<Address> canNotBePartOfMemberRing = null,
-            TimeSpan? timeout = null)
+            [AutoDilate] TimeSpan? timeout = null)
         {
             if (canNotBePartOfMemberRing == null)
                 canNotBePartOfMemberRing = ImmutableHashSet.Create<Address>();
@@ -397,14 +429,56 @@ namespace Akka.Cluster.TestKit
             });
         }
 
+        public async Task AwaitMembersUpAsync(
+            int numbersOfMembers,
+            ImmutableHashSet<Address> canNotBePartOfMemberRing = null,
+            [AutoDilate] TimeSpan? timeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            canNotBePartOfMemberRing ??= ImmutableHashSet.Create<Address>();
+            timeout ??= TimeSpan.FromSeconds(25);
+            
+            await WithinAsync(timeout.Value, async () =>
+            {
+                if (canNotBePartOfMemberRing.Any()) // don't run this on an empty set
+                    await AwaitAssertAsync(() =>
+                    {
+                        foreach (var a in canNotBePartOfMemberRing)
+                            _assertions.AssertFalse(ClusterView.Members.Select(m => m.Address).Contains(a));
+                    }, cancellationToken: cancellationToken);
+                await AwaitAssertAsync(
+                    () => _assertions.AssertEqual(numbersOfMembers, ClusterView.Members.Count), 
+                    cancellationToken: cancellationToken);
+                await AwaitAssertAsync(
+                    () => _assertions.AssertTrue(ClusterView.Members.All(m => m.Status == MemberStatus.Up), "All members should be up"), 
+                    cancellationToken: cancellationToken);
+                // clusterView.leader is updated by LeaderChanged, await that to be updated also
+                var firstMember = ClusterView.Members.FirstOrDefault();
+                var expectedLeader = firstMember?.Address;
+                await AwaitAssertAsync(
+                    () => _assertions.AssertEqual(expectedLeader, ClusterView.Leader), 
+                    cancellationToken: cancellationToken);
+            }, cancellationToken: cancellationToken);
+        }
+
         public void AwaitAllReachable()
         {
             AwaitAssert(() => _assertions.AssertFalse(ClusterView.UnreachableMembers.Any()));
         }
 
+        public async Task AwaitAllReachableAsync()
+        {
+            await AwaitAssertAsync(() => _assertions.AssertFalse(ClusterView.UnreachableMembers.Any()));
+        }
+
         public void AwaitSeenSameState(params Address[] addresses)
         {
-            AwaitAssert(() => _assertions.AssertFalse(addresses.ToImmutableHashSet().Except(ClusterView.SeenBy).Any()));
+            AwaitSeenSameStateAsync(CancellationToken.None, addresses).GetAwaiter().GetResult();
+        }
+
+        public async Task AwaitSeenSameStateAsync(CancellationToken cancellationToken, params Address[] addresses)
+        {
+            await AwaitAssertAsync(() => _assertions.AssertFalse(addresses.ToImmutableHashSet().Except(ClusterView.SeenBy).Any()), cancellationToken: cancellationToken);
         }
 
         /// <summary>
@@ -433,7 +507,7 @@ namespace Akka.Cluster.TestKit
                 _spec = spec;
             }
 
-            /// <inheritdoc/>
+            
             public int Compare(RoleName x, RoleName y)
             {
                 return Member.AddressOrdering.Compare(_spec.GetAddress(x), _spec.GetAddress(y));
@@ -484,4 +558,3 @@ namespace Akka.Cluster.TestKit
         }
     }
 }
-

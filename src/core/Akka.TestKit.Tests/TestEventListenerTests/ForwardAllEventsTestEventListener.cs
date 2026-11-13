@@ -1,15 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ForwardAllEventsTestEventListener.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using Akka.Actor;
 using Akka.Event;
-using Akka.TestKit;
 
-namespace Akka.Testkit.Tests.TestEventListenerTests
+namespace Akka.TestKit.Tests.TestEventListenerTests
 {
     public class ForwardAllEventsTestEventListener : TestEventListener
     {
@@ -17,10 +16,15 @@ namespace Akka.Testkit.Tests.TestEventListenerTests
 
         protected override void Print(LogEvent m)
         {           
-            if(m.Message is ForwardAllEventsTo)
+            if(m.Message is ForwardAllEventsTo to)
             {
-                _forwarder = ((ForwardAllEventsTo)m.Message).Forwarder;
-                _forwarder.Tell("OK");
+                // EventFilterTestBase retries this message until the logger has subscribed, so several can arrive;
+                // reply once per forwarder, or a late extra "OK" is left in the TestActor's queue
+                if (!Equals(_forwarder, to.Forwarder))
+                {
+                    _forwarder = to.Forwarder;
+                    _forwarder.Tell("OK");
+                }
             }
             else if(_forwarder != null)
             {
@@ -34,14 +38,12 @@ namespace Akka.Testkit.Tests.TestEventListenerTests
 
         public class ForwardAllEventsTo
         {
-            private readonly IActorRef _forwarder;
-
             public ForwardAllEventsTo(IActorRef forwarder)
             {
-                _forwarder = forwarder;
+                Forwarder = forwarder;
             }
 
-            public IActorRef Forwarder { get { return _forwarder; } }
+            public IActorRef Forwarder { get; }
         }
     }
 

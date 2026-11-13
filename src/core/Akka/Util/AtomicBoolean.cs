@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AtomicBoolean.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -25,7 +25,7 @@ namespace Akka.Util
         /// <summary>
         /// Sets the initial value of this <see cref="AtomicBoolean"/> to <paramref name="initialValue"/>.
         /// </summary>
-        /// <param name="initialValue">TBD</param>
+        /// <param name="initialValue">The value to assign when the instance is created.</param>
         public AtomicBoolean(bool initialValue = false)
         {
             _value = initialValue ? _trueValue : _falseValue;
@@ -51,8 +51,8 @@ namespace Akka.Util
         /// If <see cref="Value"/> equals <paramref name="expected"/>, then set the Value to
         /// <paramref name="newValue"/>.
         /// </summary>
-        /// <param name="expected">TBD</param>
-        /// <param name="newValue">TBD</param>
+        /// <param name="expected">The value the current state must equal.</param>
+        /// <param name="newValue">The value to assign if the current state equals <paramref name="expected"/>.</param>
         /// <returns><c>true</c> if <paramref name="newValue"/> was set</returns>
         public bool CompareAndSet(bool expected, bool newValue)
         {
@@ -71,8 +71,6 @@ namespace Akka.Util
             return Interlocked.Exchange(ref _value, newValue ? _trueValue : _falseValue) == _trueValue;
         }
 
-        #region Conversion operators
-
         /// <summary>
         /// Performs an implicit conversion from <see cref="AtomicBoolean"/> to <see cref="System.Boolean"/>.
         /// </summary>
@@ -82,18 +80,5 @@ namespace Akka.Util
         {
             return atomicBoolean.Value;
         }
-
-        /// <summary>
-        /// Performs an implicit conversion from <see cref="System.Boolean"/> to <see cref="AtomicBoolean"/>.
-        /// </summary>
-        /// <param name="value">The boolean to convert</param>
-        /// <returns>The result of the conversion.</returns>
-        public static implicit operator AtomicBoolean(bool value)
-        {
-            return new AtomicBoolean(value);
-        }
-
-        #endregion
     }
 }
-

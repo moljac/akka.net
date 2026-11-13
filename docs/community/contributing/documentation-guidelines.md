@@ -235,7 +235,7 @@ build.sh docfx
 
 This will generate all of the static HTML / CSS / JS files needed to render the website into the `~/docs/_site` folder in your local repository.
 
-In order for all of the JavaScript components to work correctly in your browser, you'll need to serve the documents via a local webserver rather than the file system. You can launch DocFx's build in server via the following script in the root of this repository:
+In order for all of the JavaScript components to work correctly in your browser, you'll need to serve the documents via a local web server rather than the file system. You can launch DocFx's build in server via the following script in the root of this repository:
 
 ```console
 serve-docs.cmd
@@ -252,12 +252,12 @@ To run `markdownlint` locally you'll want to have [Node.JS](https://nodejs.org/e
 **Installation**
 To install `markdownlint-cli` execute this command to add it globally to your `npm` command line:
 
-    npm install -g markdownlint-cli markdownlint-rule-titlecase
+    npm install -g markdownlint-cli@0.31.0 markdownlint-rule-titlecase@0.1.0
 
 **Run**
 To run the markdown linting rules for Akka.NET's documentation, in the root directory of the Akka.NET GitHub repository:
 
-    markdownlint "docs/**/*.md" --rules "markdownlint-rule-titlecase"
+    markdownlint "docs/**/*.md"
 
 If there are any linting errors the exact filename, line number, and rule infraction will be listed there. This is the exact same command we run in Akka.NET's pull request validation system.
 

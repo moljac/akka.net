@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RestartDocTests.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -10,12 +10,12 @@ using System.Linq;
 using System.Net.Http;
 using Akka.Streams;
 using Akka.Streams.Dsl;
-using Akka.TestKit.Xunit2;
+using Akka.TestKit.Xunit;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace DocsExamples.Streams
 {
+#if NETCOREAPP
     public class RestartDocTests : TestKit
     {
         private ActorMaterializer Materializer { get; }
@@ -65,4 +65,5 @@ namespace DocsExamples.Streams
             #endregion
         }
     }
+#endif
 }

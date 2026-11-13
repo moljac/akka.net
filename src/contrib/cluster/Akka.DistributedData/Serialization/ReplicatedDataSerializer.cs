@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ReplicatedDataSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -66,11 +66,17 @@ namespace Akka.DistributedData.Serialization
 
         private readonly byte[] _emptyArray = Array.Empty<byte>();
 
+        private readonly bool _backwardCompatWireFormat;
+        
         public ReplicatedDataSerializer(ExtendedActorSystem system) : base(system)
         {
             _ser = new SerializationSupport(system);
+            _backwardCompatWireFormat =
+                system.Settings.Config.GetBoolean("akka.cluster.sharding.distributed-data.backward-compatible-wire-format");
         }
 
+        /// <inheritdoc />
+        public override int Identifier => 11;
 
         public override byte[] ToBinary(object obj)
         {
@@ -242,7 +248,9 @@ namespace Akka.DistributedData.Serialization
                     return typeof(IActorRef);
                 case ValType.Other:
                     {
-                        var type = Type.GetType(t.TypeName);
+                        var type = Type.GetType(t.TypeName)
+                            ?? throw new SerializationException(
+                                $"Could not resolve type [{t.TypeName}] during replicated data deserialization.");
                         return type;
                     }
                 default:
@@ -362,7 +370,9 @@ namespace Akka.DistributedData.Serialization
 
             // runtime type - enter horrible dynamic serialization stuff
 
-            var setContentType = Type.GetType(orset.TypeInfo.TypeName);
+            var setContentType = Type.GetType(orset.TypeInfo.TypeName)
+                ?? throw new SerializationException(
+                    $"Could not resolve ORSet element type [{orset.TypeInfo.TypeName}] during deserialization.");
 
             var eOther = orset.OtherElements.Zip(dots,
                 (i, versionVector) => (_ser.OtherMessageFromProto(i), versionVector))
@@ -510,7 +520,9 @@ namespace Akka.DistributedData.Serialization
             // if we made it this far, we're working with an object type
             // enter reflection magic
 
-            var type = Type.GetType(deltaGroup.TypeInfo.TypeName);
+            var type = Type.GetType(deltaGroup.TypeInfo.TypeName)
+                ?? throw new SerializationException(
+                    $"Could not resolve ORSet.DeltaGroup element type [{deltaGroup.TypeInfo.TypeName}] during deserialization.");
             var orDeltaGroupType = typeof(ORSet<>.DeltaGroup).MakeGenericType(type);
             return (ORSet.IDeltaGroupOperation)Activator.CreateInstance(orDeltaGroupType, arr);
         }
@@ -619,7 +631,9 @@ namespace Akka.DistributedData.Serialization
                     {
                         // runtime type - enter horrible dynamic serialization stuff
 
-                        var setContentType = Type.GetType(gset.TypeInfo.TypeName);
+                        var setContentType = Type.GetType(gset.TypeInfo.TypeName)
+                            ?? throw new SerializationException(
+                                $"Could not resolve GSet element type [{gset.TypeInfo.TypeName}] during deserialization.");
 
                         var eOther = gset.OtherElements.Select(x => _ser.OtherMessageFromProto(x));
 
@@ -735,6 +749,11 @@ namespace Akka.DistributedData.Serialization
             pLww.State = _ser.OtherMessageToProto(register.Value);
             pLww.Timestamp = register.Timestamp;
             pLww.TypeInfo = GetTypeDescriptor(r.RegisterType);
+            
+            // HACK: Really really ugly hack to make sure that v1.5 DData cluster sharding works with v1.4
+            if(_backwardCompatWireFormat && pLww.TypeInfo.TypeName == "Akka.Cluster.Sharding.ShardCoordinator+CoordinatorState, Akka.Cluster.Sharding")
+                pLww.TypeInfo.TypeName = "Akka.Cluster.Sharding.PersistentShardCoordinator+State, Akka.Cluster.Sharding";
+            
             return pLww;
         }
 
@@ -766,9 +785,15 @@ namespace Akka.DistributedData.Serialization
                     }
                 case ValType.Other:
                     {
+                        // HACK: Really really ugly hack to make sure that v1.5 DData cluster sharding works with v1.4
+                        var typeName = proto.TypeInfo.TypeName;
+                        if (typeName == "Akka.Cluster.Sharding.PersistentShardCoordinator+State, Akka.Cluster.Sharding")
+                            typeName = "Akka.Cluster.Sharding.ShardCoordinator+CoordinatorState, Akka.Cluster.Sharding";
+                        
                         // runtime type - enter horrible dynamic serialization stuff
-
-                        var setContentType = Type.GetType(proto.TypeInfo.TypeName);
+                        var setContentType = Type.GetType(typeName)
+                            ?? throw new SerializationException(
+                                $"Could not resolve LWWRegister element type [{typeName}] during deserialization.");
 
                         var setType = LWWRegisterMaker.MakeGenericMethod(setContentType);
                         return (ILWWRegister)setType.Invoke(this, new object[] { proto });
@@ -977,13 +1002,14 @@ namespace Akka.DistributedData.Serialization
         {
             switch (op)
             {
+                case null: throw new ArgumentNullException(nameof(op), $"Failed to serialize {nameof(ORDictionary.IDeltaOperation)} to protobuf");
                 case ORDictionary.IPutDeltaOp p: return ORDictionaryPutToProto(p);
                 case ORDictionary.IRemoveDeltaOp r: return ORDictionaryRemoveToProto(r);
                 case ORDictionary.IRemoveKeyDeltaOp r: return ORDictionaryRemoveKeyToProto(r);
                 case ORDictionary.IUpdateDeltaOp u: return ORDictionaryUpdateToProto(u);
                 case ORDictionary.IDeltaGroupOp g: return ORDictionaryDeltasToProto(g.OperationsSerialization.ToList());
                 default:
-                    throw new SerializationException($"Unrecognized delta operation [{op}]");
+                    throw new SerializationException($"Unrecognized delta operation [({op.GetType().Name}):{op}]");
             }
 
         }
@@ -1061,7 +1087,7 @@ namespace Akka.DistributedData.Serialization
                         {
                             if (entry.EntryData.Count > 1)
                                 throw new ArgumentOutOfRangeException(
-                                    $"Can't deserialize key/value pair in ORDictionary delta - too many pairs on the wire");
+                                    "Can't deserialize key/value pair in ORDictionary delta - too many pairs on the wire");
                             var (key, value) = MapEntryFromProto(entry.EntryData[0]);
 
                             deltaOps.Add(new ORDictionary<TKey, TValue>.PutDeltaOperation(new ORSet<TKey>.AddDeltaOperation((ORSet<TKey>)underlying), (TKey)key, (TValue)value));
@@ -1076,7 +1102,7 @@ namespace Akka.DistributedData.Serialization
                         {
                             if (entry.EntryData.Count > 1)
                                 throw new ArgumentOutOfRangeException(
-                                    $"Can't deserialize key/value pair in ORDictionary delta - too many pairs on the wire");
+                                    "Can't deserialize key/value pair in ORDictionary delta - too many pairs on the wire");
                             var (key, value) = MapEntryFromProto(entry.EntryData[0]);
                             deltaOps.Add(new ORDictionary<TKey, TValue>.RemoveKeyDeltaOperation(new ORSet<TKey>.RemoveDeltaOperation((ORSet<TKey>)underlying), (TKey)key));
                         }
@@ -1108,7 +1134,7 @@ namespace Akka.DistributedData.Serialization
             if (groupOp.OperationsSerialization.Count == 1 &&
                 groupOp.OperationsSerialization.First() is ORDictionary.IPutDeltaOp put)
                 return put;
-            throw new SerializationException($"Improper ORDictionary delta put operation size or kind");
+            throw new SerializationException("Improper ORDictionary delta put operation size or kind");
         }
 
         private ORDictionary.IRemoveDeltaOp ORDictionaryRemoveFromBinary(byte[] bytes)
@@ -1117,7 +1143,7 @@ namespace Akka.DistributedData.Serialization
             if (groupOp.OperationsSerialization.Count == 1 &&
                 groupOp.OperationsSerialization.First() is ORDictionary.IRemoveDeltaOp remove)
                 return remove;
-            throw new SerializationException($"Improper ORDictionary delta remove operation size or kind");
+            throw new SerializationException("Improper ORDictionary delta remove operation size or kind");
         }
 
         private ORDictionary.IRemoveKeyDeltaOp ORDictionaryRemoveKeyFromBinary(byte[] bytes)
@@ -1126,7 +1152,7 @@ namespace Akka.DistributedData.Serialization
             if (groupOp.OperationsSerialization.Count == 1 &&
                 groupOp.OperationsSerialization.First() is ORDictionary.IRemoveKeyDeltaOp removeKey)
                 return removeKey;
-            throw new SerializationException($"Improper ORDictionary delta remove key operation size or kind");
+            throw new SerializationException("Improper ORDictionary delta remove key operation size or kind");
         }
 
         private ORDictionary.IUpdateDeltaOp ORDictionaryUpdateFromBinary(byte[] bytes)
@@ -1135,7 +1161,7 @@ namespace Akka.DistributedData.Serialization
             if (groupOp.OperationsSerialization.Count == 1 &&
                 groupOp.OperationsSerialization.First() is ORDictionary.IUpdateDeltaOp update)
                 return update;
-            throw new SerializationException($"Improper ORDictionary delta update operation size or kind");
+            throw new SerializationException("Improper ORDictionary delta update operation size or kind");
         }
 
         #endregion
@@ -1260,8 +1286,12 @@ namespace Akka.DistributedData.Serialization
 
         private ILWWDictionaryDeltaOperation LWWDictionaryDeltaFromProto<TKey, TValue>(ORDictionary.IDeltaOperation op)
         {
-            var casted = (ORDictionary<TKey, LWWRegister<TValue>>.IDeltaOperation)op;
-            return new LWWDictionary<TKey, TValue>.LWWDictionaryDelta(casted);
+            return op switch
+            {
+                null => throw new ArgumentNullException(nameof(op), $"Failed to deserialize {nameof(ILWWDictionaryDeltaOperation)}"),
+                ORDictionary<TKey, LWWRegister<TValue>>.IDeltaOperation casted => new LWWDictionary<TKey, TValue>.LWWDictionaryDelta(casted),
+                _ => throw new ArgumentException($"Failed to cast cast {op.GetType().FullName} to {typeof(ORDictionary<TKey, LWWRegister<TValue>>.IDeltaOperation).FullName}")
+            };
         }
 
         #endregion

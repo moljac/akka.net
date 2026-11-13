@@ -1,20 +1,21 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LoggingBus.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Actor.Internal;
 using Akka.Configuration;
+using Akka.Util;
 
 namespace Akka.Event
 {
@@ -23,10 +24,28 @@ namespace Akka.Event
     /// </summary>
     public class LoggingBus : ActorEventBus<object, Type>
     {
+        private sealed class LoggerStartInfo
+        {
+            private readonly string _name;
+            
+            public LoggerStartInfo(string loggerName, Type loggerType, IActorRef actorRef)
+            {
+                _name = $"{loggerName} [{loggerType.FullName}]";
+                ActorRef = actorRef;
+            }
+
+            public IActorRef ActorRef { get; }
+            
+            public override string ToString() => _name;
+        }
+
         private static readonly LogLevel[] AllLogLevels = Enum.GetValues(typeof(LogLevel)).Cast<LogLevel>().ToArray();
 
         private static int _loggerId;
-        private readonly List<IActorRef> _loggers = new List<IActorRef>();
+        private readonly List<IActorRef> _loggers = new();
+        
+        // Async load support
+        private readonly CancellationTokenSource _shutdownCts = new();
 
         /// <summary>
         /// The minimum log level that this bus will subscribe to, any <see cref="LogEvent">LogEvents</see> with a log level below will not be subscribed to.
@@ -76,7 +95,8 @@ namespace Akka.Event
         }
 
         /// <summary>
-        /// Starts the loggers defined in the system configuration.
+        /// Starts the loggers from a <see cref="LoggerSetup"/> plus those in <c>akka.loggers</c> (additive).
+        /// Each logger type starts once; the <see cref="LoggerSetup"/> entry wins, as with <c>ExtensionsSetup</c>.
         /// </summary>
         /// <param name="system">The system that the loggers need to start monitoring.</param>
         /// <exception cref="ConfigurationException">
@@ -88,18 +108,37 @@ namespace Akka.Event
         internal void StartDefaultLoggers(ActorSystemImpl system)
         {
             var logName = SimpleName(this) + "(" + system.Name + ")";
-            var logLevel = Logging.LogLevelFor(system.Settings.LogLevel);
-            var loggerTypes = system.Settings.Loggers;
             var timeout = system.Settings.LoggerStartTimeout;
-            var asyncStart = system.Settings.LoggerAsyncStart;
             var shouldRemoveStandardOutLogger = true;
 
-            foreach (var strLoggerType in loggerTypes)
+            LogLevel = Logging.LogLevelFor(system.Settings.LogLevel);
+
+            var loggerSetupOpt = system.Settings.Setup.Get<LoggerSetup>();
+
+            // Resolve every akka.loggers entry before starting anything: a name that cannot be resolved throws,
+            // and a logger already started by then would be left constructing in a system that failed to start.
+            // Creating a Props starts nothing, and keeping Props (not Type) preserves the trim annotations.
+            var hoconLoggers = new List<Props>();
+            foreach (var strLoggerType in system.Settings.Loggers)
             {
-                var loggerType = Type.GetType(strLoggerType);
+                var loggerType = GetBuiltInLoggerType(strLoggerType) ?? GetFirstPartyLoggerType(strLoggerType);
                 if (loggerType == null)
                 {
-                    throw new ConfigurationException($@"Logger specified in config cannot be found: ""{strLoggerType}""");
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                    {
+                        // The LoggerSetup loggers started below already cover a type the name points at, so there is
+                        // nothing left to resolve. This is how a library that ships its logger in default HOCON,
+                        // like Akka.TestKit, keeps that HOCON valid with the switch off.
+                        if (loggerSetupOpt.HasValue && IsRegisteredByLoggerSetup(loggerSetupOpt.Value, strLoggerType))
+                            continue;
+
+                        throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                            "akka.loggers", strLoggerType, "one of the built-in loggers, or a logger registered through LoggerSetup"));
+                    }
+
+                    loggerType = ResolveLoggerType(strLoggerType);
+                    if (loggerType == null)
+                        throw new ConfigurationException($@"Logger specified in config cannot be found: ""{strLoggerType}""");
                 }
 
                 if (typeof(MinimalLogger).IsAssignableFrom(loggerType))
@@ -108,32 +147,55 @@ namespace Akka.Event
                     continue;
                 }
 
-                if (asyncStart)
+                hoconLoggers.Add(Props.Create(loggerType));
+            }
+
+            var taskInfos = new Dictionary<Task, string>();
+            // LoggerSetup first, so it wins when both name the same type
+            var startedTypes = new HashSet<Type>();
+
+            if (loggerSetupOpt.HasValue)
+            {
+                foreach (var props in loggerSetupOpt.Value.Loggers)
                 {
-                    // Not awaiting for result, and not depending on current thread context
-                    Task.Run(() => AddLogger(system, loggerType, logLevel, logName, timeout))
-                        .ContinueWith(t =>
-                        {
-                            if (t.Exception != null)
-                            {
-                                Console.WriteLine($"Logger [{strLoggerType}] specified in config cannot be loaded: {t.Exception}");
-                            }
-                        });
-                }
-                else
-                {
-                    try
+                    var loggerType = props.Type;
+
+                    if (typeof(MinimalLogger).IsAssignableFrom(loggerType))
                     {
-                        AddLogger(system, loggerType, logLevel, logName, timeout);
+                        shouldRemoveStandardOutLogger = false;
+                        continue;
                     }
-                    catch (Exception ex)
-                    {
-                        throw new ConfigurationException($"Logger [{strLoggerType}] specified in config cannot be loaded: {ex}", ex);
-                    }
+
+                    if (!startedTypes.Add(loggerType))
+                        continue;
+
+                    var (task, name) = AddLogger(system, props, logName);
+                    taskInfos[task] = name;
                 }
             }
 
-            LogLevel = logLevel;
+            foreach (var props in hoconLoggers)
+            {
+                if (!startedTypes.Add(props.Type))
+                    continue;
+
+                var (task, name) = AddLogger(system, props, logName);
+                taskInfos[task] = name;
+            }
+
+            if (!Task.WaitAll(taskInfos.Keys.ToArray(), timeout))
+            {
+                foreach (var kvp in taskInfos)
+                {
+                    if (!kvp.Key.IsCompleted)
+                    {
+                        Publish(new Warning(logName, GetType(),
+                            $"Logger {kvp.Value} did not respond within {timeout} to InitializeLogger(bus), " +
+                            $"{nameof(LoggingBus)} will try and wait until it is ready. Since it start up is delayed, " +
+                            "this logger may not capture all startup events correctly."));
+                    }
+                }
+            }
 
             if (system.Settings.DebugUnhandledMessage)
             {
@@ -164,52 +226,162 @@ namespace Akka.Event
                 Publish(new Debug(SimpleName(this), GetType(), $"Shutting down: {Logging.SimpleName(system.Settings.StdoutLogger)} started"));
             }
 
+            // Cancel all pending logger initialization tasks
+            _shutdownCts.Cancel(false);
+            _shutdownCts.Dispose();
+            
+            // Stop all currently running loggers
             foreach (var logger in _loggers)
             {
-                if (!(logger is MinimalLogger))
-                {
-                    Unsubscribe(logger);
-                    if (logger is IInternalActorRef internalActorRef)
-                    {
-                        internalActorRef.Stop();
-                    }
-                }
+                RemoveLogger(logger);
             }
 
             Publish(new Debug(SimpleName(this), GetType(), "All default loggers stopped"));
         }
 
-        private void AddLogger(ActorSystemImpl system, Type loggerType, LogLevel logLevel, string loggingBusName, TimeSpan timeout)
+        private void RemoveLogger(IActorRef logger)
         {
+            if (!(logger is MinimalLogger))
+            {
+                Unsubscribe(logger);
+                if (logger is IInternalActorRef internalActorRef)
+                {
+                    internalActorRef.Stop();
+                }
+            }
+        }
+
+        // Matching the name and returning the type happen inside one method with an annotated return on purpose.
+        // A Dictionary<string, Type> would read better, but it cannot carry DynamicallyAccessedMembers on its
+        // values: the type coming back out of TryGetValue arrives unannotated, and the trimmer then drops the
+        // constructor Props needs - IL2067 here, MissingMethodException on the first log event at run time.
+        // Keyed by bare type name; TypeExtensions.ToBuiltInAkkaTypeName normalizes what HOCON carries.
+        [return: DynamicallyAccessedMembers(Props.ActorTypeMembers)]
+        private static Type GetBuiltInLoggerType(string loggerTypeName)
+        {
+            // Util. qualifies this: System.Reflection.TypeExtensions is in scope here too.
+            var name = Util.TypeExtensions.ToBuiltInAkkaTypeName(loggerTypeName);
+
+            return name switch
+            {
+                "Akka.Event.DefaultLogger" => typeof(DefaultLogger),
+                "Akka.Event.StandardOutLogger" => typeof(StandardOutLogger),
+                "Akka.Event.TraceLogger" => typeof(TraceLogger),
+                _ => null
+            };
+        }
+
+#nullable enable
+        // Akka's own loggers outside Akka.dll. Type name and assembly must both match, so nothing else is probed;
+        // each arm passes its own literal so the trimmer keeps that type. throwOnError defaults to false, so a
+        // missing Akka.Hosting returns null here; a broken dll still throws and that exception should surface.
+        [return: DynamicallyAccessedMembers(Props.ActorTypeMembers)]
+        private static Type? GetFirstPartyLoggerType(string loggerTypeName)
+        {
+            if (!Util.TypeExtensions.TrySplitTypeName(loggerTypeName, out var name, out var assembly))
+                return null;
+
+            return name switch
+            {
+                "Akka.Hosting.Logging.LoggerFactoryLogger" when string.Equals(assembly, "Akka.Hosting", StringComparison.OrdinalIgnoreCase)
+                    => Type.GetType("Akka.Hosting.Logging.LoggerFactoryLogger, Akka.Hosting"),
+                _ => null
+            };
+        }
+
+        // True when loggerTypeName names a type that setup already carries. Type name and assembly must both match,
+        // the same rule the first-party tables use; a bare name only matches a type from Akka itself, which is all
+        // Type.GetType would have found for it.
+        private static bool IsRegisteredByLoggerSetup(LoggerSetup setup, string loggerTypeName)
+        {
+            if (!Util.TypeExtensions.TrySplitTypeName(loggerTypeName, out var name, out var assembly))
+                return false;
+
+            foreach (var props in setup.Loggers)
+            {
+                var type = props.Type;
+                if (!string.Equals(type.FullName, name, StringComparison.Ordinal))
+                    continue;
+
+                if (assembly is null
+                        ? type.Assembly == typeof(LoggingBus).Assembly
+                        : string.Equals(assembly, type.Assembly.GetName().Name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+#nullable restore
+
+        [RequiresUnreferencedCode("Loads the [akka.loggers] type by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        [return: DynamicallyAccessedMembers(Props.ActorTypeMembers)]
+        private static Type ResolveLoggerType(string loggerTypeName)
+        {
+            return Type.GetType(loggerTypeName);
+        }
+
+        // every logger runs on the loggers dispatcher, whatever its Props said
+        private (Task task, string name) AddLogger(ActorSystemImpl system, Props props, string loggingBusName)
+        {
+            props = props.WithDispatcher(system.Settings.LoggersDispatcher);
+            var loggerType = props.Type;
             var loggerName = CreateLoggerName(loggerType);
-            var logger = system.SystemActorOf(Props.Create(loggerType).WithDispatcher(system.Settings.LoggersDispatcher), loggerName);
-            var askTask = logger.Ask(new InitializeLogger(this), timeout);
+            var fullLoggerName = $"{loggerName} [{loggerType.FullName}]";
+            var logger = system.SystemActorOf(props, loggerName);
+            return StartLogger(logger, fullLoggerName, loggingBusName);
+        }
 
-            object response = null;
-            try
-            {
-                response = askTask.Result;
-            }
-            catch (Exception ex) when (ex is TaskCanceledException || ex is AskTimeoutException)
-            {
-                Publish(new Warning(loggingBusName, GetType(),
-                     string.Format("Logger {0} [{2}] did not respond within {1} to InitializeLogger(bus)", loggerName, timeout, loggerType.FullName)));
-            }
-                
-            if (!(response is LoggerInitialized))
-                throw new LoggerInitializationException($"Logger {loggerName} [{loggerType.FullName}] did not respond with LoggerInitialized, sent instead {response}");
-            
+        private (Task task, string name) StartLogger(IActorRef logger, string fullLoggerName, string loggingBusName)
+        {
+            var askTask = logger.Ask(new InitializeLogger(this), Timeout.InfiniteTimeSpan, _shutdownCts.Token);
 
-            _loggers.Add(logger);
-            SubscribeLogLevelAndAbove(logLevel, logger);
-            Publish(new Debug(loggingBusName, GetType(), $"Logger {loggerName} [{loggerType.Name}] started"));
-            
+            // Return the continuation task, not the ask task, so callers wait for
+            // the full initialization sequence including the "Logger started" message
+            var continuationTask = askTask.ContinueWith(t =>
+                {
+                    // _shutdownCts was cancelled while this logger is still loading
+                    if (t.IsCanceled)
+                    {
+                        Publish(new Warning(loggingBusName, GetType(),
+                            $"Logger {fullLoggerName} startup have been cancelled because of system shutdown. Stopping logger."));
+                        RemoveLogger(logger);
+                        return;
+                    }
+
+                    // Ask operation failed with an exception
+                    if (t.IsFaulted)
+                    {
+                        Publish(new Error(t.Exception, loggingBusName, GetType(),
+                            $"Logger {fullLoggerName} failed to respond to initialization request. Stopping logger."));
+                        RemoveLogger(logger);
+                        return;
+                    }
+
+                    // Task ran to completion successfully
+                    var response = t.Result;
+                    if (response is not LoggerInitialized)
+                    {
+                        // Malformed logger, logger did not send a proper ack.
+                        Publish(new Error(null, loggingBusName, GetType(),
+                            $"Logger {fullLoggerName} did not respond with {nameof(LoggerInitialized)}, sent instead {response.GetType()}. Stopping logger."));
+                        RemoveLogger(logger);
+                        return;
+                    }
+
+                    // Logger initialized successfully
+                    _loggers.Add(logger);
+                    SubscribeLogLevelAndAbove(LogLevel, logger);
+                    Publish(new Debug(loggingBusName, GetType(), $"Logger {fullLoggerName} started"));
+                }, TaskContinuationOptions.ExecuteSynchronously);
+            return (continuationTask, fullLoggerName);
         }
 
         private string CreateLoggerName(Type actorClass)
         {
             var id = Interlocked.Increment(ref _loggerId);
-            var name = "log" + id + "-" + SimpleName(actorClass);
+            // a generic type's name has a backtick (MyLogger`1), which isn't legal in an actor path
+            var simpleName = SimpleName(actorClass).Replace('`', '_');
+            var name = "log" + id + "-" + simpleName;
             return name;
         }
 
@@ -240,7 +412,7 @@ namespace Akka.Event
             foreach (var logger in _loggers)
             {
                 //subscribe to given log level and above
-                SubscribeLogLevelAndAbove(logLevel, logger);
+                SubscribeLogLevelAndAbove(LogLevel, logger);
 
                 //unsubscribe to all levels below log level
                 foreach (var level in AllLogLevels.Where(l => l < logLevel))

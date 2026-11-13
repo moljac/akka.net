@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="One2OneBidiFlow.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,17 +13,17 @@ using Akka.Streams.Stage;
 namespace Akka.Streams.Dsl
 {
     /// <summary>
-    /// TBD
+    /// Factory for bidirectional flows that pair each input with one output.
     /// </summary>
     public static class One2OneBidiFlow
     {
         /// <summary>
-        /// TBD
+        /// Creates a bidirectional flow that allows each side's responses to arrive independently while preserving the request-response count.
         /// </summary>
-        /// <typeparam name="TIn">TBD</typeparam>
-        /// <typeparam name="TOut">TBD</typeparam>
-        /// <param name="maxPending">TBD</param>
-        /// <returns>TBD</returns>
+        /// <typeparam name="TIn">The type of elements on the request side.</typeparam>
+        /// <typeparam name="TOut">The type of elements on the response side.</typeparam>
+        /// <param name="maxPending">The maximum number of requests awaiting corresponding responses, or -1 for no limit.</param>
+        /// <returns>A bidirectional flow with identity transformations in both directions and no materialized value.</returns>
         public static BidiFlow<TIn, TIn, TOut, TOut, NotUsed> Apply<TIn, TOut>(int maxPending)
         {
             return BidiFlow.FromGraph(new One2OneBidi<TIn, TOut>(maxPending));
@@ -31,14 +31,14 @@ namespace Akka.Streams.Dsl
     }
 
     /// <summary>
-    /// TBD
+    /// Signals that a response arrived without a corresponding request-side element.
     /// </summary>
     public class UnexpectedOutputException : Exception
     {
         /// <summary>
-        /// TBD
+        /// Creates an exception for an unexpected response element.
         /// </summary>
-        /// <param name="element">TBD</param>
+        /// <param name="element">The response that had no pending request.</param>
         public UnexpectedOutputException(object element) : base(element.ToString())
         {
 
@@ -53,7 +53,7 @@ namespace Akka.Streams.Dsl
     }
 
     /// <summary>
-    /// TBD
+    /// Signals that the response side completed while requests were still awaiting responses.
     /// </summary>
     public class OutputTruncationException : Exception
     {
@@ -68,10 +68,10 @@ namespace Akka.Streams.Dsl
     }
 
     /// <summary>
-    /// TBD
+    /// A bidirectional stage that forwards request-side and response-side elements while enforcing one response per request.
     /// </summary>
-    /// <typeparam name="TIn">TBD</typeparam>
-    /// <typeparam name="TOut">TBD</typeparam>
+    /// <typeparam name="TIn">The type of elements on the request side.</typeparam>
+    /// <typeparam name="TOut">The type of elements on the response side.</typeparam>
     public class One2OneBidi<TIn, TOut> : GraphStage<BidiShape<TIn, TIn, TOut, TOut>>
     {
         #region internal classes
@@ -119,7 +119,7 @@ namespace Akka.Streams.Dsl
                     else
                         _pullSuppressed = true;
                 },
-                    onDownstreamFinish: () => Cancel(_inInlet));
+                    onDownstreamFinish: cause => Cancel(_inInlet, cause));
             }
 
             private void SetOutInletHandler()
@@ -152,22 +152,22 @@ namespace Akka.Streams.Dsl
 
             private void SetOutOutletHandler()
             {
-                SetHandler(_outOutlet, onPull: () => Pull(_outInlet), onDownstreamFinish: () => Cancel(_outInlet));
+                SetHandler(_outOutlet, onPull: () => Pull(_outInlet), onDownstreamFinish: cause => Cancel(_outInlet, cause));
             }
         }
 
         #endregion
 
         private readonly int _maxPending;
-        private readonly Inlet<TIn> _inInlet = new Inlet<TIn>("inIn");
-        private readonly Outlet<TIn> _inOutlet = new Outlet<TIn>("inOut");
-        private readonly Inlet<TOut> _outInlet = new Inlet<TOut>("outIn");
-        private readonly Outlet<TOut> _outOutlet = new Outlet<TOut>("outOut");
+        private readonly Inlet<TIn> _inInlet = new("inIn");
+        private readonly Outlet<TIn> _inOutlet = new("inOut");
+        private readonly Inlet<TOut> _outInlet = new("outIn");
+        private readonly Outlet<TOut> _outOutlet = new("outOut");
 
         /// <summary>
-        /// TBD
+        /// Creates the one-to-one bidirectional stage.
         /// </summary>
-        /// <param name="maxPending">TBD</param>
+        /// <param name="maxPending">The maximum number of requests awaiting responses, or -1 for no limit.</param>
         public One2OneBidi(int maxPending)
         {
             _maxPending = maxPending;
@@ -175,26 +175,26 @@ namespace Akka.Streams.Dsl
         }
 
         /// <summary>
-        /// TBD
+        /// The input and output ports for the request and response directions.
         /// </summary>
         public override BidiShape<TIn, TIn, TOut, TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// The default name attribute for this stage.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = Attributes.CreateName("One2OneBidi");
 
         /// <summary>
-        /// TBD
+        /// Creates the stage logic that tracks pending request elements.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">Attributes inherited from the enclosing graph.</param>
+        /// <returns>The logic instance for this one-to-one stage.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
 
         /// <summary>
-        /// TBD
+        /// Returns the stage name.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>One2OneBidi</c>.</returns>
         public override string ToString() => "One2OneBidi";
     }
 }

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="QueueOfferResult.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,19 +17,19 @@ namespace Akka.Streams
     }
 
     /// <summary>
-    /// TBD
+    /// Result types returned by offers to a stream queue.
     /// </summary>
     public sealed class QueueOfferResult
     {
         /// <summary>
-        /// TBD
+        /// Result indicating that the offer was accepted, either by buffering the element or sending it directly downstream.
         /// </summary>
         public sealed class Enqueued : IQueueOfferResult
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance of the enqueued result.
             /// </summary>
-            public static readonly Enqueued Instance = new Enqueued();
+            public static readonly Enqueued Instance = new();
 
             private Enqueued()
             {
@@ -37,14 +37,14 @@ namespace Akka.Streams
         }
 
         /// <summary>
-        /// TBD
+        /// Result indicating that the offered element was dropped.
         /// </summary>
         public sealed class Dropped : IQueueOfferResult
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance of the dropped result.
             /// </summary>
-            public static readonly Dropped Instance = new Dropped();
+            public static readonly Dropped Instance = new();
 
             private Dropped()
             {
@@ -52,7 +52,7 @@ namespace Akka.Streams
         }
 
         /// <summary>
-        /// TBD
+        /// Result indicating that offering the element failed.
         /// </summary>
         public sealed class Failure : IQueueOfferResult
         {
@@ -72,14 +72,14 @@ namespace Akka.Streams
         }
 
         /// <summary>
-        /// TBD
+        /// Result indicating that the queue is closed and did not accept the offer.
         /// </summary>
         public sealed class QueueClosed : IQueueOfferResult
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance of the closed-queue result.
             /// </summary>
-            public static readonly QueueClosed Instance = new QueueClosed();
+            public static readonly QueueClosed Instance = new();
 
             private QueueClosed()
             {

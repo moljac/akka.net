@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="DurableDataSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,6 +13,8 @@ using Akka.Cluster;
 using Akka.Cluster.TestKit;
 using Akka.Configuration;
 using Akka.DistributedData.Durable;
+using Akka.Event;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using Akka.TestKit;
 using FluentAssertions;
@@ -83,9 +85,9 @@ namespace Akka.DistributedData.Tests.MultiNode
         private readonly IWriteConsistency writeTwo;
         private readonly IReadConsistency readTwo;
 
-        private readonly GCounterKey keyA = new GCounterKey("durable-A");
-        private readonly GCounterKey keyB = new GCounterKey("durable-B");
-        private readonly ORSetKey<string> keyC = new ORSetKey<string>("durable-C");
+        private readonly GCounterKey keyA = new("durable-A");
+        private readonly GCounterKey keyB = new("durable-B");
+        private readonly ORSetKey<string> keyC = new("durable-C");
 
         private int testStepCounter = 0;
 
@@ -388,9 +390,13 @@ namespace Akka.DistributedData.Tests.MultiNode
                 }
 
                 
+                // Pin the fresh system to the SAME wire address for BOTH transports - under
+                // AKKA_MNTR_TRANSPORT=artery the classic dot-netty key is inert and the fresh
+                // system would bind a random artery canonical.port instead.
                 var sys2 = ActorSystem.Create(
-                    "AdditionalSys", 
-                    ConfigurationFactory.ParseString($"akka.remote.dot-netty.tcp.port = {addr.Port}")
+                    "AdditionalSys",
+                    ConfigurationFactory.ParseString($"akka.remote.dot-netty.tcp.port = {addr.Port}" +
+                        $"\nakka.remote.artery.canonical.port = {addr.Port}")
                     .WithFallback(Sys.Settings.Config));
                 try
                 {

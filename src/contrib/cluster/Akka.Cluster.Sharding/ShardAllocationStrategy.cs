@@ -1,12 +1,11 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ShardAllocationStrategy.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Threading.Tasks;
@@ -95,7 +94,7 @@ namespace Akka.Cluster.Sharding
         /// of previously allocated shards.They will then be allocated to the <see cref="ShardRegion"/> with least number of
         /// previously allocated shards, i.e. new members in the cluster.The amount of shards to rebalance in each
         /// round can be limited to make it progress slower since rebalancing too many shards at the same time could
-        /// result in additional load on the system.For example, causing many Event Sourced entites to be started
+        /// result in additional load on the system.For example, causing many Event Sourced entities to be started
         /// at the same time.
         ///
         /// It will not rebalance when there is already an ongoing rebalance in progress.
@@ -140,16 +139,17 @@ namespace Akka.Cluster.Sharding
     /// The number of ongoing rebalancing processes can be limited by `maxSimultaneousRebalance`.
     /// </summary>
     [Serializable]
+    [Obsolete("Use ShardAllocationStrategy.LeastShardAllocationStrategy instead. This will be removed in v1.6.")]
     public class LeastShardAllocationStrategy : AbstractLeastShardAllocationStrategy
     {
         private readonly int _rebalanceThreshold;
         private readonly int _maxSimultaneousRebalance;
 
         /// <summary>
-        /// TBD
+        /// Creates the legacy least-shard allocation strategy with the supplied rebalance threshold and concurrency limit.
         /// </summary>
-        /// <param name="rebalanceThreshold">TBD</param>
-        /// <param name="maxSimultaneousRebalance">TBD</param>
+        /// <param name="rebalanceThreshold">The eligible shard-count difference that must be exceeded before this strategy selects shards for rebalancing.</param>
+        /// <param name="maxSimultaneousRebalance">The maximum number of shards this strategy permits to be in rebalance at once.</param>
         public LeastShardAllocationStrategy(int rebalanceThreshold, int maxSimultaneousRebalance)
         {
             _rebalanceThreshold = rebalanceThreshold;
@@ -157,11 +157,11 @@ namespace Akka.Cluster.Sharding
         }
 
         /// <summary>
-        /// TBD
+        /// Selects shards for another rebalance round when the eligible shard-count difference exceeds the configured threshold.
         /// </summary>
-        /// <param name="currentShardAllocations">TBD</param>
-        /// <param name="rebalanceInProgress">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="currentShardAllocations">The shard regions and the shard ids currently allocated to each region.</param>
+        /// <param name="rebalanceInProgress">Shard ids already being moved; these are excluded from selection and count toward the concurrency limit.</param>
+        /// <returns>A task containing the shard ids selected for this round, or an empty set when no rebalance is selected.</returns>
         public override Task<IImmutableSet<ShardId>> Rebalance(IImmutableDictionary<IActorRef, IImmutableList<ShardId>> currentShardAllocations, IImmutableSet<ShardId> rebalanceInProgress)
         {
             if (rebalanceInProgress.Count < _maxSimultaneousRebalance)
@@ -169,12 +169,11 @@ namespace Akka.Cluster.Sharding
                 var sortedRegionEntries = RegionEntriesFor(currentShardAllocations).OrderBy(i => i, ShardSuitabilityOrdering.Instance).ToImmutableList();
                 if (IsAGoodTimeToRebalance(sortedRegionEntries))
                 {
-                    var suitable = MostSuitableRegion(sortedRegionEntries);
+                    var (_, shards) = MostSuitableRegion(sortedRegionEntries);
                     // even if it is to another new node.
-                    //var mostShards = sortedRegionEntries.Select(r => r.ShardIds.RemoveRange(rebalanceInProgress)).OrderByDescending(i => i.Count()).FirstOrDefault()?.ToArray();
-                    var mostShards = sortedRegionEntries.Select(r => r.ShardIds.Where(s => !rebalanceInProgress.Contains(s))).OrderByDescending(i => i.Count()).FirstOrDefault()?.ToArray();
+                    var mostShards = sortedRegionEntries.Select(r => r.ShardIds.Where(s => !rebalanceInProgress.Contains(s))).MaxBy(i => i.Count())?.ToArray() ?? Array.Empty<string>();
 
-                    var difference = mostShards.Length - suitable.Shards.Count;
+                    var difference = mostShards.Length - shards.Count;
                     if (difference >= _rebalanceThreshold)
                     {
                         var n = Math.Min(

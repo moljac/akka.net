@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LocalSnapshotStore.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,6 +11,7 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Dispatch;
 using Akka.Event;
@@ -27,7 +28,7 @@ namespace Akka.Persistence.Snapshot
     /// </remarks>
     public class LocalSnapshotStore : SnapshotStore
     {
-        private static readonly Regex FilenameRegex = new Regex(@"^snapshot-(.+)-(\d+)-(\d+)", RegexOptions.Compiled);
+        private static readonly Regex FilenameRegex = new(@"^snapshot-(.+)-(\d+)-(\d+)", RegexOptions.Compiled);
 
         private readonly int _maxLoadAttempts;
         private readonly MessageDispatcher _streamDispatcher;
@@ -67,7 +68,7 @@ namespace Akka.Persistence.Snapshot
         private readonly ILoggingAdapter _log;
 
         /// <inheritdoc/>
-        protected override Task<SelectedSnapshot> LoadAsync(string persistenceId, SnapshotSelectionCriteria criteria)
+        protected override Task<SelectedSnapshot> LoadAsync(string persistenceId, SnapshotSelectionCriteria criteria, CancellationToken cancellationToken)
         {
             //
             // Heuristics:
@@ -81,7 +82,7 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <inheritdoc/>
-        protected override Task SaveAsync(SnapshotMetadata metadata, object snapshot)
+        protected override Task SaveAsync(SnapshotMetadata metadata, object snapshot, CancellationToken cancellationToken)
         {
             _saving.Add(metadata);
             return RunWithStreamDispatcher(() =>
@@ -92,7 +93,7 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <inheritdoc/>
-        protected override Task DeleteAsync(SnapshotMetadata metadata)
+        protected override Task DeleteAsync(SnapshotMetadata metadata, CancellationToken cancellationToken)
         {
             _saving.Remove(metadata);
             return RunWithStreamDispatcher(() =>
@@ -109,11 +110,11 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <inheritdoc/>
-        protected override async Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria)
+        protected override async Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria, CancellationToken cancellationToken)
         {
             foreach (var metadata in GetSnapshotMetadata(persistenceId, criteria))
             {
-                await DeleteAsync(metadata);
+                await DeleteAsync(metadata, cancellationToken);
             }
         }
 
@@ -185,10 +186,10 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <summary>
-        /// TBD
+        /// Serializes a snapshot to a temporary file and moves it to its final snapshot file.
         /// </summary>
-        /// <param name="metadata">TBD</param>
-        /// <param name="snapshot">TBD</param>
+        /// <param name="metadata">Metadata used to identify the snapshot file.</param>
+        /// <param name="snapshot">Snapshot data to save.</param>
         protected virtual void Save(SnapshotMetadata metadata, object snapshot)
         {
             var tempFile = WithOutputStream(metadata, stream =>
@@ -213,10 +214,10 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <summary>
-        /// TBD
+        /// Serializes a snapshot wrapper to a stream.
         /// </summary>
-        /// <param name="stream">TBD</param>
-        /// <param name="snapshot">TBD</param>
+        /// <param name="stream">Stream to receive the serialized snapshot.</param>
+        /// <param name="snapshot">Snapshot wrapper to serialize.</param>
         protected void Serialize(Stream stream, Serialization.Snapshot snapshot)
         {
             var bytes = _wrapperSerializer.ToBinary(snapshot);
@@ -224,11 +225,11 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a temporary snapshot file, writes to its stream, and returns the file.
         /// </summary>
-        /// <param name="metadata">TBD</param>
-        /// <param name="p">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="metadata">Metadata used to name the temporary snapshot file.</param>
+        /// <param name="p">Action that writes snapshot data to the stream.</param>
+        /// <returns>The temporary snapshot file.</returns>
         protected FileInfo WithOutputStream(SnapshotMetadata metadata, Action<Stream> p)
         {
             var tmpFile = GetSnapshotFileForWrite(metadata, ".tmp");
@@ -273,6 +274,7 @@ namespace Akka.Persistence.Snapshot
             var snapshots = GetSnapshotDir()
                 .EnumerateFiles("snapshot-" + Uri.EscapeDataString(persistenceId) + "-*", SearchOption.TopDirectoryOnly)
                 .Select(ExtractSnapshotMetadata)
+                .Where(m=>m.PersistenceId == persistenceId)
                 .Where(metadata => metadata != null && criteria.IsMatch(metadata) && !_saving.Contains(metadata)).ToList();
 
             snapshots.Sort(SnapshotMetadata.Comparer);
@@ -289,10 +291,9 @@ namespace Akka.Persistence.Snapshot
                 var seqNrString = match.Groups[2].Value;
                 var timestampTicks = match.Groups[3].Value;
 
-                long sequenceNr, ticks;
-                if (long.TryParse(seqNrString, out sequenceNr) && long.TryParse(timestampTicks, out ticks))
+                if (long.TryParse(seqNrString, out var sequenceNr) && long.TryParse(timestampTicks, out var ticks))
                 {
-                    return new SnapshotMetadata(pid, sequenceNr, new DateTime(ticks));
+                    return new SnapshotMetadata(pid, sequenceNr, DateTime.SpecifyKind(new DateTime(ticks), DateTimeKind.Utc));
                 }
             }
 
@@ -300,7 +301,7 @@ namespace Akka.Persistence.Snapshot
         }
 
         /// <summary>
-        /// TBD
+        /// Creates the snapshot directory before the store begins processing messages.
         /// </summary>
         protected override void PreStart()
         {

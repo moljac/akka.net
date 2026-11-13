@@ -1,22 +1,22 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="InputStreamSourceSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Akka.IO;
+using System.Threading.Tasks;
+using System.Text;
 using Akka.Streams.Dsl;
 using Akka.Streams.TestKit;
-using Akka.Streams.TestKit.Tests;
 using Akka.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Streams.Tests.IO
 {
@@ -171,35 +171,35 @@ namespace Akka.Streams.Tests.IO
         {
             var f = StreamConverters.FromInputStream(() => new ConstInputStream());
 
-            f.TakeWithin(TimeSpan.FromSeconds(5)).RunForeach(it => { }, _materializer).Wait(TimeSpan.FromSeconds(10));
+            f.TakeWithin(TimeSpan.FromSeconds(5)).RunForeach(_ => { }, _materializer).Wait(TimeSpan.FromSeconds(10));
         }
 
         [Fact]
-        public void InputStreamSource_must_read_bytes_from_InputStream()
+        public async Task InputStreamSource_must_read_bytes_from_InputStream()
         {
-            this.AssertAllStagesStopped(() =>
-            {
-                var f = StreamConverters.FromInputStream(() => new ListInputStream(new[] {"a", "b", "c"}))
-                    .RunWith(Sink.First<ByteString>(), _materializer);
+            await this.AssertAllStagesStoppedAsync(() => {
+                var f = StreamConverters.FromInputStream(() => new ListInputStream(new[] { "a", "b", "c" }))
+                .RunWith(Sink.First<ReadOnlySequence<byte>>(), _materializer);
 
                 f.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
-                f.Result.Should().BeEquivalentTo(ByteString.FromString("abc"));
+                f.Result.ToArray().Should().Equal(Encoding.UTF8.GetBytes("abc"));
+                return Task.CompletedTask;
             }, _materializer);
         }
 
         [Fact]
-        public void InputStreamSource_must_emit_as_soon_as_read()
+        public async Task InputStreamSource_must_emit_as_soon_as_read()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var latch = new TestLatch(1);
                 var probe = StreamConverters.FromInputStream(() => new EmittedInputStream(latch), chunkSize: 1)
-                    .RunWith(this.SinkProbe<ByteString>(), _materializer);
+                    .RunWith(this.SinkProbe<ReadOnlySequence<byte>>(), _materializer);
 
                 probe.Request(4);
-                probe.ExpectNext(ByteString.FromString("M"));
+                probe.ExpectNext<ReadOnlySequence<byte>>(m => m.ToArray().SequenceEqual(Encoding.UTF8.GetBytes("M")));
                 latch.CountDown();
                 probe.ExpectComplete();
+                return Task.CompletedTask;
             }, _materializer);
         }
     }

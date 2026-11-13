@@ -1,16 +1,18 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorPathSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using Akka.Actor;
 using Akka.TestKit;
 using Xunit;
+using FluentAssertions;
 
 namespace Akka.Tests.Actor
 {
@@ -22,11 +24,21 @@ namespace Akka.Tests.Actor
             var path = new RootActorPath(new Address("akka.tcp", "mysys")) / "user";
             ActorPathParse(path.ToString()).ShouldBe(path);
         }
+        
+        [Theory]
+        [InlineData(1)]
+        [InlineData(100)]
+        [InlineData(int.MaxValue)]
+        public void SupportsParsingItsStringRepWithUid(int uid)
+        {
+            var path = new RootActorPath(new Address("akka.tcp", "mysys", "localhost", 9110)) / "user";
+            var pathWithUid = path.WithUid(uid);
+            ActorPathParse(pathWithUid.ToSerializationFormat()).ShouldBe(pathWithUid);
+        }
 
         private ActorPath ActorPathParse(string path)
         {
-            ActorPath actorPath;
-            if (ActorPath.TryParse(path, out actorPath))
+            if (ActorPath.TryParse(path, out var actorPath))
                 return actorPath;
             throw new UriFormatException();
         }
@@ -233,10 +245,8 @@ namespace Akka.Tests.Actor
         [Fact]
         public void Paths_with_different_addresses_and_same_elements_should_not_be_equal()
         {
-            ActorPath path1 = null;
-            ActorPath path2 = null;
-            ActorPath.TryParse("akka.tcp://remotesystem@localhost:8080/user", out path1);
-            ActorPath.TryParse("akka://remotesystem/user", out path2);
+            ActorPath.TryParse("akka.tcp://remotesystem@localhost:8080/user", out var path1);
+            ActorPath.TryParse("akka://remotesystem/user", out var path2);
 
             Assert.NotEqual(path2, path1);
         }
@@ -244,10 +254,8 @@ namespace Akka.Tests.Actor
         [Fact]
         public void Paths_with_same_addresses_and_same_elements_should_not_be_equal()
         {
-            ActorPath path1 = null;
-            ActorPath path2 = null;
-            ActorPath.TryParse("akka.tcp://remotesystem@localhost:8080/user", out path1);
-            ActorPath.TryParse("akka.tcp://remotesystem@localhost:8080/user", out path2);
+            ActorPath.TryParse("akka.tcp://remotesystem@localhost:8080/user", out var path1);
+            ActorPath.TryParse("akka.tcp://remotesystem@localhost:8080/user", out var path2);
 
             Assert.Equal(path2, path1);
         }
@@ -268,6 +276,33 @@ namespace Akka.Tests.Actor
             ActorPath.IsValidPathElement(element).ShouldBe(matches);
         }
 
+        [Fact]
+        public void ValidateElementPartsComprehensive()
+        {
+            // NOTE: $ is not a valid starting character
+            var valid = Enumerable.Range(0, 128).Select(i => (char)i).Where(c =>
+                c is >= 'a' and <= 'z' || 
+                c is >= 'A' and <= 'Z' || 
+                c is >= '0' and <= '9' ||
+                ActorPath.ValidSymbols.Contains(c)
+                && c is not '$'
+            ).ToArray();
+
+            foreach (var c in Enumerable.Range(0, 2048).Select(i => (char)i))
+            {
+                if(valid.Contains(c))
+                    ActorPath.IsValidPathElement(new string(new[] { c })).Should().BeTrue();
+                else
+                    ActorPath.IsValidPathElement(new string(new[] { c })).Should().BeFalse();
+            }
+
+            // $ after a valid character should be valid
+            foreach (var c in valid)
+            {
+                ActorPath.IsValidPathElement(new string(new[] { c, '$' })).Should().BeTrue();
+            }
+        }
+
         [Theory]
         [InlineData("$NamesMayNotNormallyStartWithDollarButShouldBeOkWHenEncoded")]
         [InlineData("NamesMayContain$Dollar")]
@@ -277,7 +312,7 @@ namespace Akka.Tests.Actor
         public void Validate_that_url_encoded_values_are_valid_element_parts(string element)
         {
             var urlEncode = System.Net.WebUtility.UrlEncode(element);
-            global::System.Diagnostics.Debug.WriteLine("Encoded \"{0}\" to \"{1}\"", element, urlEncode);
+            Debug.WriteLine("Encoded \"{0}\" to \"{1}\"", element, urlEncode);
             ActorPath.IsValidPathElement(urlEncode).ShouldBeTrue();
         }
     }

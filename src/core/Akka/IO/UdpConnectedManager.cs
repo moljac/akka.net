@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UdpConnectedManager.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,8 +11,6 @@ using Akka.Annotations;
 
 namespace Akka.IO
 {
-    using ByteBuffer = ArraySegment<byte>;
-
     /// <summary>
     /// INTERNAL API
     /// </summary>
@@ -22,9 +20,9 @@ namespace Akka.IO
         private readonly UdpConnectedExt _udpConn;
 
         /// <summary>
-        /// TBD
+        /// Initializes a new instance of the <see cref="UdpConnectedManager"/> class.
         /// </summary>
-        /// <param name="udpConn">TBD</param>
+        /// <param name="udpConn">The UDP connected extension providing settings and socket event argument pooling.</param>
         public UdpConnectedManager(UdpConnectedExt udpConn)
         {
             _udpConn = udpConn;

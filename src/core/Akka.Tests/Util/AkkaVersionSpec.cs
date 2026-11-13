@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AkkaVersionSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -66,8 +66,11 @@ namespace Akka.Tests.Util
             AppVersion.Create("1.2.0-M1").Should().Be(AppVersion.Create("1.2-M1"));
             AppVersion.Create("1.2.3-M1").Should().NotBe(AppVersion.Create("1.2.3-M2"));
             AppVersion.Create("1.2-M1").Should().BeLessThan(AppVersion.Create("1.2.0"));
-            AppVersion.Create("1.2.0-M1").Should().BeLessThan(AppVersion.Create("1.2.0"));
             AppVersion.Create("1.2.3-M2").Should().BeGreaterThan(AppVersion.Create("1.2.3-M1"));
+
+            // ensure comparisons are symmetrical
+            AppVersion.Create("1.2.0-M1").Should().BeLessThan(AppVersion.Create("1.2.0"));
+            AppVersion.Create("1.2.0").Should().BeGreaterThan(AppVersion.Create("1.2.0-M1"));
         }
 
         [Fact]

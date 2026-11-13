@@ -1,14 +1,16 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemoteRestartedQuarantinedSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Text;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using FluentAssertions;
 
@@ -58,7 +60,7 @@ namespace Akka.Remote.Tests.MultiNode
     public class RemoteRestartedQuarantinedSpec : MultiNodeSpec
     {
         private readonly RemoteRestartedQuarantinedMultiNetSpec _config;
-        private readonly Func<RoleName, string, (int, IActorRef)> _identifyWithUid;
+        private readonly Func<RoleName, string, Task<(long, IActorRef)>> _identifyWithUid;
 
         public RemoteRestartedQuarantinedSpec()
             : this(new RemoteRestartedQuarantinedMultiNetSpec())
@@ -70,36 +72,44 @@ namespace Akka.Remote.Tests.MultiNode
         {
             _config = config;
 
-            _identifyWithUid = (role, actorName) =>
+            _identifyWithUid = async (role, actorName) =>
             {
                 Sys.ActorSelection(Node(role) / "user" / actorName).Tell("identify");
-                return ExpectMsg<(int, IActorRef)>();
+                return await ExpectMsgAsync<(long, IActorRef)>();
             };
         }
 
         protected override int InitialParticipantsValueFactory { get; } = 2;
 
         [MultiNodeFact]
-        public void A_restarted_quarantined_system_should_not_crash_the_other_system()
+        public async Task A_restarted_quarantined_system_should_not_crash_the_other_system()
         {
             Sys.ActorOf<RemoteRestartedQuarantinedMultiNetSpec.Subject>("subject");
-            EnterBarrier("subject-started");
+            await EnterBarrierAsync("subject-started");
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
                 var secondAddress = Node(_config.Second).Address;
-                var uid = _identifyWithUid(_config.Second, "subject").Item1;
+                var uid = (await _identifyWithUid(_config.Second, "subject")).Item1;
+
+                // This barrier separates the identify exchanges from the Quarantine() call.
+                //
+                // Without it, the identify that `second` sends can still be in flight when the
+                // quarantine starts. Inbound quarantine enforcement then makes `first` discard
+                // that identify, and `second` receives ThisActorSystemQuarantinedEvent in place of
+                // the uid and ref that it expects.
+                await EnterBarrierAsync("before-quarantined");
 
                 RARP.For(Sys).Provider.Transport.Quarantine(Node(_config.Second).Address, uid);
 
-                EnterBarrier("quarantined");
-                EnterBarrier("still-quarantined");
+                await EnterBarrierAsync("quarantined");
+                await EnterBarrierAsync("still-quarantined");
 
-                TestConductor.Shutdown(_config.Second).Wait();
+                await TestConductor.ShutdownAsync(_config.Second);
 
-                Within(TimeSpan.FromSeconds(30), () =>
+                await WithinAsync(TimeSpan.FromSeconds(30), async () =>
                 {
-                    AwaitAssert(() =>
+                    await AwaitAssertAsync(() =>
                     {
                         Sys.ActorSelection(new RootActorPath(secondAddress)/"user"/"subject")
                             .Tell(new Identify("subject"));
@@ -110,38 +120,69 @@ namespace Akka.Remote.Tests.MultiNode
                 Sys.ActorSelection(new RootActorPath(secondAddress) / "user" / "subject").Tell("shutdown");
             }, _config.First);
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
                 var addr = ((ExtendedActorSystem) Sys).Provider.DefaultAddress;
                 var firstAddress = Node(_config.First).Address;
                 Sys.EventStream.Subscribe(TestActor, typeof (ThisActorSystemQuarantinedEvent));
 
-                var actorRef = _identifyWithUid(_config.First, "subject").Item2;
+                var actorRef = (await _identifyWithUid(_config.First, "subject")).Item2;
 
-                EnterBarrier("quarantined");
+                // See the matching barrier comment in `first`'s block.
+                await EnterBarrierAsync("before-quarantined");
 
-                // Check that quarantine is intact
-                Within(TimeSpan.FromSeconds(30), () =>
+                await EnterBarrierAsync("quarantined");
+
+                // Test that the quarantine is still in effect. The two transports tell the
+                // quarantined system about the quarantine in different ways, thus this test needs
+                // two procedures.
+                //
+                // Classic: the endpoint learns about the quarantine only when it tries to write.
+                // It then logs the warning "The remote system has quarantined this system". The
+                // test must therefore send a message to cause the write, and then look for that
+                // warning.
+                //
+                // Artery: the quarantining system sends an ArteryQuarantined control message to the
+                // peer. The peer publishes ThisActorSystemQuarantinedEvent when the message
+                // arrives. No send from the test is necessary, and there is no equivalent warning
+                // to look for.
+                if (Sys.Settings.Config.GetBoolean("akka.remote.artery.enabled", false))
                 {
-                    AwaitAssert(() =>
+                    await ExpectMsgAsync<ThisActorSystemQuarantinedEvent>(TimeSpan.FromSeconds(10));
+                }
+                else
+                {
+                    await WithinAsync(TimeSpan.FromSeconds(30), async () =>
                     {
-                        EventFilter.Warning(null, null, "The remote system has quarantined this system")
-                            .ExpectOne(TimeSpan.FromSeconds(10), () => actorRef.Tell("boo!"));
+                        await AwaitAssertAsync(() =>
+                        {
+                            EventFilter.Warning(null, null, "The remote system has quarantined this system")
+                                .ExpectOne(TimeSpan.FromSeconds(10), () => actorRef.Tell("boo!"));
+                        });
                     });
-                });
 
-                ExpectMsg<ThisActorSystemQuarantinedEvent>(TimeSpan.FromSeconds(10));
+                    await ExpectMsgAsync<ThisActorSystemQuarantinedEvent>(TimeSpan.FromSeconds(10));
+                }
 
-                EnterBarrier("still-quarantined");
+                await EnterBarrierAsync("still-quarantined");
 
-                Sys.WhenTerminated.Wait(TimeSpan.FromSeconds(10));
+                await Sys.WhenTerminated.WaitAsync(TimeSpan.FromSeconds(10));
 
+                // Set the host and port for both transports, so that the new system starts at the
+                // same address as the old one. Each transport ignores the keys of the other, thus
+                // it is safe to set both.
+                //
+                // The artery keys are necessary. MultiNodeSpec adds a config tier that sets
+                // artery.canonical.port to 0. Without an explicit port here, that tier wins, the
+                // new system binds a random port, and `first` cannot reach it.
                 var sb = new StringBuilder()
                     .AppendLine("akka.remote.retry-gate-closed-for = 0.5 s")
                     .AppendLine("akka.remote.dot-netty.tcp {")
                     .AppendLine("hostname = " + addr.Host)
                     .AppendLine("port = " + addr.Port)
-                    .AppendLine("}");
+                    .AppendLine("}")
+                    .AppendLine("akka.remote.artery.canonical.hostname = " + addr.Host)
+                    .AppendLine("akka.remote.artery.canonical.port = " + addr.Port);
                 var freshSystem = ActorSystem.Create(Sys.Name,
                     ConfigurationFactory.ParseString(sb.ToString()).WithFallback(Sys.Settings.Config));
 
@@ -153,11 +194,11 @@ namespace Akka.Remote.Tests.MultiNode
                 // TODO sometimes it takes long time until the new connection is established,
                 //      It seems like there must first be a transport failure detector timeout, that triggers
                 //      "No response from remote. Handshake timed out or transport failure detector triggered"
-                probe.ExpectMsg<ActorIdentity>(i => i.Subject != null, TimeSpan.FromSeconds(30));
+                await probe.ExpectMsgAsync<ActorIdentity>(i => i.Subject != null, TimeSpan.FromSeconds(30));
 
                 freshSystem.ActorOf<RemoteRestartedQuarantinedMultiNetSpec.Subject>("subject");
 
-                freshSystem.WhenTerminated.Wait(TimeSpan.FromSeconds(10));
+                await freshSystem.WhenTerminated.WaitAsync(TimeSpan.FromSeconds(10));
             }, _config.Second);
         }
     }

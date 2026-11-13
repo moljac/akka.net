@@ -1,8 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-    <Import Project="..\..\common.props" />
   <PropertyGroup>
-      <AssemblyTitle>Akka.Docs.Tutorials</AssemblyTitle>
-      <TargetFrameworks>$(NetFrameworkTestVersion);$(NetTestVersion);$(NetCoreTestVersion)</TargetFrameworks>
+      <TargetFramework>$(NetTestVersion)</TargetFramework>
       <RootNamespace>Tutorials</RootNamespace>
       <IsPackable>false</IsPackable>
   </PropertyGroup>

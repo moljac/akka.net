@@ -1,25 +1,26 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="InputStreamSourceTest.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System;
+using System.Buffers;
 using System.IO;
-using Akka.IO;
 using Akka.Streams.Dsl;
 using Reactive.Streams;
 
 namespace Akka.Streams.Tests.TCK
 {
-    class InputStreamSourceTest : AkkaPublisherVerification<ByteString>
+    class InputStreamSourceTest : AkkaPublisherVerification<ReadOnlySequence<byte>>
     {
-        public override IPublisher<ByteString> CreatePublisher(long elements)
+        public override IPublisher<ReadOnlySequence<byte>> CreatePublisher(long elements)
         {
             return StreamConverters.FromInputStream(() => new InputStream())
                 .WithAttributes(ActorAttributes.CreateDispatcher("akka.test.stream-dispatcher"))
                 .Take(elements)
-                .RunWith(Sink.AsPublisher<ByteString>(false), Materializer);
+                .RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), Materializer);
         }
 
         private sealed class InputStream : Stream

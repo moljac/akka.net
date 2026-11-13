@@ -1,20 +1,22 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorGraphInterpreter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
-using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Annotations;
 using Akka.Event;
 using Akka.Pattern;
 using Akka.Streams.Stage;
+using Akka.Util;
 using Reactive.Streams;
 using static Akka.Streams.Implementation.Fusing.GraphInterpreter;
 
@@ -28,21 +30,21 @@ namespace Akka.Streams.Implementation.Fusing
     public sealed class GraphModule : AtomicModule
     {
         /// <summary>
-        /// TBD
+        /// The modules used to resolve the materialized values produced by stages in this graph module.
         /// </summary>
         public readonly IModule[] MaterializedValueIds;
         /// <summary>
-        /// TBD
+        /// The assembly of stages and connection slots interpreted by this graph module.
         /// </summary>
         public readonly GraphAssembly Assembly;
 
         /// <summary>
-        /// TBD
+        /// Creates a graph module from its assembly, public shape, attributes, and materialized-value module IDs.
         /// </summary>
-        /// <param name="assembly">TBD</param>
-        /// <param name="shape">TBD</param>
-        /// <param name="attributes">TBD</param>
-        /// <param name="materializedValueIds">TBD</param>
+        /// <param name="assembly">The stage and connection assembly for the module.</param>
+        /// <param name="shape">The graph's exposed inlet and outlet shape.</param>
+        /// <param name="attributes">The attributes applied to this module.</param>
+        /// <param name="materializedValueIds">Modules used to look up stage materialized values.</param>
         public GraphModule(GraphAssembly assembly, Shape shape, Attributes attributes, IModule[] materializedValueIds)
         {
             Assembly = assembly;
@@ -52,40 +54,40 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// The shape exposing this graph module's inlets and outlets.
         /// </summary>
         public override Shape Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// The attributes applied to this graph module.
         /// </summary>
         public override Attributes Attributes { get; }
 
         /// <summary>
-        /// TBD
+        /// Returns a module with the supplied attributes and the same assembly, shape, and materialized-value IDs.
         /// </summary>
-        /// <param name="attributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="attributes">The attributes to apply.</param>
+        /// <returns>A graph module with the supplied attributes.</returns>
         public override IModule WithAttributes(Attributes attributes) => new GraphModule(Assembly, Shape, attributes, MaterializedValueIds);
 
         /// <summary>
-        /// TBD
+        /// Creates a copied module with a deep-copied shape and no attributes.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A copied module whose source is this graph module.</returns>
         public override IModule CarbonCopy() => new CopiedModule(Shape.DeepCopy(), Attributes.None, this);
 
         /// <summary>
-        /// TBD
+        /// Returns a module using the supplied shape, wrapping this module when the shape differs.
         /// </summary>
-        /// <param name="newShape">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="newShape">The shape to use for the returned module.</param>
+        /// <returns>This module when the shape is equal, or a composite module with the replacement shape.</returns>
         public override IModule ReplaceShape(Shape newShape) =>
             !newShape.Equals(Shape) ? (IModule)CompositeModule.Create(this, newShape) : this;
 
         /// <summary>
-        /// TBD
+        /// Returns a diagnostic representation of this graph module and its assembly.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A string containing the assembly, shape, attributes, and materialized-value IDs.</returns>
         public override string ToString() => "GraphModule\n" +
                                              $"  {Assembly.ToString().Replace("\n", "\n  ")}\n" +
                                              $"  shape={Shape}, attributes={Attributes}\n" +
@@ -104,7 +106,7 @@ namespace Akka.Streams.Implementation.Fusing
         private readonly Shape _shape;
         private readonly ActorMaterializerSettings _settings;
         /// <summary>
-        /// TBD
+        /// The materializer used to create and run the graph interpreter.
         /// </summary>
         internal readonly ExtendedActorMaterializer Materializer;
 
@@ -139,14 +141,14 @@ namespace Akka.Streams.Implementation.Fusing
         private readonly ActorGraphInterpreter.Resume _resume;
 
         /// <summary>
-        /// TBD
+        /// Creates an interpreter shell for the graph assembly and its materialized stage logics.
         /// </summary>
-        /// <param name="assembly">TBD</param>
-        /// <param name="connections">TBD</param>
-        /// <param name="logics">TBD</param>
-        /// <param name="shape">TBD</param>
-        /// <param name="settings">TbD</param>
-        /// <param name="materializer">TBD</param>
+        /// <param name="assembly">The graph assembly to interpret.</param>
+        /// <param name="connections">The connections created for the assembly's ports.</param>
+        /// <param name="logics">The initialized logic instances for the assembly's stages.</param>
+        /// <param name="shape">The graph shape whose exposed boundaries are attached to the shell.</param>
+        /// <param name="settings">The actor materializer settings used to configure buffers and event processing.</param>
+        /// <param name="materializer">The materializer made available to the interpreter's stages.</param>
         public GraphInterpreterShell(GraphAssembly assembly, Connection[] connections, GraphStageLogic[] logics, Shape shape, ActorMaterializerSettings settings, ExtendedActorMaterializer materializer)
         {
             _assembly = assembly;
@@ -167,38 +169,38 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// Whether this shell has been assigned its interpreter actor.
         /// </summary>
         public bool IsInitialized => Self != null;
         /// <summary>
-        /// TBD
+        /// Whether the interpreter has completed and all exposed boundaries can shut down.
         /// </summary>
         public bool IsTerminated => _interpreterCompleted && CanShutdown;
         /// <summary>
-        /// TBD
+        /// Whether all exposed input-subscription and output-publisher registrations are no longer pending.
         /// </summary>
         public bool CanShutdown => _subscribersPending + _publishersPending == 0;
         /// <summary>
-        /// TBD
+        /// The actor that processes this interpreter shell's boundary events.
         /// </summary>
         public IActorRef Self { get; private set; }
         /// <summary>
-        /// TBD
+        /// The lazily created logger used by this shell.
         /// </summary>
-        public ILoggingAdapter Log => _log ?? (_log = GetLogger());
+        public ILoggingAdapter Log => _log ??= GetLogger();
         /// <summary>
-        /// TBD
+        /// The lazily created graph interpreter for this shell.
         /// </summary>
-        public GraphInterpreter Interpreter => _interpreter ?? (_interpreter = GetInterpreter());
+        public GraphInterpreter Interpreter => _interpreter ??= GetInterpreter();
 
         /// <summary>
-        /// TBD
+        /// Initializes the shell's exposed boundaries and starts interpreter processing.
         /// </summary>
-        /// <param name="self">TBD</param>
-        /// <param name="subMat">TBD</param>
-        /// <param name="enqueueToShourtCircuit">TBD</param>
-        /// <param name="eventLimit">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="self">The actor that owns the shell.</param>
+        /// <param name="subMat">The sub-fusing materializer used to initialize stage logic.</param>
+        /// <param name="enqueueToShourtCircuit">The callback for sending messages through the short-circuit path.</param>
+        /// <param name="eventLimit">The maximum number of interpreter events to process in the initial batch.</param>
+        /// <returns>The remaining event limit after the initial interpreter batch.</returns>
         public int Init(IActorRef self, SubFusingActorMaterializerImpl subMat, Action<object> enqueueToShourtCircuit, int eventLimit)
         {
             Self = self;
@@ -214,8 +216,7 @@ namespace Akka.Streams.Implementation.Fusing
             var offset = _assembly.ConnectionCount - _outputs.Length;
             for (int i = 0; i < _outputs.Length; i++)
             {
-                var outputType = _shape.Outlets[i].GetType().GetGenericArguments().First();
-                var output = (ActorGraphInterpreter.IActorOutputBoundary) typeof(ActorGraphInterpreter.ActorOutputBoundary<>).Instantiate(outputType, Self, this, i);
+                var output = _shape.Outlets[i].CreateActorOutputBoundary(Self, this, i);
                 _outputs[i] = output;
                 Interpreter.AttachDownstreamBoundary(_connections[i + offset], (DownstreamBoundaryStageLogic) output);
             }
@@ -226,11 +227,11 @@ namespace Akka.Streams.Implementation.Fusing
 
 #pragma warning disable CS0162 // Disabled since the flag can be set while debugging
         /// <summary>
-        /// TBD
+        /// Processes a boundary event and runs the interpreter up to the supplied event limit.
         /// </summary>
-        /// <param name="e">TBD</param>
-        /// <param name="eventLimit">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="e">The boundary event to deliver to the shell.</param>
+        /// <param name="eventLimit">The maximum number of interpreter events to process.</param>
+        /// <returns>The remaining event limit after processing the event and running the interpreter.</returns>
         public int Receive(ActorGraphInterpreter.IBoundaryEvent e, int eventLimit)
         {
             _resumeScheduled = false;
@@ -247,7 +248,7 @@ namespace Akka.Streams.Implementation.Fusing
                         break;
 
                     case ActorGraphInterpreter.OnSubscribe onSubscribe:
-                        ReactiveStreamsCompliance.TryCancel(onSubscribe.Subscription);
+                        ReactiveStreamsCompliance.TryCancel(onSubscribe.Subscription, SubscriptionWithCancelException.StageWasCompleted.Instance);
                         _subscribersPending--;
                         if (CanShutdown)
                             _interpreterCompleted = true;
@@ -266,7 +267,11 @@ namespace Akka.Streams.Implementation.Fusing
             {
                 case ActorGraphInterpreter.OnNext onNext:
                     if (IsDebug) Console.WriteLine($"{Interpreter.Name}  OnNext {onNext.Event} id={onNext.Id}");
-                    _inputs[onNext.Id].OnNext(onNext.Event);
+                    _inputs[onNext.Id].OnNext(onNext.Event, onNext.Context);
+                    return RunBatch(eventLimit);
+
+                case ActorGraphInterpreter.OnNextBatch onNextBatch:
+                    _inputs[onNextBatch.Id].OnNextBatch(onNextBatch.Events, onNextBatch.Contexts);
                     return RunBatch(eventLimit);
 
                 case ActorGraphInterpreter.RequestMore requestMore:
@@ -281,9 +286,13 @@ namespace Akka.Streams.Implementation.Fusing
                     return eventLimit;
 
                 case ActorGraphInterpreter.AsyncInput asyncInput:
-                    Interpreter.RunAsyncInput(asyncInput.Logic, asyncInput.Event, asyncInput.Handler);
+                    Interpreter.RunAsyncInput(asyncInput.Logic, asyncInput.Event, asyncInput.Promise, asyncInput.Handler);
                     if (eventLimit == 1 && _interpreter.IsSuspended)
                     {
+                        // Parking here without a RunBatch — flush any elements the async callback
+                        // pushed to an output boundary so they aren't stranded until the next event
+                        // (issue #8314). The fall-through path flushes inside RunBatch after Execute.
+                        FlushOutputs();
                         SendResume(true);
                         return 0;
                     }
@@ -307,7 +316,7 @@ namespace Akka.Streams.Implementation.Fusing
 
                 case ActorGraphInterpreter.Cancel cancel:
                     if (IsDebug) Console.WriteLine($"{Interpreter.Name}  Cancel id={cancel.Id}");
-                    _outputs[cancel.Id].Cancel();
+                    _outputs[cancel.Id].Cancel(cancel.Cause);
                     return RunBatch(eventLimit);
 
                 case ActorGraphInterpreter.SubscribePending subscribePending:
@@ -331,11 +340,9 @@ namespace Akka.Streams.Implementation.Fusing
          *  - a new error is encountered
          */
         /// <summary>
-        /// TBD
+        /// Attempts to propagate an abort reason through the interpreter before stopping it.
         /// </summary>
-        /// <param name="reason">TBD</param>
-        /// <exception cref="IllegalStateException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="reason">The failure that initiated the abort.</param>
         public void TryAbort(Exception reason)
         {
             var ex = reason is ISpecViolation
@@ -362,7 +369,7 @@ namespace Akka.Streams.Implementation.Fusing
                 foreach (var output in _outputs)
                     output.Fail(ex);
                 foreach (var input in _inputs)
-                    input.Cancel();
+                    input.Cancel(ex);
             }
         }
 
@@ -372,6 +379,11 @@ namespace Akka.Streams.Implementation.Fusing
             {
                 var usingShellLimit = _shellEventLimit < actorEventLimit;
                 var remainingQuota = _interpreter.Execute(Math.Min(actorEventLimit, _shellEventLimit));
+
+                // Flush-on-park (issue #8314): the interpreter run has drained every synchronously
+                // available element into the output boundaries' accumulators; emit each as a single
+                // batched actor message now, before control returns to the mailbox.
+                FlushOutputs();
 
                 if (Interpreter.IsCompleted)
                 {
@@ -397,6 +409,16 @@ namespace Akka.Streams.Implementation.Fusing
             }
         }
 
+        // Emit any elements accumulated by the output boundaries during the interpreter run as one
+        // batched actor message each (issue #8314). Boundaries with nothing pending are a no-op, so
+        // this stays cheap for shells that carry no batching output boundary.
+        private void FlushOutputs()
+        {
+            var outputs = _outputs;
+            for (var i = 0; i < outputs.Length; i++)
+                outputs[i].FlushBatch();
+        }
+
         private void SendResume(bool sendResume)
         {
             _resumeScheduled = true;
@@ -409,26 +431,26 @@ namespace Akka.Streams.Implementation.Fusing
         private GraphInterpreter GetInterpreter()
         {
             return new GraphInterpreter(_assembly, Materializer, Log, _logics, _connections,
-                (logic, @event, handler) =>
+                (logic, @event, promise, handler) =>
                 {
-                    var asyncInput = new ActorGraphInterpreter.AsyncInput(this, logic, @event, handler);
+                    var asyncInput = new ActorGraphInterpreter.AsyncInput(this, logic, @event, promise, handler);
                     var currentInterpreter = CurrentInterpreterOrNull;
                     if (currentInterpreter == null || !Equals(currentInterpreter.Context, Self))
-                        Self.Tell(new ActorGraphInterpreter.AsyncInput(this, logic, @event, handler));
+                        Self.Tell(asyncInput);
                     else
                         _enqueueToShortCircuit(asyncInput);
                 }, _settings.IsFuzzingMode, Self);
         }
 
-        private BusLogging GetLogger()
+        private ILoggingAdapter GetLogger()
         {
-            return new BusLogging(Materializer.System.EventStream, Self.ToString(), typeof(GraphInterpreterShell), new DefaultLogMessageFormatter());
+            return new BusLogging(Materializer.System.EventStream, Self.ToString(), typeof(GraphInterpreterShell), Materializer.System.Settings.LogFormatter);
         }
 
         /// <summary>
-        /// TBD
+        /// Returns a diagnostic representation of this module or boundary.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A string describing this boundary or interpreter module.</returns>
         public override string ToString() => $"GraphInterpreterShell\n  {_assembly.ToString().Replace("\n", "\n  ")}";
     }
 
@@ -441,35 +463,35 @@ namespace Akka.Streams.Implementation.Fusing
         #region messages
 
         /// <summary>
-        /// TBD
+        /// Marker for messages that carry stream-boundary signals to a graph interpreter shell.
         /// </summary>
         public interface IBoundaryEvent : INoSerializationVerificationNeeded, IDeadLetterSuppression
         {
             /// <summary>
-            /// TBD
+            /// Interpreter shell associated with this boundary event.
             /// </summary>
             GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event carrying an upstream failure to a graph interpreter shell.
         /// </summary>
-        public struct OnError : IBoundaryEvent
+        public readonly struct OnError : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// The failure or cancellation cause carried by this boundary event.
             /// </summary>
             public readonly Exception Cause;
             /// <summary>
-            /// TBD
+            /// Creates an event carrying an upstream failure.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
-            /// <param name="cause">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="cause">The failure or cancellation cause carried across the boundary.</param>
             public OnError(GraphInterpreterShell shell, int id, Exception cause)
             {
                 Shell = shell;
@@ -478,25 +500,25 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event carrying upstream completion to a graph interpreter shell.
         /// </summary>
-        public struct OnComplete : IBoundaryEvent
+        public readonly struct OnComplete : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// Creates an event carrying upstream completion.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
             public OnComplete(GraphInterpreterShell shell, int id)
             {
                 Shell = shell;
@@ -504,62 +526,112 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event carrying an element to a graph interpreter shell.
         /// </summary>
-        public struct OnNext : IBoundaryEvent
+        public readonly struct OnNext : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// The stream element carried to the downstream boundary.
             /// </summary>
             public readonly object Event;
             /// <summary>
-            /// TBD
+            /// The producer's trace context captured at the upstream boundary, carried across the
+            /// actor hop so the downstream stage span parents back to the producer trace. Null when
+            /// tracing is not in use or the element carried no context. See issue #8243.
+            /// Internal so the public boundary-event surface is unchanged.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
-            /// <param name="event">TBD</param>
+            internal readonly ActivityContext? Context;
+            /// <summary>
+            /// Creates an event carrying an upstream element.
+            /// </summary>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="event">The element or event to deliver across the boundary.</param>
             public OnNext(GraphInterpreterShell shell, int id, object @event)
+                : this(shell, id, @event, null)
+            {
+            }
+
+            /// <summary>
+            /// Creates an event carrying an upstream element and its optional producer trace context.
+            /// </summary>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="event">The element or event to deliver across the boundary.</param>
+            /// <param name="context">The producer trace context to carry across the boundary.</param>
+            internal OnNext(GraphInterpreterShell shell, int id, object @event, ActivityContext? context)
             {
                 Shell = shell;
                 Id = id;
                 Event = @event;
+                Context = context;
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Internal boundary event carrying a *batch* of elements across the in-process actor hop, so
+        /// the producing island can coalesce many elements into a single actor message instead of one
+        /// message (and one <see cref="OnNext"/> allocation) per element (issue #8314). Only ever sent
+        /// between two Akka in-process boundaries — external Reactive Streams subscribers continue to
+        /// receive one <c>OnNext</c> signal per element, so the RS-public contract is unchanged.
         /// </summary>
-        public struct OnSubscribe : IBoundaryEvent
+        internal readonly struct OnNextBatch : IBoundaryEvent
+        {
+            public readonly int Id;
+            /// <summary>The batched elements, in producer order. Length is the batch size.</summary>
+            public readonly object[] Events;
+            /// <summary>
+            /// Parallel to <see cref="Events"/>: the producer trace context for each element carried
+            /// across the boundary (issue #8243). Null when no element in the batch carried a context
+            /// (the common, non-traced path), so the hot path allocates only the element array.
+            /// </summary>
+            public readonly ActivityContext?[] Contexts;
+
+            public OnNextBatch(GraphInterpreterShell shell, int id, object[] events, ActivityContext?[] contexts)
+            {
+                Shell = shell;
+                Id = id;
+                Events = events;
+                Contexts = contexts;
+            }
+
+            public GraphInterpreterShell Shell { get; }
+        }
+
+        /// <summary>
+        /// Boundary event carrying an upstream subscription to a graph interpreter shell.
+        /// </summary>
+        public readonly struct OnSubscribe : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// The upstream subscription carried to the graph interpreter.
             /// </summary>
             public readonly ISubscription Subscription;
             /// <summary>
-            /// TBD
+            /// Creates an event carrying an upstream subscription.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
-            /// <param name="subscription">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="subscription">The subscription received from the upstream publisher.</param>
             public OnSubscribe(GraphInterpreterShell shell, int id, ISubscription subscription)
             {
                 Shell = shell;
@@ -568,30 +640,30 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event requesting additional upstream elements for a graph outlet.
         /// </summary>
-        public struct RequestMore : IBoundaryEvent
+        public readonly struct RequestMore : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// The number of additional elements requested from upstream.
             /// </summary>
             public readonly long Demand;
             /// <summary>
-            /// TBD
+            /// Creates an event requesting additional elements from an upstream boundary.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
-            /// <param name="demand">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="demand">The number of elements requested from the upstream.</param>
             public RequestMore(GraphInterpreterShell shell, int id, long demand)
             {
                 Shell = shell;
@@ -600,51 +672,56 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event indicating cancellation of a graph boundary.
         /// </summary>
-        public struct Cancel : IBoundaryEvent
+        public readonly struct Cancel : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
+
             /// <summary>
-            /// TBD
+            /// Creates an event carrying a boundary cancellation and its cause.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
-            public Cancel(GraphInterpreterShell shell, int id)
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="cause">The cancellation cause carried by this event.</param>
+            public Cancel(GraphInterpreterShell shell, int id, Exception cause)
             {
                 Shell = shell;
                 Id = id;
+                Cause = cause;
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
+            
+            public Exception Cause { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event signaling that subscribers are available for an exposed publisher.
         /// </summary>
-        public struct SubscribePending : IBoundaryEvent
+        public readonly struct SubscribePending : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// Creates an event signaling that the exposed publisher has pending subscribers.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
             public SubscribePending(GraphInterpreterShell shell, int id)
             {
                 Shell = shell;
@@ -652,30 +729,30 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event carrying the publisher exposed by a graph output.
         /// </summary>
-        public struct ExposedPublisher : IBoundaryEvent
+        public readonly struct ExposedPublisher : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// The index of the boundary represented by this event.
             /// </summary>
             public readonly int Id;
             /// <summary>
-            /// TBD
+            /// The actor publisher exposed by the graph output.
             /// </summary>
             public readonly IActorPublisher Publisher;
             /// <summary>
-            /// TBD
+            /// Creates an event carrying the publisher exposed for a graph output.
             /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
-            /// <param name="publisher">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <param name="publisher">The actor publisher exposed for this output boundary.</param>
             public ExposedPublisher(GraphInterpreterShell shell, int id, IActorPublisher publisher)
             {
                 Shell = shell;
@@ -684,87 +761,71 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public struct AsyncInput : IBoundaryEvent
+        public readonly struct AsyncInput : IBoundaryEvent
         {
-            /// <summary>
-            /// TBD
-            /// </summary>
             public readonly GraphStageLogic Logic;
-            /// <summary>
-            /// TBD
-            /// </summary>
             public readonly object Event;
-            /// <summary>
-            /// TBD
-            /// </summary>
+            public readonly TaskCompletionSource<Done> Promise;
             public readonly Action<object> Handler;
-            /// <summary>
-            /// TBD
-            /// </summary>
-            /// <param name="shell">TBD</param>
-            /// <param name="logic">TBD</param>
-            /// <param name="event">TBD</param>
-            /// <param name="handler">TBD</param>
-            /// <returns>TBD</returns>
-            public AsyncInput(GraphInterpreterShell shell, GraphStageLogic logic, object @event, Action<object> handler)
+            public AsyncInput(GraphInterpreterShell shell, GraphStageLogic logic, object @event, TaskCompletionSource<Done> promise, Action<object> handler)
             {
                 Shell = shell;
                 Logic = logic;
                 Event = @event;
+                Promise = promise;
                 Handler = handler;
             }
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event asking the interpreter actor to resume processing a shell.
         /// </summary>
-        public struct Resume : IBoundaryEvent
+        public readonly struct Resume : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// Creates an event that asks the interpreter actor to resume this shell.
             /// </summary>
-            /// <param name="shell">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
             public Resume(GraphInterpreterShell shell) => Shell = shell;
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Boundary event asking the interpreter actor to abort a shell.
         /// </summary>
-        public struct Abort : IBoundaryEvent
+        public readonly struct Abort : IBoundaryEvent
         {
             /// <summary>
-            /// TBD
+            /// Creates an event that asks the interpreter actor to abort this shell.
             /// </summary>
-            /// <param name="shell">TBD</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
             public Abort(GraphInterpreterShell shell) => Shell = shell;
 
             /// <summary>
-            /// TBD
+            /// The interpreter shell associated with this boundary event.
             /// </summary>
             public GraphInterpreterShell Shell { get; }
         }
 
-        private class ShellRegistered
+        // This is the Resume internal API message in JVM, it is used to prevent/short circuit recursive calls
+        // inside a stream. Harmless when dead-lettered.
+        private class ShellRegistered: IDeadLetterSuppression
         {
-            public static readonly ShellRegistered Instance = new ShellRegistered();
+            public static readonly ShellRegistered Instance = new();
             private ShellRegistered()
             {
             }
@@ -774,17 +835,17 @@ namespace Akka.Streams.Implementation.Fusing
         #region internal classes
 
         /// <summary>
-        /// TBD
+        /// Publisher bridge that exposes a graph output through the interpreter actor.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
+        /// <typeparam name="T">The type of elements carried by this boundary.</typeparam>
         public sealed class BoundaryPublisher<T> : ActorPublisher<T>
         {
             /// <summary>
-            /// TBD
+            /// Creates a publisher bridge for an exposed graph output.
             /// </summary>
-            /// <param name="parent">TBD</param>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
+            /// <param name="parent">The actor that receives boundary events and processes the graph interpreter.</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
             public BoundaryPublisher(IActorRef parent, GraphInterpreterShell shell, int id) : base(parent)
             {
                 _wakeUpMessage = new SubscribePending(shell, id);
@@ -792,26 +853,26 @@ namespace Akka.Streams.Implementation.Fusing
 
             private readonly SubscribePending _wakeUpMessage;
             /// <summary>
-            /// TBD
+            /// The message sent to the actor when subscribers are available.
             /// </summary>
             protected override object WakeUpMessage => _wakeUpMessage;
         }
 
         /// <summary>
-        /// TBD
+        /// Subscription bridge that forwards demand and cancellation to the interpreter actor.
         /// </summary>
-        public sealed class BoundarySubscription : ISubscription
+        public sealed class BoundarySubscription : ISubscriptionWithCancelException
         {
             private readonly IActorRef _parent;
             private readonly GraphInterpreterShell _shell;
             private readonly int _id;
 
             /// <summary>
-            /// TBD
+            /// Creates a subscription bridge for an exposed graph output.
             /// </summary>
-            /// <param name="parent">TBD</param>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
+            /// <param name="parent">The actor that receives boundary events and processes the graph interpreter.</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
             public BoundarySubscription(IActorRef parent, GraphInterpreterShell shell, int id)
             {
                 _parent = parent;
@@ -820,27 +881,29 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards downstream demand to the graph interpreter actor.
             /// </summary>
-            /// <param name="elements">TBD</param>
+            /// <param name="elements">The number of elements requested by the downstream subscriber.</param>
             public void Request(long elements) => _parent.Tell(new RequestMore(_shell, _id, elements));
 
             /// <summary>
-            /// TBD
+            /// Cancels the exposed output subscription because no more elements are needed.
             /// </summary>
-            public void Cancel() => _parent.Tell(new Cancel(_shell, _id));
+            public void Cancel() => Cancel(SubscriptionWithCancelException.NoMoreElementsNeeded.Instance);
+
+            public void Cancel(Exception cause) => _parent.Tell(new Cancel(_shell, _id, cause)); 
 
             /// <summary>
-            /// TBD
+            /// Returns a string identifying the parent actor and boundary index.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>The parent actor and boundary index.</returns>
             public override string ToString() => $"BoundarySubscription[{_parent}, {_id}]";
         }
 
         /// <summary>
-        /// TBD
+        /// Subscriber bridge that forwards upstream signals to the interpreter actor.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
+        /// <typeparam name="T">The type of elements carried by this boundary.</typeparam>
         public sealed class BoundarySubscriber<T> : ISubscriber<T>
         {
             private readonly IActorRef _parent;
@@ -848,11 +911,11 @@ namespace Akka.Streams.Implementation.Fusing
             private readonly int _id;
 
             /// <summary>
-            /// TBD
+            /// Creates a subscriber bridge for an exposed graph input.
             /// </summary>
-            /// <param name="parent">TBD</param>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
+            /// <param name="parent">The actor that receives boundary events and processes the graph interpreter.</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
             public BoundarySubscriber(IActorRef parent, GraphInterpreterShell shell, int id)
             {
                 _parent = parent;
@@ -861,9 +924,9 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards an upstream subscription to the graph interpreter.
             /// </summary>
-            /// <param name="subscription">TBD</param>
+            /// <param name="subscription">The subscription received from the upstream publisher.</param>
             public void OnSubscribe(ISubscription subscription)
             {
                 ReactiveStreamsCompliance.RequireNonNullSubscription(subscription);
@@ -871,9 +934,9 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards an upstream failure to the corresponding graph boundary.
             /// </summary>
-            /// <param name="cause">TBD</param>
+            /// <param name="cause">The failure or cancellation cause carried across the boundary.</param>
             public void OnError(Exception cause)
             {
                 ReactiveStreamsCompliance.RequireNonNullException(cause);
@@ -881,23 +944,43 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards upstream completion to the corresponding graph boundary.
             /// </summary>
             public void OnComplete() => _parent.Tell(new OnComplete(_shell, _id));
 
             /// <summary>
-            /// TBD
+            /// Forwards an upstream element to the corresponding graph boundary.
             /// </summary>
-            /// <param name="element">TBD</param>
+            /// <param name="element">The element received from the upstream publisher.</param>
             public void OnNext(T element)
             {
                 ReactiveStreamsCompliance.RequireNonNullElement(element);
                 _parent.Tell(new OnNext(_shell, _id, element));
             }
+
+            /// <summary>
+            /// Internal boundary-only overload that carries the producer's trace context across the
+            /// actor hop (issue #8243). Used in place of the Reactive Streams <see cref="OnNext(T)"/>
+            /// only when the producer end is an in-process Akka boundary, so the public RS contract
+            /// is unaffected.
+            /// </summary>
+            internal void OnNext(T element, ActivityContext? context)
+            {
+                ReactiveStreamsCompliance.RequireNonNullElement(element);
+                _parent.Tell(new OnNext(_shell, _id, element, context));
+            }
+
+            /// <summary>
+            /// Internal boundary-only path that carries a whole batch of elements across the actor hop
+            /// in a single message (issue #8314). Elements were already grabbed from the interpreter
+            /// (never null), so no per-element RS null-check is repeated here.
+            /// </summary>
+            internal void OnNextBatch(object[] elements, ActivityContext?[] contexts)
+                => _parent.Tell(new OnNextBatch(_shell, _id, elements, contexts));
         }
 
         /// <summary>
-        /// TBD
+        /// Upstream boundary stage that buffers input elements before passing them to the graph interpreter.
         /// </summary>
         public class BatchingActorInputBoundary : UpstreamBoundaryStageLogic
         {
@@ -925,7 +1008,7 @@ namespace Akka.Streams.Implementation.Fusing
                     else if (upstreamCompleted) _that.Complete(_that._outlet);
                 }
 
-                public override void OnDownstreamFinish() => _that.Cancel();
+                public override void OnDownstreamFinish(Exception cause) => _that.Cancel(cause);
 
                 public override string ToString() => _that.ToString();
             }
@@ -935,23 +1018,27 @@ namespace Akka.Streams.Implementation.Fusing
             private readonly int _id;
 
             private readonly object[] _inputBuffer;
+            // Parallel to _inputBuffer, holds the producer trace context carried across the actor
+            // boundary for each buffered element (issue #8243). Lazily allocated only when tracing is
+            // active, so the non-traced hot path allocates nothing.
+            private ActivityContext?[] _inputContextBuffer;
             private readonly int _indexMask;
 
             private ISubscription _upstream;
             private int _inputBufferElements;
             private int _nextInputElementCursor;
             private bool _upstreamCompleted;
-            private bool _downstreamCanceled;
+            private Option<Exception> _downstreamCanceled = Option<Exception>.None;
             private readonly int _requestBatchSize;
             private int _batchRemaining;
             private readonly Outlet<object> _outlet;
 
             /// <summary>
-            /// TBD
+            /// Creates an input boundary with a bounded buffer for the specified graph connection.
             /// </summary>
-            /// <param name="size">TBD</param>
-            /// <param name="id">TBD</param>
-            /// <exception cref="ArgumentException">TBD</exception>
+            /// <param name="size">The input buffer capacity; it must be a positive power of two.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
+            /// <exception cref="ArgumentException">Thrown when the buffer size is not a positive power of two.</exception>
             public BatchingActorInputBoundary(int size, int id)
             {
                 if (size <= 0) throw new ArgumentException("Buffer size cannot be zero", nameof(size));
@@ -969,19 +1056,19 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The output port connected to this upstream boundary.
             /// </summary>
             public override Outlet Out => _outlet;
 
             // Call this when an error happens that does not come from the usual onError channel
             // (exceptions while calling RS interfaces, abrupt termination etc)
             /// <summary>
-            /// TBD
+            /// Propagates an internal boundary failure and cancels the upstream subscription.
             /// </summary>
-            /// <param name="reason">TBD</param>
+            /// <param name="reason">The failure or cancellation cause to propagate.</param>
             public void OnInternalError(Exception reason)
             {
-                if (!(_upstreamCompleted || _downstreamCanceled) && !ReferenceEquals(_upstream, null))
+                if (!(_upstreamCompleted || _downstreamCanceled.HasValue) && !ReferenceEquals(_upstream, null))
                     _upstream.Cancel();
 
                 if (!IsClosed(_outlet))
@@ -989,12 +1076,12 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards an upstream failure to the corresponding graph boundary.
             /// </summary>
-            /// <param name="reason">TBD</param>
+            /// <param name="reason">The failure or cancellation cause to propagate.</param>
             public void OnError(Exception reason)
             {
-                if (!_upstreamCompleted || !_downstreamCanceled)
+                if (!_upstreamCompleted || _downstreamCanceled.IsEmpty)
                 {
                     _upstreamCompleted = true;
                     Clear();
@@ -1003,7 +1090,7 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards upstream completion to the corresponding graph boundary.
             /// </summary>
             public void OnComplete()
             {
@@ -1016,18 +1103,24 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Accepts or cancels the upstream subscription and requests the buffer capacity when accepted.
             /// </summary>
-            /// <param name="subscription">TBD</param>
-            /// <exception cref="ArgumentException">TBD</exception>
+            /// <param name="subscription">The subscription received from the upstream publisher.</param>
+            /// <exception cref="ArgumentException">Thrown when the subscription is null.</exception>
             public void OnSubscribe(ISubscription subscription)
             {
                 if (subscription == null) throw new ArgumentException("Subscription cannot be null");
-                if (_upstreamCompleted) ReactiveStreamsCompliance.TryCancel(subscription);
-                else if (_downstreamCanceled)
+                if (_upstreamCompleted) 
+                    ReactiveStreamsCompliance.TryCancel(subscription, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance);
+                else if (_downstreamCanceled.HasValue)
                 {
                     _upstreamCompleted = true;
-                    ReactiveStreamsCompliance.TryCancel(subscription);
+                    ReactiveStreamsCompliance.TryCancel(subscription, _downstreamCanceled.Value);
+                }
+                else if (_upstream != null)
+                {
+                    // reactive streams spec 2.5
+                    ReactiveStreamsCompliance.TryCancel(subscription, new IllegalStateException("Publisher can only be subscribed once."));
                 }
                 else
                 {
@@ -1038,17 +1131,22 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Forwards an upstream element to the corresponding graph boundary.
             /// </summary>
-            /// <param name="element">TBD</param>
-            /// <exception cref="IllegalStateException">TBD</exception>
-            public void OnNext(object element)
+            /// <param name="element">The element received from the upstream publisher.</param>
+            /// <exception cref="IllegalStateException">Thrown when an element arrives after the input buffer is full.</exception>
+            public void OnNext(object element) => OnNext(element, null);
+
+            internal void OnNext(object element, ActivityContext? context)
             {
                 if (!_upstreamCompleted)
                 {
                     if (_inputBufferElements == _size)
                         throw new IllegalStateException("Input buffer overrun");
-                    _inputBuffer[(_nextInputElementCursor + _inputBufferElements) & _indexMask] = element;
+                    var idx = (_nextInputElementCursor + _inputBufferElements) & _indexMask;
+                    _inputBuffer[idx] = element;
+                    if (context.HasValue)
+                        (_inputContextBuffer ??= new ActivityContext?[_size])[idx] = context;
                     _inputBufferElements++;
                     if (IsAvailable(_outlet))
                         Push(_outlet, Dequeue());
@@ -1056,16 +1154,28 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Receives a batch of elements coalesced across the actor hop (issue #8314) and feeds them
+            /// through the normal per-element path in order, preserving the buffer-overrun guard and
+            /// completion/failure semantics. The batch size is bounded by the demand this boundary
+            /// granted, so it can never exceed the free buffer space.
             /// </summary>
-            public void Cancel()
+            internal void OnNextBatch(object[] elements, ActivityContext?[] contexts)
             {
-                _downstreamCanceled = true;
+                for (var i = 0; i < elements.Length; i++)
+                    OnNext(elements[i], contexts?[i]);
+            }
+
+            /// <summary>
+            /// Cancels the associated boundary and propagates the cancellation cause.
+            /// </summary>
+            public void Cancel(Exception cause)
+            {
+                _downstreamCanceled = cause;
                 if (!_upstreamCompleted)
                 {
                     _upstreamCompleted = true;
                     if (!ReferenceEquals(_upstream, null))
-                        ReactiveStreamsCompliance.TryCancel(_upstream);
+                        ReactiveStreamsCompliance.TryCancel(_upstream, cause);
                     Clear();
                 }
             }
@@ -1076,6 +1186,20 @@ namespace Akka.Streams.Implementation.Fusing
                 if (element == null)
                     throw new IllegalStateException("Internal queue must never contain a null");
                 _inputBuffer[_nextInputElementCursor] = null;
+
+                // Restore this element's producer trace context (issue #8243) so the immediately
+                // following Push(_outlet, ...) arms the downstream connection's SlotContext with it,
+                // re-parenting downstream stage spans to the producer trace across the boundary.
+                // Always null the slot, but only arm when there is a listener: Push only consumes the
+                // pending context under HasListeners(), so arming it while no one is listening would
+                // leave it set to bleed onto a later element's push.
+                if (_inputContextBuffer != null)
+                {
+                    var context = _inputContextBuffer[_nextInputElementCursor];
+                    _inputContextBuffer[_nextInputElementCursor] = null;
+                    if (context.HasValue && StreamsDiagnostics.ActivitySource.HasListeners())
+                        SetFanInTraceContext(_outlet, context.Value, null);
+                }
 
                 _batchRemaining--;
                 if (_batchRemaining == 0 && !_upstreamCompleted)
@@ -1092,51 +1216,61 @@ namespace Akka.Streams.Implementation.Fusing
             private void Clear()
             {
                 _inputBuffer.Initialize();
+                // Array.Initialize() is a no-op for Nullable<ActivityContext>[]; use Array.Clear to
+                // actually reset the slots so a discarded element's context can't survive (issue #8243).
+                if (_inputContextBuffer != null)
+                    Array.Clear(_inputContextBuffer, 0, _inputContextBuffer.Length);
                 _inputBufferElements = 0;
             }
 
             /// <summary>
-            /// TBD
+            /// Returns a diagnostic representation of this module or boundary.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>A string describing this boundary or interpreter module.</returns>
             public override string ToString() => $"BatchingActorInputBoundary(id={_id}, fill={_inputBufferElements}/{_size}, completed={_upstreamCompleted}, canceled={_downstreamCanceled})";
         }
 
         /// <summary>
-        /// TBD
+        /// Operations used by the interpreter to manage an exposed output boundary.
         /// </summary>
         internal interface IActorOutputBoundary
         {
             /// <summary>
-            /// TBD
+            /// Delivers pending subscribers to the graph output boundary.
             /// </summary>
             void SubscribePending();
             /// <summary>
-            /// TBD
+            /// Associates the publisher exposed for this graph output.
             /// </summary>
-            /// <param name="publisher">TBD</param>
+            /// <param name="publisher">The actor publisher exposed for this output boundary.</param>
             void ExposedPublisher(IActorPublisher publisher);
             /// <summary>
-            /// TBD
+            /// Requests elements from the upstream graph stage on behalf of the downstream subscriber.
             /// </summary>
-            /// <param name="elements">TBD</param>
+            /// <param name="elements">The number of elements requested by the downstream subscriber.</param>
             void RequestMore(long elements);
             /// <summary>
-            /// TBD
+            /// Cancels the downstream subscription and the corresponding upstream input.
             /// </summary>
-            void Cancel();
+            void Cancel(Exception cause);
             /// <summary>
-            /// TBD
+            /// Fails the output and notifies its downstream subscriber when applicable.
             /// </summary>
-            /// <param name="reason">TBD</param>
+            /// <param name="reason">The failure or cancellation cause to propagate.</param>
             void Fail(Exception reason);
+            /// <summary>
+            /// Emit any elements accumulated since the last flush as a single batched actor message
+            /// (issue #8314). No-op when nothing is pending or the subscriber is an external
+            /// Reactive Streams subscriber (which is never batched).
+            /// </summary>
+            void FlushBatch();
         }
 
         /// <summary>
-        /// TBD
+        /// Downstream boundary stage that forwards graph output to its publisher or subscriber.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
-        internal class ActorOutputBoundary<T> : DownstreamBoundaryStageLogic, IActorOutputBoundary
+        /// <typeparam name="T">The type of elements carried by this boundary.</typeparam>
+        internal sealed class ActorOutputBoundary<T> : DownstreamBoundaryStageLogic, IActorOutputBoundary
         {
             #region InHandler
             private sealed class InHandler : Stage.InHandler
@@ -1147,9 +1281,16 @@ namespace Akka.Streams.Implementation.Fusing
 
                 public override void OnPush()
                 {
-                    _that.OnNext(_that.Grab(_that._inlet));
-                    if (_that._downstreamCompleted)
-                        _that.Cancel(_that._inlet);
+                    // Capture the producer's trace context (issue #8243) before Grab clears it, so
+                    // the OnNext that crosses the actor boundary can carry it to the downstream shell.
+                    // Reading it only when there is a listener keeps the non-traced path allocation-free.
+                    var context = StreamsDiagnostics.ActivitySource.HasListeners()
+                        ? _that.CurrentInletTraceContext(_that._inlet)
+                        : (ActivityContext?)null;
+                    _that.OnNext(_that.Grab(_that._inlet), context);
+
+                    if (_that.DownstreamCompleted)
+                        _that.Cancel(_that._inlet, _that._downstreamCompletionCause.Value);
                     else if (_that._downstreamDemand > 0)
                         _that.Pull(_that._inlet);
                 }
@@ -1172,18 +1313,30 @@ namespace Akka.Streams.Implementation.Fusing
 
             // This flag is only used if complete/fail is called externally since this op turns into a Finished one inside the
             // interpreter (i.e. inside this op this flag has no effects since if it is completed the op will not be invoked)
-            private bool _downstreamCompleted;
+            private Option<Exception> _downstreamCompletionCause = Option<Exception>.None;
+            private bool DownstreamCompleted => _downstreamCompletionCause.HasValue;
             // when upstream failed before we got the exposed publisher
             private Exception _upstreamFailed;
             private bool _upstreamCompleted;
             private readonly Inlet<T> _inlet;
 
+            // Element-batching state (issue #8314). Elements pushed during one interpreter run are
+            // accumulated here (bounded by downstream demand) and emitted as a single OnNextBatch on
+            // flush-on-park, instead of one OnNext actor message per element. Only used when the
+            // subscriber is the in-process BoundarySubscriber; external RS subscribers bypass this.
+            private const int InitialBatchCapacity = 16;
+            private object[] _batchElements;
+            // Parallel to _batchElements; lazily allocated only when an element carries a trace
+            // context (issue #8243), so the non-traced hot path allocates only the element buffer.
+            private ActivityContext?[] _batchContexts;
+            private int _batchCount;
+
             /// <summary>
-            /// TBD
+            /// Creates an output boundary for the specified graph connection.
             /// </summary>
-            /// <param name="actor">TBD</param>
-            /// <param name="shell">TBD</param>
-            /// <param name="id">TBD</param>
+            /// <param name="actor">The graph interpreter actor to which boundary events are sent.</param>
+            /// <param name="shell">The interpreter shell associated with this boundary.</param>
+            /// <param name="id">The index of this exposed boundary in the graph shape.</param>
             public ActorOutputBoundary(IActorRef actor, GraphInterpreterShell shell, int id)
             {
                 _actor = actor;
@@ -1195,19 +1348,19 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// The input port connected to this downstream boundary.
             /// </summary>
             public override Inlet In => _inlet;
 
             /// <summary>
-            /// TBD
+            /// Requests additional elements from the upstream boundary.
             /// </summary>
-            /// <param name="elements">TBD</param>
+            /// <param name="elements">The number of elements requested by the downstream subscriber.</param>
             public void RequestMore(long elements)
             {
                 if (elements < 1)
                 {
-                    Cancel((Inlet<T>) In);
+                    Cancel((Inlet<T>) In, ReactiveStreamsCompliance.NumberOfElementsInRequestMustBePositiveException);
                     Fail(ReactiveStreamsCompliance.NumberOfElementsInRequestMustBePositiveException);
                 }
                 else
@@ -1222,7 +1375,7 @@ namespace Akka.Streams.Implementation.Fusing
 
 #pragma warning disable CS0162 // Disabled since the flag can be set while debugging
             /// <summary>
-            /// TBD
+            /// Attaches pending subscribers to the exposed output boundary.
             /// </summary>
             public void SubscribePending()
             {
@@ -1243,9 +1396,9 @@ namespace Akka.Streams.Implementation.Fusing
             void IActorOutputBoundary.ExposedPublisher(IActorPublisher publisher) => ExposedPublisher((ActorPublisher<T>) publisher);
 
             /// <summary>
-            /// TBD
+            /// Associates the actor publisher exposed for this graph output.
             /// </summary>
-            /// <param name="publisher">TBD</param>
+            /// <param name="publisher">The actor publisher exposed for this output boundary.</param>
             public void ExposedPublisher(ActorPublisher<T> publisher)
             {
                 _exposedPublisher = publisher;
@@ -1259,47 +1412,145 @@ namespace Akka.Streams.Implementation.Fusing
             }
 
             /// <summary>
-            /// TBD
+            /// Cancels the associated boundary and propagates the cancellation cause.
             /// </summary>
-            public void Cancel()
+            public void Cancel(Exception cause)
             {
-                _downstreamCompleted = true;
+                // Downstream no longer wants elements — drop anything pending before we detach.
+                ClearBatch();
+                _downstreamCompletionCause = cause;
                 _subscriber = null;
                 _exposedPublisher.Shutdown(new NormalShutdownException("UpstreamBoundary"));
-                Cancel(_inlet);
+                Cancel(_inlet, cause);
             }
 
             /// <summary>
-            /// TBD
+            /// Fails the output boundary and notifies its downstream subscriber when applicable.
             /// </summary>
-            /// <param name="reason">TBD</param>
+            /// <param name="reason">The failure or cancellation cause to propagate.</param>
             public void Fail(Exception reason)
             {
                 // No need to fail if had already been cancelled, or we closed earlier
-                if (!(_downstreamCompleted || _upstreamCompleted))
+                if (!(DownstreamCompleted || _upstreamCompleted))
                 {
                     _upstreamCompleted = true;
                     _upstreamFailed = reason;
+
+                    // Elements produced before the failure crossed the boundary in the pre-batching
+                    // design (one Tell per element, delivered ahead of the OnError). Preserve that:
+                    // flush the pending batch before signalling the error rather than dropping it.
+                    // A spec violation suppresses OnError entirely, so there's nothing to order those
+                    // elements against — drop them instead.
+                    if (reason is ISpecViolation)
+                        ClearBatch();
+                    else
+                        FlushBatch();
 
                     if (!ReferenceEquals(_exposedPublisher, null))
                         _exposedPublisher.Shutdown(reason);
                     if (!ReferenceEquals(_subscriber, null) && !(reason is ISpecViolation))
                         ReactiveStreamsCompliance.TryOnError(_subscriber, reason);
                 }
+                else
+                {
+                    // Already terminal (cancelled / completed) — nothing left to deliver.
+                    ClearBatch();
+                }
             }
 
-            private void OnNext(T element)
+            private void OnNext(T element) => OnNext(element, null);
+
+            private void OnNext(T element, ActivityContext? context)
             {
                 _downstreamDemand--;
-                ReactiveStreamsCompliance.TryOnNext(_subscriber, element);
+                // When the downstream is an in-process Akka boundary, accumulate the element (and its
+                // trace context, issue #8243) and emit the whole run as one batched actor message on
+                // flush-on-park (issue #8314). External Reactive Streams subscribers go through the
+                // standard one-signal-per-element interface — no batching, no context channel — so the
+                // RS-public contract is unchanged. Note: async boundaries bridged through a
+                // VirtualProcessor or an external IProcessor are not BoundarySubscriber<T> and fall
+                // through to TryOnNext.
+                if (_subscriber is BoundarySubscriber<T>)
+                    Accumulate(element, context);
+                else
+                    ReactiveStreamsCompliance.TryOnNext(_subscriber, element);
+            }
+
+            private void Accumulate(T element, ActivityContext? context)
+            {
+                // Reject nulls at the producer boundary, per element, matching the single-element
+                // path (boundary.OnNext) and the pre-batching behavior — otherwise a null in a
+                // multi-element batch only surfaces as a confusing overrun error on the consumer.
+                ReactiveStreamsCompliance.RequireNonNullElement(element);
+
+                if (_batchElements == null)
+                    _batchElements = new object[InitialBatchCapacity];
+                else if (_batchCount == _batchElements.Length)
+                {
+                    Array.Resize(ref _batchElements, _batchCount * 2);
+                    if (_batchContexts != null)
+                        Array.Resize(ref _batchContexts, _batchElements.Length);
+                }
+
+                _batchElements[_batchCount] = element;
+                if (context.HasValue)
+                    (_batchContexts ??= new ActivityContext?[_batchElements.Length])[_batchCount] = context;
+                _batchCount++;
+            }
+
+            public void FlushBatch()
+            {
+                var count = _batchCount;
+                if (count == 0)
+                    return;
+
+                // Elements are only ever accumulated for the in-process boundary subscriber (OnNext).
+                var boundary = (BoundarySubscriber<T>)_subscriber;
+                if (count == 1)
+                {
+                    // Single element this run — send a plain OnNext (no array allocation), so the
+                    // light-load one-element-per-park path stays exactly as cheap as before batching.
+                    boundary.OnNext((T)_batchElements[0], _batchContexts?[0]);
+                }
+                else
+                {
+                    var events = new object[count];
+                    Array.Copy(_batchElements, events, count);
+                    ActivityContext?[] contexts = null;
+                    if (_batchContexts != null)
+                    {
+                        contexts = new ActivityContext?[count];
+                        Array.Copy(_batchContexts, contexts, count);
+                    }
+                    boundary.OnNextBatch(events, contexts);
+                }
+
+                // Release references to the emitted elements so the reused buffer doesn't pin them.
+                Array.Clear(_batchElements, 0, count);
+                if (_batchContexts != null)
+                    Array.Clear(_batchContexts, 0, count);
+                _batchCount = 0;
+            }
+
+            private void ClearBatch()
+            {
+                if (_batchCount == 0)
+                    return;
+                Array.Clear(_batchElements, 0, _batchCount);
+                if (_batchContexts != null)
+                    Array.Clear(_batchContexts, 0, _batchCount);
+                _batchCount = 0;
             }
 
             private void Complete()
             {
                 // No need to complete if had already been cancelled, or we closed earlier
-                if (!(_upstreamCompleted || _downstreamCompleted))
+                if (!(_upstreamCompleted || DownstreamCompleted))
                 {
                     _upstreamCompleted = true;
+                    // Deliver any accumulated elements before the completion signal so completion never
+                    // overtakes pending elements (issue #8314 ordering invariant).
+                    FlushBatch();
                     if (!ReferenceEquals(_exposedPublisher, null))
                         _exposedPublisher.Shutdown(null);
                     if (!ReferenceEquals(_subscriber, null))
@@ -1311,14 +1562,15 @@ namespace Akka.Streams.Implementation.Fusing
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Creates local actor properties for a graph interpreter shell.
         /// </summary>
-        /// <param name="shell">TBD</param>
-        /// <returns>TBD</returns>
-        public static Props Props(GraphInterpreterShell shell) => Actor.Props.Create(() => new ActorGraphInterpreter(shell)).WithDeploy(Deploy.Local);
+        /// <param name="shell">The interpreter shell associated with this boundary.</param>
+        /// <returns>Local actor properties configured with the supplied interpreter shell.</returns>
+        public static Props Props(GraphInterpreterShell shell) => Actor.Props
+            .Create<ActorGraphInterpreter>(shell).WithDeploy(Deploy.Local);
 
         private ISet<GraphInterpreterShell> _activeInterpreters = new HashSet<GraphInterpreterShell>();
-        private readonly Queue<GraphInterpreterShell> _newShells = new Queue<GraphInterpreterShell>();
+        private readonly Queue<GraphInterpreterShell> _newShells = new();
         private readonly SubFusingActorMaterializerImpl _subFusingMaterializerImpl;
         private readonly GraphInterpreterShell _initial;
         private ILoggingAdapter _log;
@@ -1329,9 +1581,10 @@ namespace Akka.Streams.Implementation.Fusing
         private Queue<object> _shortCircuitBuffer;
 
         /// <summary>
-        /// TBD
+        /// Creates an actor to process the supplied initial shell and its boundary events.
         /// </summary>
-        /// <param name="shell">TBD</param>
+        /// <param name="shell">The initial interpreter shell to process.</param>
+        /// If this ctor gets changed you -must- change <see cref="ActorGraphInterpreter.Props"/> as well!
         public ActorGraphInterpreter(GraphInterpreterShell shell)
         {
             _initial = shell;
@@ -1342,9 +1595,9 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// The logger used by this shell or interpreter actor.
         /// </summary>
-        public ILoggingAdapter Log => _log ?? (_log = Context.GetLogger());
+        public ILoggingAdapter Log => _log ??= Context.GetLogger();
 
         private void EnqueueToShortCircuit(object input)
         {
@@ -1377,10 +1630,10 @@ namespace Akka.Streams.Implementation.Fusing
 #pragma warning restore CS0162
 
         /// <summary>
-        /// TBD
+        /// Registers a shell for initialization by this interpreter actor.
         /// </summary>
-        /// <param name="shell">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="shell">The interpreter shell associated with this boundary.</param>
+        /// <returns>The actor reference of this interpreter actor.</returns>
         public IActorRef RegisterShell(GraphInterpreterShell shell)
         {
             _newShells.Enqueue(shell);
@@ -1414,7 +1667,7 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// Initializes the first interpreter shell when the actor starts.
         /// </summary>
         protected override void PreStart()
         {
@@ -1464,10 +1717,10 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// Handles recognized boundary and shell-registration messages.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="message">The actor message to process.</param>
+        /// <returns><c>true</c> when the message is handled; otherwise <c>false</c>.</returns>
         protected override bool Receive(object message)
         {
             switch (message)
@@ -1507,7 +1760,7 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// Aborts active and queued shells when the interpreter actor stops.
         /// </summary>
         protected override void PostStop()
         {

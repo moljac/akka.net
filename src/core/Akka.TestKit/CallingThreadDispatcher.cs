@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="CallingThreadDispatcher.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading;
 using Akka.Configuration;
 using Akka.Dispatch;
 
@@ -17,18 +18,18 @@ namespace Akka.TestKit
     public class CallingThreadDispatcherConfigurator : MessageDispatcherConfigurator
     {
         /// <summary>
-        /// TBD 
+        /// Creates a configurator for the calling-thread dispatcher.
         /// </summary>
-        /// <param name="config">TBD</param>
-        /// <param name="prerequisites">TBD</param>
+        /// <param name="config">The HOCON configuration for this dispatcher.</param>
+        /// <param name="prerequisites">The dispatcher prerequisites supplied by the actor system.</param>
         public CallingThreadDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
         {
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a calling-thread dispatcher using this configurator.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The configured calling-thread dispatcher.</returns>
         public override MessageDispatcher Dispatcher()
         {
             return new CallingThreadDispatcher(this);
@@ -43,30 +44,34 @@ namespace Akka.TestKit
     public class CallingThreadDispatcher : MessageDispatcher
     {
         /// <summary>
-        /// TBD 
+        /// HOCON id of the CallingThreadDispatcher
         /// </summary>
-        public static string Id = "akka.test.calling-thread-dispatcher";
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="configurator">TBD</param>
+        public new static string Id = "akka.test.calling-thread-dispatcher";
+        
         public CallingThreadDispatcher(MessageDispatcherConfigurator configurator) : base(configurator)
         {
         }
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="run">TBD</param>
+        
         protected override void ExecuteTask(IRunnable run)
         {
-            run.Run();
-        }
+            var currentSyncContext = SynchronizationContext.Current;
 
-        /// <summary>
-        /// TBD
-        /// </summary>
+            try
+            {
+                // Actors should not run with ActorCellKeepingSynchronizationContext
+                // (or any sync context that wraps ActorCellKeepingSynchronizationContext, e.g. Xunit's AsyncTestSyncContext)
+                // otherwise continuations in async message handlers will use ActorCellKeepingSynchronizationContext
+                // instead of ActorTaskScheduler which causes ActorContext to be incorrect.
+                SynchronizationContext.SetSynchronizationContext(null);
+
+                run.Run();
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(currentSyncContext);
+            }
+        }
+        
         protected override void Shutdown()
         {
             // do nothing

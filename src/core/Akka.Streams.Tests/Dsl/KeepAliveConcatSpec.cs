@@ -1,23 +1,24 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="KeepAliveConcatSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Akka.TestKit.Extensions;
 using Akka.Streams.Dsl;
 using Akka.Streams.TestKit;
-using Akka.Streams.TestKit.Tests;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
+using System.Threading.Tasks;
+using FluentAssertions.Extensions;
 
 namespace Akka.Streams.Tests.Dsl
 {
-    public class KeepAliveConcatSpec : Akka.TestKit.Xunit2.TestKit
+    public class KeepAliveConcatSpec : Akka.TestKit.Xunit.TestKit
     {
         public KeepAliveConcatSpec(ITestOutputHelper output)
             : base(output: output)
@@ -31,20 +32,21 @@ namespace Akka.Streams.Tests.Dsl
         }
 
         [Fact]
-        public void KeepAliveConcat_should_not_emit_additional_elements_if_upstream_is_fast_enough()
+        public async Task KeepAliveConcat_should_not_emit_additional_elements_if_upstream_is_fast_enough()
         {
             var t = _sampleSource
                 .Via(new KeepAliveConcat<IEnumerable<int>>(5, TimeSpan.FromSeconds(1), Expand))
                 .Grouped(1000)
                 .RunWith(Sink.First<IEnumerable<IEnumerable<int>>>(), Sys.Materializer());
 
-            t.AwaitResult()
+            var complete = await t.WaitAsync(3.Seconds());
+            complete
                 .SelectMany(x => x)
                 .Should().BeEquivalentTo(Enumerable.Range(1, 10), o => o.WithStrictOrdering());
         }
 
         [Fact]
-        public void KeepAliveConcat_should_emit_elements_periodically_after_silent_periods()
+        public async Task KeepAliveConcat_should_emit_elements_periodically_after_silent_periods()
         {
             var sourceWithIdleGap = Source.From(Enumerable.Range(1, 5).Grouped(3))
                 .Concat
@@ -57,7 +59,8 @@ namespace Akka.Streams.Tests.Dsl
                 .Grouped(1000)
                 .RunWith(Sink.First<IEnumerable<IEnumerable<int>>>(), Sys.Materializer());
 
-            t.AwaitResult(TimeSpan.FromSeconds(6))
+            var complete = await t.WaitAsync(TimeSpan.FromSeconds(6));
+            complete
                 .SelectMany(x => x)
                 .Should().BeEquivalentTo(Enumerable.Range(1, 10), o => o.WithStrictOrdering());
         }
@@ -130,7 +133,7 @@ namespace Akka.Streams.Tests.Dsl
         }
 
         [Fact]
-        public void KeepAliveConcat_should_emit_buffered_elements_when_upstream_completed()
+        public async Task KeepAliveConcat_should_emit_buffered_elements_when_upstream_completed()
         {
             var upstream = this.CreatePublisherProbe<int>();
             var downstream = this.CreateSubscriberProbe<int>();
@@ -139,15 +142,19 @@ namespace Akka.Streams.Tests.Dsl
                 .Via(new KeepAliveConcat<int>(5, TimeSpan.FromSeconds(60), x => new[] { x }))
                 .RunWith(Sink.FromSubscriber(downstream), Sys.Materializer());
 
-            upstream.SendNext(1);
-            upstream.SendNext(2);            
-            upstream.SendComplete();
+            // Wait for KeepAliveConcat to pull from upstream (respecting reactive streams protocol)
+            await upstream.ExpectRequestAsync();
 
-            downstream.Request(2);
-            downstream.ExpectNextN(2).Should().BeEquivalentTo(new[] { 1, 2 }, o => o.WithStrictOrdering());
+            // Now send elements in response to the demand
+            await upstream.SendNextAsync(1);
+            await upstream.SendNextAsync(2);
+            await upstream.SendCompleteAsync();
 
-            downstream.Request(1);
-            downstream.ExpectComplete();
+            await downstream.RequestAsync(2);
+            await downstream.ExpectNextNAsync(new[] { 1, 2 });
+
+            await downstream.RequestAsync(1);
+            await downstream.ExpectCompleteAsync();
         }
     }
 

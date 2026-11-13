@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="InetAddressDnsResolver.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -16,7 +16,8 @@ using Akka.Configuration;
 namespace Akka.IO
 {
     /// <summary>
-    /// TBD
+    /// DNS resolver actor that uses <see cref="System.Net.Dns.GetHostEntryAsync(string)"/> to resolve hostnames
+    /// and caches results using a <see cref="SimpleDnsCache"/>.
     /// </summary>
     public class InetAddressDnsResolver : ActorBase
     {
@@ -26,10 +27,10 @@ namespace Akka.IO
         private readonly bool _useIpv6;
 
         /// <summary>
-        /// TBD
+        /// Creates a new <see cref="InetAddressDnsResolver"/> with the specified cache and configuration.
         /// </summary>
-        /// <param name="cache">TBD</param>
-        /// <param name="config">TBD</param>
+        /// <param name="cache">The DNS cache for storing resolved entries.</param>
+        /// <param name="config">The HOCON configuration specifying TTL and IPv6 settings.</param>
         public InetAddressDnsResolver(SimpleDnsCache cache, Config config)
         {
             _cache = cache;
@@ -38,11 +39,7 @@ namespace Akka.IO
             _useIpv6 = config.GetBoolean( "use-ipv6" , false);
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <inheritdoc/>
         protected override bool Receive(object message)
         {
             if (message is Dns.Resolve resolve)

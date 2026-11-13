@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TransportFailSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -10,8 +10,10 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Event;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using Akka.Util;
+using Xunit;
 
 namespace Akka.Remote.Tests.MultiNode
 {
@@ -40,7 +42,7 @@ namespace Akka.Remote.Tests.MultiNode
             "));
         }
 
-        internal static AtomicBoolean FdAvailable = new AtomicBoolean(true);
+        internal static AtomicBoolean FdAvailable = new(true);
 
         /// <summary>
         /// Failure detector implementation that will fail when <see cref="FdAvailable"/> is false.
@@ -86,77 +88,70 @@ namespace Akka.Remote.Tests.MultiNode
 
         protected override int InitialParticipantsValueFactory => 2;
 
-        private IActorRef Identify(RoleName role, string actorName)
+        private async Task<IActorRef> IdentifyAsync(RoleName role, string actorName, TimeSpan timeout)
         {
-            var p = CreateTestProbe();
+            var p = CreateTestProbe(); // fresh probe per attempt: a late reply can't satisfy a later attempt
             Sys.ActorSelection(Node(role) / "user" / actorName).Tell(new Identify(actorName), p.Ref);
-            return p.ExpectMsg<ActorIdentity>(RemainingOrDefault).Subject;
+            return (await p.ExpectMsgAsync<ActorIdentity>(timeout)).Subject;
         }
 
         [MultiNodeFact]
-        public void TransportFail_should_reconnect()
+        public async Task TransportFail_should_reconnect()
         {
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
-                EnterBarrier("actors-started");
-                var subject = Identify(_config.Second, "subject");
-                Watch(subject);
+                await EnterBarrierAsync("actors-started");
+                var subject = await IdentifyAsync(_config.Second, "subject", TimeSpan.FromSeconds(3));
+                await WatchAsync(subject);
                 subject.Tell("hello");
-                ExpectMsg("hello");
+                await ExpectMsgAsync("hello");
             }, _config.First);
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
                 Sys.ActorOf(Props.Create(() => new TransportFailSpecConfig.Subject()), "subject");
-                EnterBarrier("actors-started");
+                await EnterBarrierAsync("actors-started");
             }, _config.Second);
 
-            EnterBarrier("watch-established");
+            await EnterBarrierAsync("watch-established");
 
             // trigger transport failure detector
             TransportFailSpecConfig.FdAvailable.GetAndSet(false);
 
             // wait for ungated (also later awaitAssert retry)
-            Task.Delay(RARP.For(Sys).Provider.RemoteSettings.RetryGateClosedFor).Wait();
+            await Task.Delay(RARP.For(Sys).Provider.RemoteSettings.RetryGateClosedFor);
             TransportFailSpecConfig.FdAvailable.GetAndSet(true);
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
-                EnterBarrier("actors-started2");
+                await EnterBarrierAsync("actors-started2");
                 var quarantineProbe = CreateTestProbe();
                 Sys.EventStream.Subscribe(quarantineProbe.Ref, typeof(QuarantinedEvent));
 
                 IActorRef subject2 = null;
-                AwaitAssert(() =>
+                // covers the rest of the 3 s gate, one possible re-gate if the peer still sees the failure detector as down, and a slow handshake
+                await AwaitAssertAsync(async () =>
                 {
-                    // TODO: harden
-                    Within(TimeSpan.FromSeconds(3), () =>
-                    {
-                        AwaitCondition(() =>
-                        {
-                            subject2 = Identify(_config.Second, "subject2");
-                            return subject2 != null;
-                        }, RemainingOrDefault, TimeSpan.FromSeconds(1));
-                        
-                    });
-                }, TimeSpan.FromSeconds(5));
-                Watch(subject2);
-                quarantineProbe.ExpectNoMsg(TimeSpan.FromSeconds(1));
+                    subject2 = await IdentifyAsync(_config.Second, "subject2", TimeSpan.FromSeconds(2));
+                    Assert.NotNull(subject2);
+                }, TimeSpan.FromSeconds(15), TimeSpan.FromMilliseconds(500));
+                await WatchAsync(subject2);
+                await quarantineProbe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
                 subject2.Tell("hello2");
-                ExpectMsg("hello2");
-                EnterBarrier("watch-established2");
-                ExpectTerminated(subject2);
+                await ExpectMsgAsync("hello2");
+                await EnterBarrierAsync("watch-established2");
+                await ExpectTerminatedAsync(subject2);
             }, _config.First);
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
                 var subject2 = Sys.ActorOf(Props.Create(() => new TransportFailSpecConfig.Subject()), "subject2");
-                EnterBarrier("actors-started2");
-                EnterBarrier("watch-established2");
+                await EnterBarrierAsync("actors-started2");
+                await EnterBarrierAsync("watch-established2");
                 subject2.Tell(PoisonPill.Instance);
             }, _config.Second);
 
-            EnterBarrier("done");
+            await EnterBarrierAsync("done");
         }
     }
 }

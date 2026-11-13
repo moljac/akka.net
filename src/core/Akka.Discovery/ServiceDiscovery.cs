@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ServiceDiscovery.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -30,8 +30,7 @@ namespace Akka.Discovery
             /// <summary>
             /// Result of a failed resolve request
             /// </summary>
-            /// <param name="serviceName">TBD</param>
-            /// <param name="addresses">TBD</param>
+            /// <param name="serviceName">Name of the service whose lookup failed.</param>
             public Resolved(string serviceName)
             {
                 ServiceName = serviceName;
@@ -41,8 +40,8 @@ namespace Akka.Discovery
             /// <summary>
             /// Result of a successful resolve request
             /// </summary>
-            /// <param name="serviceName">TBD</param>
-            /// <param name="addresses">TBD</param>
+            /// <param name="serviceName">Name of the service that was resolved.</param>
+            /// <param name="addresses">Resolved targets for the service; a <see langword="null"/> value is treated as an empty list.</param>
             public Resolved(string serviceName, IEnumerable<ResolvedTarget> addresses)
             {
                 ServiceName = serviceName;
@@ -147,7 +146,7 @@ namespace Akka.Discovery
     /// </summary>
     public class Lookup : INoSerializationVerificationNeeded, IEquatable<Lookup>
     {
-        private static readonly Regex srvQueryRegex = new Regex(@"^_(.+?)\._(.+?)\.(.+?)$",
+        private static readonly Regex srvQueryRegex = new(@"^_(.+?)\._(.+?)\.(.+?)$",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         // Validates domain name:
@@ -171,7 +170,7 @@ namespace Akka.Discovery
         //       . => separated by a . (dot)
         //       label pattern => (?![0-9-])[A-Za-z0-9-]{1,63}(?<!-)
         //       * => match zero or more times 
-        private static readonly Regex domainNameRegex = new Regex(@"^((?![0-9-])[A-Za-z0-9-]{1,63}(?<!-))((\.(?![0-9-])[A-Za-z0-9-]{1,63}(?<!-)))*$",
+        private static readonly Regex domainNameRegex = new(@"^((?![0-9-])[A-Za-z0-9-]{1,63}(?<!-))((\.(?![0-9-])[A-Za-z0-9-]{1,63}(?<!-)))*$",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         /// <summary>
@@ -251,8 +250,7 @@ namespace Akka.Discovery
 
         public override string ToString() => $"Lookup({ServiceName}, {PortName}, {Protocol})";
 
-        public Lookup Copy(string serviceName = null, string portName = null, string protocol = null) =>
-            new Lookup(serviceName ?? ServiceName, portName ?? PortName, protocol ?? Protocol);
+        public Lookup Copy(string serviceName = null, string portName = null, string protocol = null) => new(serviceName ?? ServiceName, portName ?? PortName, protocol ?? Protocol);
 
         public bool Equals(Lookup other)
         {

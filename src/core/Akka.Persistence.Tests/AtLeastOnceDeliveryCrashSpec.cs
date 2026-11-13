@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AtLeastOnceDeliveryCrashSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -9,8 +9,8 @@ using System;
 using Akka.Actor;
 using Akka.Event;
 using Akka.TestKit;
+using Akka.TestKit.Xunit.Attributes;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Persistence.Tests
 {
@@ -46,14 +46,20 @@ namespace Akka.Persistence.Tests
 
         internal class Message
         {
-            public static readonly Message Instance = new Message();
+            public static readonly Message Instance = new();
             private Message() { }
         }
 
         internal class CrashMessage
         {
-            public static readonly CrashMessage Instance = new CrashMessage();
+            public static readonly CrashMessage Instance = new();
             private CrashMessage() { }
+        }
+
+        internal class CrashMessagePersisted
+        {
+            public static readonly CrashMessagePersisted Instance = new();
+            private CrashMessagePersisted() { }
         }
 
         internal class SendingMessage
@@ -73,7 +79,7 @@ namespace Akka.Persistence.Tests
             private readonly IActorRef _testProbe;
             private ILoggingAdapter _adapter;
 
-            ILoggingAdapter Log { get { return _adapter ?? (_adapter = Context.GetLogger()); } }
+            protected override ILoggingAdapter Log { get { return _adapter ??= Context.GetLogger(); } }
 
             public CrashingActor(IActorRef testProbe)
             {
@@ -103,8 +109,14 @@ namespace Akka.Persistence.Tests
 
             protected override bool ReceiveCommand(object message)
             {
-                if (message is Message) Persist(message as Message, _ => Send());
-                else if (message is CrashMessage) Persist(message as CrashMessage, _ => { });
+                if (message is Message message1) Persist(message1, _ => Send());
+                else if (message is CrashMessage crashMessage) Persist(crashMessage, _ =>
+                {
+                    // Signal that the CrashMessage has been persisted
+                    // This is necessary to avoid a race condition where the supervisor
+                    // is stopped before the CrashMessage is persisted to the journal
+                    _testProbe.Tell(CrashMessagePersisted.Instance);
+                });
                 else return false;
                 return true;
             }
@@ -122,7 +134,7 @@ namespace Akka.Persistence.Tests
         {
         }
 
-        [Fact(Skip = "Racy on AzureDevOps")]
+        [Fact]
         public void AtLeastOnceDelivery_should_not_send_when_actor_crashes()
         {
             var testProbe = CreateTestProbe();
@@ -132,6 +144,12 @@ namespace Akka.Persistence.Tests
             testProbe.ExpectMsg<SendingMessage>();
 
             supervisor.Tell(CrashMessage.Instance);
+            // Wait for the CrashMessage to be persisted before stopping the supervisor
+            // This fixes a race condition where the supervisor could be stopped before
+            // the CrashMessage is written to the journal, causing recovery to succeed
+            // instead of crash (which would then trigger OnReplaySuccess and send messages)
+            testProbe.ExpectMsg<CrashMessagePersisted>();
+
             var deathProbe = CreateTestProbe();
             deathProbe.Watch(supervisor);
             Sys.Stop(supervisor);

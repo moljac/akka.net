@@ -1,7 +1,7 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="MemberOrderingModelBasedTests.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -10,30 +10,25 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
-using Akka.Tests.Shared.Internals.Helpers;
 using Akka.Util;
 using Akka.Util.Internal;
 using FsCheck;
 using FsCheck.Experimental;
+using FsCheck.Fluent;
 using FsCheck.Xunit;
 
+#pragma warning disable xUnit1028
 namespace Akka.Cluster.Tests
 {
     public class MemberOrderingModelBasedTests
     {
-        public MemberOrderingModelBasedTests()
-        {
-            // register the custom generators to make testing easier
-            Arb.Register<ClusterGenerators>();
-        }
-
-        [Property]
+        [Property(Arbitrary = new[] { typeof(ClusterGenerators) })]
         public Property MemberOrderingMustObeyModel()
         {
             return new MembershipMachine().ToProperty();
         }
 
-        [Property(MaxTest = 1000)]
+        [Property(MaxTest = 1000, Arbitrary = new[] { typeof(ClusterGenerators) })]
         public Property DistinctMemberAddressesMustCompareDifferently(Address[] addresses)
         {
             if (addresses.Length == 0)
@@ -55,18 +50,12 @@ namespace Akka.Cluster.Tests
                 a1 = a2; // next member
             }
 
-            return true.Classify(true, "all distinct").Classify(false, "empty set"); ;
+            return true.Classify(true, "all distinct").Classify(false, "empty set");
         }
     }
 
     public class MembershipMachine : Machine<MemberOrderingState, MembershipModel>
     {
-        public MembershipMachine()
-        {
-            // register the custom generators to make testing easier
-            Arb.Register<ClusterGenerators>();
-        }
-
         public override Gen<Operation<MemberOrderingState, MembershipModel>> Next(MembershipModel model)
         {
             if (model.AllMembers.Count == 0)
@@ -74,8 +63,10 @@ namespace Akka.Cluster.Tests
             return Gen.OneOf(ChangeMemberStatus.Generator(model.AllMembers.Keys), AddNewMember.Generator());
         }
 
-        public override Arbitrary<Setup<MemberOrderingState, MembershipModel>> Setup => Arb.From(Arb.Generate<MembershipSetup>()
-            .Select(x => (Setup<MemberOrderingState, MembershipModel>)x)); // compiler ceremony :(
+        public override Arbitrary<Setup<MemberOrderingState, MembershipModel>> Setup =>
+            Arb.From(ClusterGenerators.UniqueAddressGenerator().Generator
+                .ArrayOf()
+                .Select(x => (Setup<MemberOrderingState, MembershipModel>)new MembershipSetup(x)));
 
         #region Setup
 
@@ -117,12 +108,10 @@ namespace Akka.Cluster.Tests
             public static Gen<Operation<MemberOrderingState, MembershipModel>> Generator(IEnumerable<Address> addresses)
             {
                 var statusGen = ClusterGenerators.MemberStatusGenerator().Generator;
-                Func<Address, MemberStatus, Operation<MemberOrderingState, MembershipModel>> generator =
-                    (address, status) => new ChangeMemberStatus(address, status);
 
-                var producer = FsharpDelegateHelper.Create(generator);
-
-                return Gen.Map2(producer, Gen.Elements(addresses), statusGen);
+                return Gen.Elements(addresses.ToArray())
+                    .Zip(statusGen)
+                    .Select(t => (Operation<MemberOrderingState, MembershipModel>)new ChangeMemberStatus(t.Item1, t.Item2));
             }
 
             public readonly Address TargetedMember;
@@ -173,7 +162,8 @@ namespace Akka.Cluster.Tests
         {
             public static Gen<Operation<MemberOrderingState, MembershipModel>> Generator()
             {
-                return Arb.Generate<AddNewMember>().Select(x => (Operation<MemberOrderingState, MembershipModel>)x);
+                return ClusterGenerators.UniqueAddressGenerator().Generator
+                    .Select(x => (Operation<MemberOrderingState, MembershipModel>)new AddNewMember(x));
             }
 
             private readonly UniqueAddress _address;

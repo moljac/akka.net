@@ -155,7 +155,7 @@ This strategy is typically declared inside the actor in order to have access to 
 The remaining visible methods are user-overridable life-cycle hooks which are described in the following:
 
 ```csharp
-public override void PreStart()
+protected override void PreStart()
 {
 }
 
@@ -403,6 +403,9 @@ Task.WhenAll(tasks).PipeTo(actorC, Self);
 
 This example demonstrates `Ask` together with the `Pipe` Pattern on tasks, because this is likely to be a common combination. Please note that all of the above is completely non-blocking and asynchronous: `Ask` produces a `Task`, two of which are awaited until both are completed, and when that happens, a new `Result` object is forwarded to another actor.
 
+> [!NOTE]
+> While `Ask` waits for a response, that does not ensure it receives any kind of priority. Messages sent via `Ask` queue in actor mailboxes the same way that messages sent via `Tell` do. You may need to adapt your actor hierarchy if `Ask` messages might be impeded by a large queue in an actor's mailbox.
+
 Using `Ask` will send a message to the receiving Actor as with `Tell`, and the receiving actor must reply with `Sender.Tell(reply, Self)` in order to complete the returned `Task` with a value. The `Ask` operation involves creating an internal actor for handling this reply, which needs to have a timeout after which it is destroyed in order not to leak resources; see more below.
 
 > [!WARNING]
@@ -416,7 +419,7 @@ try
 }
 catch (Exception e)
 {
-    Sender.Tell(new Failure { Exception = e }, Self);
+    Sender.Tell(new Akka.Actor.Status.Failure(e), Self);
 }
 ```
 
@@ -525,7 +528,7 @@ Receive<string>(s => Console.WriteLine("Received string: " + s);  //This will ca
 
 ```csharp
 ReceiveAny(o => Console.WriteLine("Received object: " + o);
-Receive<object>(0 => Console.WriteLine("Received object: " + o);
+Receive<object>(o => Console.WriteLine("Received object: " + o);
 ```
 
 ## Reply to Messages
@@ -790,12 +793,15 @@ static void Main(string[] args)
 
 ## Stash
 
-The `IWithUnboundedStash` interface enables an actor to temporarily stash away messages that can not or should not be handled using the actor's current behavior. Upon changing the actor's message handler, i.e., right before invoking `Context.BecomeStacked()` or `Context.UnbecomeStacked()`;, all stashed messages can be "un-stashed", thereby prepending them to the actor's mailbox. This way, the stashed messages can be processed in the same order as they have been received originally. An actor that implements `IWithUnboundedStash` will automatically get a dequeue-based mailbox.
+The `IWithStash` interface enables an actor to temporarily stash away messages that can not or should not be handled using the actor's current behavior. Upon changing the actor's message handler, i.e., right before invoking `Context.Become()` or `Context.Unbecome()`, all stashed messages can be "un-stashed", thereby prepending them to the actor's mailbox. This way, the stashed messages can be processed in the same order as they have been received originally.
 
-Here is an example of the `IWithUnboundedStash` interface in action:
+> [!NOTE]
+> The interface `IWithStash` implements the marker interface `IRequiresMessageQueue<IDequeBasedMessageQueueSemantics>` which requests the system to automatically choose a deque-based mailbox implementation for the actor (defaults to an unbounded deque mailbox). If you want more control over the mailbox, see the documentation on mailboxes: [Mailboxes](xref:mailboxes).
+
+Here is an example of the `IWithStash` interface in action:
 
 ```csharp
-public class ActorWithProtocol : ReceiveActor, IWithUnboundedStash
+public class ActorWithProtocol : ReceiveActor, IWithStash
 {
     public IStash Stash { get; set; }
 
@@ -827,11 +833,50 @@ public class ActorWithProtocol : ReceiveActor, IWithUnboundedStash
 }
 ```
 
-Invoking `Stash()` adds the current message (the message that the actor received last) to the actor's stash. It is typically invoked when handling the default case in the actor's message handler to stash messages that aren't handled by the other cases. It is illegal to stash the same message twice; to do so results in an `IllegalStateException` being thrown. The stash may also be bounded in which case invoking `Stash()` may lead to a capacity violation, which results in a `StashOverflowException`. The capacity of the stash can be configured using the stash-capacity setting (an `Int`) of the mailbox's configuration.
+Invoking `Stash()` adds the current message (the message that the actor received last) to the actor's stash. It is typically invoked when handling the default case in the actor's message handler to stash messages that aren't handled by the other cases. It is illegal to stash the same message twice; to do so results in an `IllegalStateException` being thrown. The stash may also be bounded in which case invoking `Stash()` may lead to a capacity violation, which results in a `StashOverflowException`. The capacity of the stash can be configured using the stash-capacity setting (an `int`) of the mailbox's configuration.
 
 Invoking `UnstashAll()` enqueues messages from the stash to the actor's mailbox until the capacity of the mailbox (if any) has been reached (note that messages from the stash are prepended to the mailbox). In case a bounded mailbox overflows, a `MessageQueueAppendFailedException` is thrown. The stash is guaranteed to be empty after calling `UnstashAll()`.
 
-Note that the `stash` is part of the ephemeral actor state, unlike the mailbox. Therefore, it should be managed like other parts of the actor's state which have the same property. The `IWithUnboundedStash` interface implementation of `PreRestart` will call `UnstashAll()`, which is usually the desired behavior.
+Note that the stash is part of the ephemeral actor state, unlike the mailbox. Therefore, it should be managed like other parts of the actor's state which have the same property.
+
+However, the `IWithStash` interface implementation of `PreRestart` will call `UnstashAll()`. This means that before the actor restarts, it will transfer all stashed messages back to the actor’s mailbox.
+
+The result of this is that when an actor is restarted, any stashed messages will be delivered to the new incarnation of the actor. This is usually the desired behavior.
+
+> [!NOTE]
+> If you want to enforce that your actor can only work with an unbounded stash, then you should use the `IWithUnboundedStash` interface instead.
+
+### Bounded Stashes
+
+In certain scenarios, it might be helpful to put a limit on the size of the `IStash` inside your actor. You can configure a bounded stash via the following actor definition:
+
+```csharp
+public class StashingActorWithOverflow : UntypedActor, IWithStash
+```
+
+The `IWithStash` interface will default to *unbounded* stash behavior, but the the `Props` class or via `akka.actor.deployment` we can easily configure this actor to impose a limit on its stash capacity:
+
+```csharp
+// create an actor with a stash size of 2
+IActorRef stasher = Sys.ActorOf(Props.Create<StashingActorWithOverflow>().WithStashCapacity(2));
+```
+
+Or via HOCON:
+
+```hocon
+akka.actor.deployment{{
+    /configStashingActor {{
+        stash-capacity = 2
+    }}
+}}
+```
+
+Either of these settings will configure the `IStash` to only have a maximum capacity of 2 items. If a third item is attempted to be stashed the `IStash` will throw a `StashOverflowException`.
+
+> [!TIP]
+> You can always check to see if your `IStash` is approaching its capacity by checking the `IStash.IsFull`, `IStash.Capacity`, or `IStash.Count` properties.
+
+If you attempt to apply a maximum stash capacity to an `IWithUnboundedStash` actor then the setting will be ignored.
 
 ## Killing an Actor
 

@@ -1,24 +1,23 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="VersionVectorSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using Akka.Actor;
 using Akka.Cluster;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.DistributedData.Tests
 {
     [Collection("DistributedDataSpec")]
     public class VersionVectorSpec
     {
-        private readonly UniqueAddress _node1 = new UniqueAddress(new Address("akka.tcp", "Sys", "localhost", 2551), 1);
-        private readonly UniqueAddress _node2 = new UniqueAddress(new Address("akka.tcp", "Sys", "localhost", 2552), 2);
-        private readonly UniqueAddress _node3 = new UniqueAddress(new Address("akka.tcp", "Sys", "localhost", 2553), 3);
-        private readonly UniqueAddress _node4 = new UniqueAddress(new Address("akka.tcp", "Sys", "localhost", 2554), 4);
+        private readonly UniqueAddress _node1 = new(new Address("akka.tcp", "Sys", "localhost", 2551), 1);
+        private readonly UniqueAddress _node2 = new(new Address("akka.tcp", "Sys", "localhost", 2552), 2);
+        private readonly UniqueAddress _node3 = new(new Address("akka.tcp", "Sys", "localhost", 2553), 3);
+        private readonly UniqueAddress _node4 = new(new Address("akka.tcp", "Sys", "localhost", 2554), 4);
 
         public VersionVectorSpec(ITestOutputHelper output)
         {

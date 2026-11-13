@@ -1,19 +1,23 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TestKitBase.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Actor.Internal;
 using Akka.Actor.Setup;
 using Akka.Configuration;
 using Akka.Event;
-using Akka.Pattern;
+using Akka.TestKit.Extensions;
 using Akka.TestKit.Internal;
 using Akka.Util;
 using Akka.Util.Internal;
@@ -25,6 +29,10 @@ namespace Akka.TestKit
     /// </summary>
     public abstract partial class TestKitBase : IActorRefFactory
     {
+        // AsyncLocal for proper timeout propagation across async boundaries.
+        // This ensures WithinAsync timeout flows correctly to EventFilter and other async operations.
+        private readonly AsyncLocal<TimeSpan?> _asyncLocalEnd = new();
+
         private class TestState
         {
             public TestState()
@@ -34,7 +42,7 @@ namespace Akka.TestKit
 
             public ActorSystem System { get; set; }
             public TestKitSettings TestKitSettings { get; set; }
-            public BlockingQueue<MessageEnvelope> Queue { get; set; }
+            public Channel<MessageEnvelope> Queue { get; set; }
             public MessageEnvelope LastMessage  { get; set; }
             public IActorRef TestActor { get; set; }
             public TimeSpan? End { get; set; }
@@ -42,6 +50,8 @@ namespace Akka.TestKit
             public ILoggingAdapter Log { get; set; }
             public EventFilterFactory EventFilterFactory { get; set; }
         }
+
+        private const string TestActorDispatcherId = "akka.test.test-actor.dispatcher";
 
         private static readonly Config _defaultConfig = ConfigurationFactory.FromResource<TestKitBase>("Akka.TestKit.Internal.Reference.conf");
         private static readonly Config _fullDebugConfig = ConfigurationFactory.ParseString(@"
@@ -56,7 +66,7 @@ namespace Akka.TestKit
                 akka.log-dead-letters = true
                 akka.loglevel = DEBUG
                 akka.stdout-loglevel = DEBUG");
-        private static readonly AtomicCounter _testActorId = new AtomicCounter(0);
+        private static readonly AtomicCounter _testActorId = new(0);
 
         private readonly ITestKitAssertions _assertions;
         private TestState _testState;
@@ -111,11 +121,49 @@ namespace Akka.TestKit
 
         protected TestKitBase(ITestKitAssertions assertions, ActorSystem system, ActorSystemSetup config, string actorSystemName, string testActorName)
         {
-            if(assertions == null) throw new ArgumentNullException(nameof(assertions), "The supplied assertions must not be null.");
-
-            _assertions = assertions;
+            _assertions = assertions ?? throw new ArgumentNullException(nameof(assertions), "The supplied assertions must not be null.");
             
+            // ReSharper disable once VirtualMemberCallInConstructor
             InitializeTest(system, config, actorSystemName, testActorName);
+        }
+
+        // The default config names TestEventListener by type. With Akka.DynamicTypeLoading off that name does not
+        // resolve, so register the type with LoggerSetup too; LoggingBus accepts a name LoggerSetup already
+        // started. Only when the effective config would start the listener anyway, so a spec that replaces
+        // akka.loggers keeps its own list, and an existing LoggerSetup (and its formatter) is kept.
+        private static ActorSystemSetup WithTestEventListenerSetup(ActorSystemSetup setup, Config config)
+        {
+            var listenerName = typeof(TestEventListener).FullName;
+            if (!config.GetStringList("akka.loggers", Array.Empty<string>())
+                    .Any(logger => string.Equals(TypeNameOf(logger), listenerName, StringComparison.Ordinal)))
+                return setup;
+
+            var listener = Props.Create<TestEventListener>();
+            var existing = setup.Get<LoggerSetup>();
+            if (!existing.HasValue)
+                return setup.WithSetup(LoggerSetup.Create(listener));
+
+            if (existing.Value.Loggers.Any(props => props.Type == typeof(TestEventListener)))
+                return setup;
+
+            var loggers = existing.Value.Loggers.Concat(new[] { listener }).ToArray();
+            return setup.WithSetup(existing.Value.Formatter is { } formatter
+                ? LoggerSetup.Create(formatter, loggers)
+                : LoggerSetup.Create(loggers));
+        }
+
+        private static bool NamesCallingThreadDispatcher(Config config, string dispatcherId)
+        {
+            var type = config.GetString(dispatcherId + ".type", null);
+            return type is not null && string.Equals(TypeNameOf(type),
+                typeof(CallingThreadDispatcherConfigurator).FullName, StringComparison.Ordinal);
+        }
+
+        // "Ns.Type, Assembly" -> "Ns.Type"
+        private static string TypeNameOf(string typeName)
+        {
+            var comma = typeName.IndexOf(',');
+            return (comma < 0 ? typeName : typeName.Substring(0, comma)).Trim();
         }
 
         /// <summary>
@@ -125,7 +173,7 @@ namespace Akka.TestKit
         /// <param name="config">The configuration that <paramref name="system"/> will use if it's null.</param>
         /// <param name="actorSystemName">The name that <paramref name="system"/> will use if it's null.</param>
         /// <param name="testActorName">The name of the test actor. Can be null.</param>
-        protected void InitializeTest(ActorSystem system, ActorSystemSetup config, string actorSystemName, string testActorName)
+        protected virtual void InitializeTest(ActorSystem system, ActorSystemSetup config, string actorSystemName, string testActorName)
         {
             _testState = new TestState();
 
@@ -145,7 +193,13 @@ namespace Akka.TestKit
                     newBootstrap =
                         newBootstrap.WithActorRefProvider(bootstrap.FlatSelect(x => x.ActorRefProvider).Value);
                 }
-                system = ActorSystem.Create(actorSystemName ?? "test", config.WithSetup(newBootstrap));
+                var systemSetup = WithTestEventListenerSetup(config.WithSetup(newBootstrap),
+                    configWithDefaultFallback.HasValue ? configWithDefaultFallback.Value : _defaultConfig);
+                system = ActorSystem.Create(actorSystemName ?? "test", systemSetup);
+            }
+            else
+            {
+                system.Settings.InjectTopLevelFallback(_defaultConfig);
             }
 
             _testState.System = system;
@@ -154,7 +208,7 @@ namespace Akka.TestKit
             system.RegisterExtension(new TestKitAssertionsExtension(_assertions));
 
             _testState.TestKitSettings = TestKitExtension.For(_testState.System);
-            _testState.Queue = new BlockingQueue<MessageEnvelope>();
+            _testState.Queue = Channel.CreateUnbounded<MessageEnvelope>();
             _testState.Log = Logging.GetLogger(system, GetType());
             _testState.EventFilterFactory = new EventFilterFactory(this);
 
@@ -162,22 +216,27 @@ namespace Akka.TestKit
             _testState.System.Dispatchers.RegisterConfigurator(CallingThreadDispatcher.Id,
                 new CallingThreadDispatcherConfigurator(_testState.System.Settings.Config, _testState.System.Dispatchers.Prerequisites));
 
+            // The test actor's dispatcher names the same configurator by type in HOCON, and that name only
+            // resolves through reflection. Register it too, so it works with Akka.DynamicTypeLoading off. Skip it
+            // when the config points the id at some other type, so an override keeps working.
+            if (NamesCallingThreadDispatcher(_testState.System.Settings.Config, TestActorDispatcherId))
+                _testState.System.Dispatchers.RegisterConfigurator(TestActorDispatcherId,
+                    new CallingThreadDispatcherConfigurator(_testState.System.Settings.Config, _testState.System.Dispatchers.Prerequisites));
+
             if (string.IsNullOrEmpty(testActorName))
                 testActorName = "testActor" + _testActorId.IncrementAndGet();
 
-            var testActor = CreateTestActor(system, testActorName);
-            //Wait for the testactor to start
-            // Calling sync version here, since .Wait() causes deadlock
-            AwaitCondition(() =>
-            {
-                return !(testActor is IRepointableRef repRef) || repRef.IsStarted;
-            }, TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(10));
+            var testActor = CreateInitialTestActor(system, testActorName);
 
-            if (!(this is INoImplicitSender))
+            // For async initialization, don't wait in constructor to avoid deadlock
+            // The TestActor property getter will ensure it's ready when first accessed
+            _testState.TestActor = testActor;
+
+            if (this is not INoImplicitSender)
             {
                 InternalCurrentActorCellKeeper.Current = (ActorCell)((ActorRefWithCell)testActor).Underlying;
             }
-            else if (!(this is TestProbe))
+            else if (this is not TestProbe)
             //HACK: we need to clear the current context when running a No Implicit Sender test as sender from an async test may leak
             //but we should not clear the current context when creating a testprobe from a test
             {
@@ -185,10 +244,8 @@ namespace Akka.TestKit
             }
             SynchronizationContext.SetSynchronizationContext(
                 new ActorCellKeepingSynchronizationContext(InternalCurrentActorCellKeeper.Current));
-
-            _testState.TestActor = testActor;
         }
-
+        
         /// <summary>
         /// Initializes the <see cref="TestState"/> for a new spec.
         /// </summary>
@@ -202,6 +259,7 @@ namespace Akka.TestKit
         }
 
         private TimeSpan SingleExpectDefaultTimeout { get { return _testState.TestKitSettings.SingleExpectDefault; } }
+        private TimeSpan ExpectNoMessageDefaultTimeout { get { return _testState.TestKitSettings.ExpectNoMessageDefault; } }
 
         /// <summary>
         /// The <see cref="ActorSystem"/> that is recreated and used for each test.
@@ -280,7 +338,7 @@ namespace Akka.TestKit
         /// </value>
         public bool HasMessages
         {
-            get { return _testState.Queue.Count > 0; }
+            get { return _testState.Queue.Reader.Count > 0; }
         }
 
         /// <summary>
@@ -303,7 +361,7 @@ namespace Akka.TestKit
         /// <c>true</c> the message will be ignored by <see cref="TestActor"/>.</param>
         public void IgnoreMessages<TMsg>(Func<TMsg, bool> shouldIgnoreMessage)
         {
-            _testState.TestActor.Tell(new TestActor.SetIgnore(m => m is TMsg && shouldIgnoreMessage((TMsg)m)));
+            _testState.TestActor.Tell(new TestActor.SetIgnore(m => m is TMsg msg && shouldIgnoreMessage(msg)));
         }
 
         /// <summary>
@@ -329,7 +387,31 @@ namespace Akka.TestKit
         /// <returns>The actor to watch, i.e. the parameter <paramref name="actorToWatch"/></returns>
         public IActorRef Watch(IActorRef actorToWatch)
         {
-            _testState.TestActor.Tell(new TestActor.Watch(actorToWatch));
+            /*
+             * Look, I know what you're thinking: wow, what kind of idiot would add this line of code?
+             * Did you know that this method is secretly asynchronous? And has been responsible for possibly dozens of
+             * racy unit tests? Why yes, yes dear reader - in fact it has!
+             *
+             * We have to ensure that the Watch completes before this method exit, so unfortunately we have to block.
+             *
+             * "Nuke the site from orbit. It's the only way to be sure."
+             */
+            WatchAsync(actorToWatch).Wait(RemainingOrDefault);
+            return actorToWatch;
+        }
+        
+        /// <summary>
+        /// Have the <see cref="TestActor"/> watch an actor and receive 
+        /// <see cref="Terminated"/> messages when the actor terminates.
+        /// </summary>
+        /// <param name="actorToWatch">The actor to watch.</param>
+        /// <returns>The actor to watch, i.e. the parameter <paramref name="actorToWatch"/></returns>
+        /// <remarks>
+        /// This method exists in order to make the asynchronous nature of the Watch method explicit.
+        /// </remarks>
+        public async Task<IActorRef> WatchAsync(IActorRef actorToWatch)
+        {
+            await _testState.TestActor.Ask(new TestActor.Watch(actorToWatch), RemainingOrDefault);
             return actorToWatch;
         }
 
@@ -340,7 +422,22 @@ namespace Akka.TestKit
         /// <returns>The actor to unwatch, i.e. the parameter <paramref name="actorToUnwatch"/></returns>
         public IActorRef Unwatch(IActorRef actorToUnwatch)
         {
-            _testState.TestActor.Tell(new TestActor.Unwatch(actorToUnwatch));
+            // See previous comment in Watch method
+            UnwatchAsync(actorToUnwatch).Wait(RemainingOrDefault);
+            return actorToUnwatch;
+        }
+        
+        /// <summary>
+        /// Have the <see cref="TestActor"/> stop watching an actor.
+        /// </summary>
+        /// <param name="actorToUnwatch">The actor to unwatch.</param>
+        /// <returns>The actor to unwatch, i.e. the parameter <paramref name="actorToUnwatch"/></returns>
+        /// <remarks>
+        /// This method exists in order to make the asynchronous nature of the Unwatch method explicit.
+        /// </remarks>
+        public async Task<IActorRef> UnwatchAsync(IActorRef actorToUnwatch)
+        {
+            await _testState.TestActor.Ask(new TestActor.Unwatch(actorToUnwatch), RemainingOrDefault);
             return actorToUnwatch;
         }
 
@@ -364,7 +461,7 @@ namespace Akka.TestKit
         /// <summary>
         /// <para>
         /// Retrieves the time remaining for execution of the innermost enclosing
-        /// <see cref="Within(TimeSpan, Action, TimeSpan?)">Within</see> block.
+        /// <see cref="Within(TimeSpan, Action, TimeSpan?, CancellationToken)">Within</see> block.
         /// If missing that, then it returns the properly dilated default for this
         /// case from settings (key: "akka.test.single-expect-default").
         /// </para>
@@ -378,7 +475,21 @@ namespace Akka.TestKit
         /// <summary>
         /// <para>
         /// Retrieves the time remaining for execution of the innermost enclosing
-        /// <see cref="Within(TimeSpan, Action, TimeSpan?)">Within</see> block.
+        /// <see cref="Within(TimeSpan, Action, TimeSpan?, CancellationToken)">Within</see> block.
+        /// If missing that, then it returns the properly dilated default for this
+        /// case from settings (key: "akka.test.expect-no-message-default").
+        /// </para>
+        /// <remarks>The returned value is always finite.</remarks>
+        /// </summary>
+        public TimeSpan NoMessageRemainingOrDefault
+        {
+            get { return RemainingOr(Dilated(ExpectNoMessageDefaultTimeout)); }
+        }
+
+        /// <summary>
+        /// <para>
+        /// Retrieves the time remaining for execution of the innermost enclosing
+        /// <see cref="Within(TimeSpan, Action, TimeSpan?, CancellationToken)">Within</see> block.
         /// </para>
         /// <remarks>The returned value is always finite.</remarks>
         /// </summary>
@@ -389,9 +500,27 @@ namespace Akka.TestKit
         {
             get
             {
-                // ReSharper disable once PossibleInvalidOperationException
-                if (_testState.End.IsPositiveFinite()) return _testState.End.Value - Now;
-                throw new InvalidOperationException(@"Remaining may not be called outside of ""within""");
+                // Check AsyncLocal first (async context takes precedence)
+                var asyncEnd = _asyncLocalEnd.Value;
+                if (asyncEnd.HasValue)
+                {
+                    if (asyncEnd < TimeSpan.Zero)
+                        throw new InvalidOperationException($"End can not be negative, was: {asyncEnd}");
+
+                    var asyncRemaining = asyncEnd.Value - Now;
+                    return asyncRemaining < TimeSpan.Zero ? TimeSpan.Zero : asyncRemaining;
+                }
+
+                // Fallback to instance field
+                if(_testState.End is null)
+                    throw new InvalidOperationException(@"Remaining may not be called outside of ""within""");
+
+                if (_testState.End < TimeSpan.Zero)
+                    throw new InvalidOperationException($"End can not be negative, was: {_testState.End}");
+
+                // Make sure that the returned value is a positive TimeSpan
+                var remaining = _testState.End.Value - Now;
+                return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
             }
         }
 
@@ -399,16 +528,30 @@ namespace Akka.TestKit
         /// If inside a `within` block obtain time remaining for execution of the innermost enclosing `within`
         /// block; otherwise returns the given duration.
         /// </summary>
-        /// <param name="duration">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="duration">The duration to return when there is no enclosing `within` block.</param>
+        /// <exception cref="InvalidOperationException">Thrown if the current `within` end time is invalid.</exception>
+        /// <returns>The remaining time in the innermost `within` block, or <paramref name="duration"/> when outside one.</returns>
         protected TimeSpan RemainingOr(TimeSpan duration)
         {
-            if (!_testState.End.HasValue) return duration;
-            if (_testState.End.IsInfinite())
-                throw new ArgumentException("end cannot be infinite");
-            return _testState.End.Value - Now;
+            // Check AsyncLocal first (async context takes precedence for proper timeout propagation)
+            var asyncEnd = _asyncLocalEnd.Value;
+            if (asyncEnd.HasValue)
+            {
+                if (asyncEnd < TimeSpan.Zero)
+                    throw new InvalidOperationException($"End can not be negative, was: {asyncEnd}");
 
+                var asyncRemaining = asyncEnd.Value - Now;
+                return asyncRemaining < TimeSpan.Zero ? TimeSpan.Zero : asyncRemaining;
+            }
+
+            // Fallback to instance field for backward compatibility with sync code paths
+            if (!_testState.End.HasValue) return duration;
+            if (_testState.End < TimeSpan.Zero)
+                throw new InvalidOperationException($"End can not be negative, was: {_testState.End}");
+
+            // Make sure that the returned value is a positive TimeSpan
+            var remaining = _testState.End.Value - Now;
+            return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
 
         /// <summary>
@@ -421,10 +564,10 @@ namespace Akka.TestKit
         /// <param name="duration">The maximum.</param>
         /// <returns>A finite <see cref="TimeSpan"/> properly dilated</returns>
         /// <exception cref="ArgumentException">Thrown if <paramref name="duration"/> is infinite</exception>
-        public TimeSpan RemainingOrDilated(TimeSpan? duration)
+        public TimeSpan RemainingOrDilated([AutoDilate] TimeSpan? duration)
         {
             if(!duration.HasValue) return RemainingOrDefault;
-            if(duration.IsInfinite()) throw new ArgumentException("max duration cannot be infinite");
+            if(duration < TimeSpan.Zero) throw new ArgumentException("Must be positive TimeSpan", nameof(duration));
             return Dilated(duration.Value);
         }
 
@@ -433,14 +576,13 @@ namespace Akka.TestKit
         /// Multiplies the duration with the <see cref="Akka.TestKit.TestKitSettings.TestTimeFactor"/>,
         /// i.e. the config value "akka.test.timefactor"
         /// </summary>
-        /// <param name="duration">TBD</param>
-        /// <returns>TBD</returns>
-        public TimeSpan Dilated(TimeSpan duration)
+        /// <param name="duration">The duration to scale by the configured test time factor.</param>
+        /// <returns>The scaled duration.</returns>
+        public TimeSpan Dilated([AutoDilate] TimeSpan duration)
         {
-            if(duration.IsPositiveFinite())
-                return new TimeSpan((long)(duration.Ticks * _testState.TestKitSettings.TestTimeFactor));
-            //Else: 0 or infinite (negative)
-            return duration;
+            if (duration < TimeSpan.Zero)
+                throw new ArgumentException("Must not be negative", nameof(duration));
+            return new TimeSpan((long)(duration.Ticks * _testState.TestKitSettings.TestTimeFactor));
         }
 
 
@@ -448,8 +590,8 @@ namespace Akka.TestKit
         /// If <paramref name="timeout"/> is defined it is returned; otherwise
         /// the config value "akka.test.single-expect-default" is returned.
         /// </summary>
-        /// <param name="timeout">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="timeout">An optional timeout value.</param>
+        /// <returns>The specified timeout, or the configured single-expect default when null.</returns>
         public TimeSpan GetTimeoutOrDefault(TimeSpan? timeout)
         {
             return timeout.GetValueOrDefault(SingleExpectDefaultTimeout);
@@ -462,10 +604,11 @@ namespace Akka.TestKit
         /// </summary>
         /// <param name="duration">Optional. The duration to wait for shutdown. Default is 5 seconds multiplied with the config value "akka.test.timefactor".</param>
         /// <param name="verifySystemShutdown">if set to <c>true</c> an exception will be thrown on failure.</param>
-        public virtual void Shutdown(TimeSpan? duration = null, bool verifySystemShutdown = false)
-        {
-            Shutdown(_testState.System, duration, verifySystemShutdown);
-        }
+        /// <exception cref="TimeoutException">Thrown when shutdown exceeds the timeout and <paramref name="verifySystemShutdown"/> is true.</exception>
+        public virtual void Shutdown(
+            TimeSpan? duration = null,
+            bool verifySystemShutdown = false)
+            => Shutdown(_testState.System, duration, verifySystemShutdown);
 
         /// <summary>
         /// Shuts down the specified system.
@@ -475,22 +618,90 @@ namespace Akka.TestKit
         /// <param name="system">The system to shutdown.</param>
         /// <param name="duration">The duration to wait for shutdown. Default is 5 seconds multiplied with the config value "akka.test.timefactor"</param>
         /// <param name="verifySystemShutdown">if set to <c>true</c> an exception will be thrown on failure.</param>
-        /// <exception cref="TimeoutException">TBD</exception>
-        protected virtual void Shutdown(ActorSystem system, TimeSpan? duration = null, bool verifySystemShutdown = false)
+        /// <exception cref="TimeoutException">Thrown when shutdown exceeds the timeout and <paramref name="verifySystemShutdown"/> is true.</exception>
+        protected virtual void Shutdown(
+            ActorSystem system,
+            TimeSpan? duration = null,
+            bool verifySystemShutdown = false)
         {
-            if (system == null) system = _testState.System;
+            system ??= _testState.System;
 
-            var durationValue = duration.GetValueOrDefault(Dilated(TimeSpan.FromSeconds(5)).Min(TimeSpan.FromSeconds(10)));
+            var durationValue = ShutdownDurationOrDefault(duration);
 
             var wasShutdownDuringWait = system.Terminate().Wait(durationValue);
-            if(!wasShutdownDuringWait)
-            {
-                const string msg = "Failed to stop [{0}] within [{1}] \n{2}";
-                if(verifySystemShutdown)
-                    throw new TimeoutException(string.Format(msg, system.Name, durationValue, ""));
-                //TODO: replace "" with system.PrintTree()
-                system.Log.Warning(msg, system.Name, durationValue, ""); //TODO: replace "" with system.PrintTree()
-            }
+            ForceShutdownIfNeeded(system, wasShutdownDuringWait, durationValue, verifySystemShutdown);
+        }
+
+        /// <summary>
+        /// Shuts down this system without blocking the calling thread.
+        /// On failure debug output will be logged about the remaining actors in the system.
+        /// If verifySystemShutdown is true, then an exception will be thrown on failure.
+        /// </summary>
+        /// <remarks>
+        /// Prefer this over <see cref="Shutdown(TimeSpan?,bool)"/>. The synchronous form pins a thread pool
+        /// thread for up to the full duration. On a loaded machine that pinned thread can starve the very
+        /// system work the shutdown is waiting on - cluster heartbeats, coordinated shutdown phases - so the
+        /// wait itself makes the timeout more likely.
+        /// </remarks>
+        /// <param name="duration">Optional. The duration to wait for shutdown. Default is 5 seconds multiplied with the config value "akka.test.timefactor".</param>
+        /// <param name="verifySystemShutdown">if set to <c>true</c> an exception will be thrown on failure.</param>
+        /// <exception cref="TimeoutException">Thrown when the system did not stop in time and <paramref name="verifySystemShutdown"/> is <c>true</c>.</exception>
+        public virtual Task ShutdownAsync(
+            TimeSpan? duration = null,
+            bool verifySystemShutdown = false)
+            => ShutdownAsync(_testState.System, duration, verifySystemShutdown);
+
+        /// <summary>
+        /// Shuts down the specified system without blocking the calling thread.
+        /// On failure debug output will be logged about the remaining actors in the system.
+        /// If verifySystemShutdown is true, then an exception will be thrown on failure.
+        /// </summary>
+        /// <remarks>
+        /// Prefer this over <see cref="Shutdown(ActorSystem,TimeSpan?,bool)"/>. The synchronous form pins a
+        /// thread pool thread for up to the full duration. On a loaded machine that pinned thread can starve
+        /// the very system work the shutdown is waiting on - cluster heartbeats, coordinated shutdown phases -
+        /// so the wait itself makes the timeout more likely.
+        /// </remarks>
+        /// <param name="system">The system to shutdown.</param>
+        /// <param name="duration">The duration to wait for shutdown. Default is 5 seconds multiplied with the config value "akka.test.timefactor"</param>
+        /// <param name="verifySystemShutdown">if set to <c>true</c> an exception will be thrown on failure.</param>
+        /// <exception cref="TimeoutException">Thrown when the system did not stop in time and <paramref name="verifySystemShutdown"/> is <c>true</c>.</exception>
+        protected virtual async Task ShutdownAsync(
+            ActorSystem system,
+            TimeSpan? duration = null,
+            bool verifySystemShutdown = false)
+        {
+            system ??= _testState.System;
+
+            var durationValue = ShutdownDurationOrDefault(duration);
+
+            // race Terminate() against a timer rather than blocking a thread on it
+            var wasShutdownDuringWait = await system.Terminate().AwaitWithTimeout(durationValue);
+            ForceShutdownIfNeeded(system, wasShutdownDuringWait, durationValue, verifySystemShutdown);
+        }
+
+        private TimeSpan ShutdownDurationOrDefault(TimeSpan? duration)
+            => duration.GetValueOrDefault(Dilated(TimeSpan.FromSeconds(5)).Min(TimeSpan.FromSeconds(10)));
+
+        /// <summary>
+        /// Force-stops a system that failed to terminate on its own inside the timeout.
+        /// </summary>
+        private static void ForceShutdownIfNeeded(
+            ActorSystem system,
+            bool wasShutdownDuringWait,
+            TimeSpan durationValue,
+            bool verifySystemShutdown)
+        {
+            if(wasShutdownDuringWait)
+                return;
+
+            // Forcefully close the ActorSystem to make sure we exit the test cleanly
+            ((ExtendedActorSystem) system).Guardian.Stop();
+
+            const string msg = "Failed to stop [{0}] within [{1}]. ActorSystem is being forcefully shut down.\n{2}";
+            if(verifySystemShutdown)
+                throw new TimeoutException(string.Format(msg, system.Name, durationValue, ((ExtendedActorSystem) system).PrintTree()));
+            system.Log.Warning(msg, system.Name, durationValue, ((ExtendedActorSystem) system).PrintTree());
         }
 
         /// <summary>
@@ -499,46 +710,109 @@ namespace Akka.TestKit
         /// <param name="props">Child actor props</param>
         /// <param name="name">Child actor name</param>
         /// <param name="supervisorStrategy">Supervisor strategy for the child actor</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
         /// <returns></returns>
-        public IActorRef ChildActorOf(Props props, string name, SupervisorStrategy supervisorStrategy)
+        public IActorRef ChildActorOf(
+            Props props,
+            string name,
+            SupervisorStrategy supervisorStrategy,
+            CancellationToken cancellationToken = default)
+            => ChildActorOfAsync(props, name, supervisorStrategy, cancellationToken)
+                .GetAwaiter().GetResult();
+
+        /// <summary>
+        /// Spawns an actor as a child of this test actor, and returns the child's IActorRef
+        /// </summary>
+        /// <param name="props">Child actor props</param>
+        /// <param name="name">Child actor name</param>
+        /// <param name="supervisorStrategy">Supervisor strategy for the child actor</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
+        /// <returns></returns>
+        public async Task<IActorRef> ChildActorOfAsync(
+            Props props, 
+            string name,
+            SupervisorStrategy supervisorStrategy,
+            CancellationToken cancellationToken = default)
         {
             TestActor.Tell(new TestActor.Spawn(props, name, supervisorStrategy));
-            return ExpectMsg<IActorRef>();
+            return await ExpectMsgAsync<IActorRef>(cancellationToken: cancellationToken)
+                ;
         }
-        
+
         /// <summary>
         /// Spawns an actor as a child of this test actor with an auto-generated name, and returns the child's ActorRef.
         /// </summary>
         /// <param name="props">Child actor props</param>
         /// <param name="supervisorStrategy">Supervisor strategy for the child actor</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
         /// <returns></returns>
-        public IActorRef ChildActorOf(Props props, SupervisorStrategy supervisorStrategy)
+        public IActorRef ChildActorOf(
+            Props props, SupervisorStrategy supervisorStrategy, CancellationToken cancellationToken = default)
+            => ChildActorOfAsync(props, supervisorStrategy, cancellationToken)
+                .GetAwaiter().GetResult();
+
+        /// <summary>
+        /// Spawns an actor as a child of this test actor with an auto-generated name, and returns the child's ActorRef.
+        /// </summary>
+        /// <param name="props">Child actor props</param>
+        /// <param name="supervisorStrategy">Supervisor strategy for the child actor</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
+        /// <returns></returns>
+        public async Task<IActorRef> ChildActorOfAsync(
+            Props props, SupervisorStrategy supervisorStrategy, CancellationToken cancellationToken = default)
         {
             TestActor.Tell(new TestActor.Spawn(props, Option<string>.None, supervisorStrategy));
-            return ExpectMsg<IActorRef>();
+            return await ExpectMsgAsync<IActorRef>(cancellationToken: cancellationToken)
+                ;
         }
+
+        /// <summary>
+        /// Spawns an actor as a child of this test actor with a stopping supervisor strategy, and returns the child's ActorRef.
+        /// </summary>
+        /// <param name="props">Child actor props</param>
+        /// <param name="name">Child actor name</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
+        /// <returns></returns>
+        public IActorRef ChildActorOf(Props props, string name, CancellationToken cancellationToken = default)
+            => ChildActorOfAsync(props, name, cancellationToken)
+                .GetAwaiter().GetResult();
         
         /// <summary>
         /// Spawns an actor as a child of this test actor with a stopping supervisor strategy, and returns the child's ActorRef.
         /// </summary>
         /// <param name="props">Child actor props</param>
         /// <param name="name">Child actor name</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
         /// <returns></returns>
-        public IActorRef ChildActorOf(Props props, string name)
+        public async Task<IActorRef> ChildActorOfAsync(
+            Props props, string name, CancellationToken cancellationToken = default)
         {
             TestActor.Tell(new TestActor.Spawn(props, name, Option<SupervisorStrategy>.None));
-            return ExpectMsg<IActorRef>();
+            return await ExpectMsgAsync<IActorRef>(cancellationToken: cancellationToken)
+                ;
         }
         
         /// <summary>
         /// Spawns an actor as a child of this test actor with an auto-generated name and stopping supervisor strategy, returning the child's ActorRef.
         /// </summary>
         /// <param name="props">Child actor props</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
         /// <returns></returns>
-        public IActorRef ChildActorOf(Props props)
+        public IActorRef ChildActorOf(Props props, CancellationToken cancellationToken = default)
+            => ChildActorOfAsync(props, cancellationToken)
+                .GetAwaiter().GetResult();
+
+        /// <summary>
+        /// Spawns an actor as a child of this test actor with an auto-generated name and stopping supervisor strategy, returning the child's ActorRef.
+        /// </summary>
+        /// <param name="props">Child actor props</param>
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> to cancel the operation</param>
+        /// <returns></returns>
+        public async Task<IActorRef> ChildActorOfAsync(Props props, CancellationToken cancellationToken = default)
         {
             TestActor.Tell(new TestActor.Spawn(props, Option<string>.None, Option<SupervisorStrategy>.None));
-            return ExpectMsg<IActorRef>();
+            return await ExpectMsgAsync<IActorRef>(cancellationToken: cancellationToken)
+                ;
         }
 
         /// <summary>
@@ -550,16 +824,47 @@ namespace Akka.TestKit
         /// <para>The default test actor can be retrieved from the <see cref="TestActor"/> property</para>
         /// </summary>
         /// <param name="name">The name of the new actor.</param>
-        /// <returns>TBD</returns>
+        /// <returns>The actor reference for the named test actor.</returns>
         public IActorRef CreateTestActor(string name)
         {
             return CreateTestActor(_testState.System, name);
         }
 
+        private IActorRef CreateInitialTestActor(ActorSystem system, string name)
+        {
+            // Fix both serialization and deadlock issues:
+            // 1. Use isSystemService=true to skip serialization checks
+            // 2. Use isAsync=false to create LocalActorRef synchronously (avoids RepointableActorRef deadlock)
+            // 3. Use ManualResetEventSlim to ensure PreStart completes before returning (fixes parallel init race)
+            using var initComplete = new ManualResetEventSlim(false);
+
+            var testActorProps = Props.Create(() => new InternalTestActor(_testState.Queue, initComplete))
+                .WithDispatcher(TestActorDispatcherId);
+
+            var systemImpl = system.AsInstanceOf<ActorSystemImpl>();
+            // Use the new AttachChildWithAsync method to create TestActor synchronously
+            var testActor = systemImpl.Provider.SystemGuardian.Cell.AttachChildWithAsync(
+                testActorProps,
+                isSystemService: true,  // Skip serialization checks
+                isAsync: false,         // Create synchronously to avoid deadlock
+                name: name);
+
+            // Wait for TestActor.PreStart() to complete before returning
+            // This ensures the actor is fully initialized and ready to receive messages
+            if (!initComplete.Wait(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException($"TestActor '{name}' failed to initialize within 10 seconds");
+            }
+
+            return testActor;
+        }
+        
         private IActorRef CreateTestActor(ActorSystem system, string name)
         {
-            var testActorProps = Props.Create(() => new InternalTestActor(new BlockingCollectionTestActorQueue<MessageEnvelope>(_testState.Queue)))
-                .WithDispatcher("akka.test.test-actor.dispatcher");
+            var testActorProps = Props.Create(() => new InternalTestActor(_testState.Queue))
+                .WithDispatcher(TestActorDispatcherId);
+            
+            // For additional test actors, always use the standard SystemActorOf
             var testActor = system.AsInstanceOf<ActorSystemImpl>().SystemActorOf(testActorProps, name);
             return testActor;
         }
@@ -580,7 +885,7 @@ namespace Akka.TestKit
         /// </summary>
         /// <param name="system">For multi-actor system tests, you can specify which system the node is for.</param>
         /// <param name="name">Optional: The name of the probe.</param>
-        /// <returns>TBD</returns>
+        /// <returns>A new probe attached to the specified actor system.</returns>
         public virtual TestProbe CreateTestProbe(ActorSystem system, string name = null)
         {
             return new TestProbe(system, _assertions, name);
@@ -605,8 +910,8 @@ namespace Akka.TestKit
         /// It always uses a timeout when waiting.
         /// Timeouts will always throw an exception. The default timeout is 5 seconds.
         /// </summary>
-        /// <param name="count">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="count">The number of participants that must arrive at the barrier.</param>
+        /// <returns>A barrier configured with the test kit's default timeout.</returns>
         public TestBarrier CreateTestBarrier(int count)
         {
             return new TestBarrier(this, count, _testState.TestKitSettings.DefaultTimeout);

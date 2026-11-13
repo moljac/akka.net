@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LeaseProvider.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -48,7 +48,7 @@ namespace Akka.Coordination
                 ClientName = clientName;
             }
 
-            public bool Equals(LeaseKey other)
+            public bool Equals(LeaseKey? other)
             {
                 if (ReferenceEquals(other, null)) return false;
                 if (ReferenceEquals(this, other)) return true;
@@ -56,7 +56,7 @@ namespace Akka.Coordination
                 return Equals(LeaseName, other.LeaseName) && Equals(ConfigPath, other.ConfigPath) && Equals(ClientName, other.ClientName);
             }
 
-            public override bool Equals(object obj) => obj is LeaseKey lk && Equals(lk);
+            public override bool Equals(object? obj) => obj is LeaseKey lk && Equals(lk);
 
             public override int GetHashCode()
             {
@@ -83,11 +83,11 @@ namespace Akka.Coordination
         }
 
         private readonly ExtendedActorSystem _system;
-        private readonly ConcurrentDictionary<LeaseKey, Lease> _leases = new ConcurrentDictionary<LeaseKey, Lease>();
+        private readonly ConcurrentDictionary<LeaseKey, Lease> _leases = new();
 
-        private ILoggingAdapter _log;
+        private ILoggingAdapter? _log;
 
-        private ILoggingAdapter Log { get { return _log ?? (_log = Logging.GetLogger(_system, "LeaseProvider")); } }
+        private ILoggingAdapter Log { get { return _log ??= Logging.GetLogger(_system, "LeaseProvider"); } }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="LeaseProvider"/> class.
@@ -122,7 +122,7 @@ namespace Akka.Coordination
         {
             var leaseKey = new LeaseKey(leaseName, configPath, ownerName);
 
-            return _leases.GetOrAdd(leaseKey, lk =>
+            return _leases.GetOrAdd(leaseKey, _ =>
             {
                 var leaseConfig = _system.Settings.Config
                     .GetConfig(configPath)
@@ -133,20 +133,20 @@ namespace Akka.Coordination
                 var leaseClassName = settings.LeaseConfig.GetString("lease-class", null);
                 if (string.IsNullOrEmpty(leaseClassName))
                     throw new ArgumentException("lease-class must not be empty");
-                var leaseType = Type.GetType(leaseClassName, true);
+                var leaseType = Type.GetType(leaseClassName!, true)!;
 
                 try
                 {
                     try
                     {
-                        return (Lease)Activator.CreateInstance(leaseType, settings, _system);
+                        return (Lease)Activator.CreateInstance(leaseType, settings, _system)!;
                     }
-                    catch
+                    catch(MissingMethodException)
                     {
-                        return (Lease)Activator.CreateInstance(leaseType, settings);
+                        return (Lease)Activator.CreateInstance(leaseType, settings)!;
                     }
                 }
-                catch (Exception ex)
+                catch (MissingMethodException ex)
                 {
                     Log.Error(
                       ex,
@@ -156,6 +156,17 @@ namespace Akka.Coordination
                       settings.LeaseName,
                       configPath,
                       leaseType);
+
+                    throw;
+                }
+                catch(Exception ex)
+                {
+                    Log.Error(
+                        ex,
+                        "Failed to instantiate lease class [{2}] for leaseName [{0}], configPath [{1}].",
+                        settings.LeaseName,
+                        configPath,
+                        leaseType);
 
                     throw;
                 }

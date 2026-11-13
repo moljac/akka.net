@@ -1,15 +1,18 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SerializationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Text.RegularExpressions;
 using Akka.Actor;
 using Akka.Configuration;
@@ -21,6 +24,7 @@ using Akka.TestKit.TestActors;
 using Akka.Util;
 using Akka.Util.Reflection;
 using FluentAssertions;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Akka.Tests.Serialization
@@ -540,31 +544,88 @@ namespace Akka.Tests.Serialization
         [Fact]
         public void Can_get_serializer_by_binding()
         {
-            Sys.Serialization.FindSerializerFor(null).GetType().ShouldBe(typeof(NullSerializer));
-            Sys.Serialization.FindSerializerFor(new byte[]{1,2,3}).GetType().ShouldBe(typeof(ByteArraySerializer));
-            Sys.Serialization.FindSerializerFor("dummy").GetType().ShouldBe(typeof(DummySerializer));
-            Sys.Serialization.FindSerializerFor(123).GetType().ShouldBe(typeof(NewtonSoftJsonSerializer));
+            Sys.Serialization.FindSerializerFor(null).Should().BeOfType<NullSerializer>();
+            Sys.Serialization.FindSerializerFor(new byte[]{1,2,3}).Should().BeOfType<ByteArraySerializer>();
+            Sys.Serialization.FindSerializerFor("dummy").Should().BeOfType<DummySerializer>();
+            Sys.Serialization.FindSerializerFor(123).Should().BeOfType<NewtonSoftJsonSerializer>();
         }
 
         [Fact]
         public void Can_apply_a_config_based_serializer_by_the_binding()
         {
-            var dummy = (DummySerializer)Sys.Serialization.FindSerializerFor("dummy");
+            var dummy = Sys.Serialization.FindSerializerFor("dummy").Should().BeOfType<DummySerializer>().Subject;
             dummy.Config.ShouldBe(null);
 
-            var dummy2 = (DummyConfigurableSerializer) Sys.Serialization.GetSerializerById(-7);
+            var dummy2 = Sys.Serialization.GetSerializerById(-7).Should().BeOfType<DummyConfigurableSerializer>().Subject;
             dummy2.Config.ShouldNotBe(null);
             dummy2.Config.GetString("test-key", null).ShouldBe("test value");
+        }
+
+        [Fact]
+        public void Can_roundtrip_native_v2_serializer()
+        {
+            var message = new NativeV2Message("v2 payload");
+            var serializer = Sys.Serialization.FindSerializerFor(message);
+
+            serializer.Should().BeOfType<NativeV2Serializer>();
+            var manifest = Akka.Serialization.Serialization.ManifestFor(serializer, message);
+            manifest.Should().Be(NativeV2Serializer.NativeManifest);
+
+            var bytes = Sys.Serialization.Serialize(message);
+            var deserialized = Sys.Serialization.Deserialize(bytes, serializer.Identifier, manifest);
+
+            deserialized.Should().Be(message);
+        }
+
+        [Fact]
+        public void Can_roundtrip_byte_array_serializer_through_v2_buffer_api()
+        {
+            var message = new byte[] { 1, 2, 3, 4 };
+            var serializer = Sys.Serialization.FindSerializerV2For(message);
+
+            serializer.Should().BeOfType<ByteArraySerializer>();
+            serializer.Identifier.Should().Be(4);
+            serializer.Manifest(message).Should().BeEmpty();
+            serializer.SizeHint(message).Should().Be(message.Length);
+
+            var writer = new ArrayBufferWriter<byte>();
+            var metadata = Sys.Serialization.Serialize(message, writer);
+
+            metadata.SerializerId.Should().Be(serializer.Identifier);
+            metadata.Manifest.Should().BeEmpty();
+            metadata.BytesWritten.Should().Be(message.Length);
+            writer.WrittenSpan.ToArray().Should().Equal(message);
+
+            var deserialized = Sys.Serialization.Deserialize(
+                new ReadOnlySequence<byte>(writer.WrittenMemory),
+                metadata.SerializerId,
+                metadata.Manifest);
+
+            deserialized.Should().BeOfType<byte[]>();
+            ((byte[])deserialized).Should().Equal(message);
+
+            var legacyDeserialized = serializer.FromBinary(message, string.Empty);
+            legacyDeserialized.Should().BeSameAs(message);
+        }
+
+        [Fact]
+        public void Native_v2_serializer_must_return_non_empty_manifest()
+        {
+            var serializer = new EmptyManifestV2Serializer((ExtendedActorSystem)Sys);
+            Action action = () => Akka.Serialization.Serialization.ManifestFor(serializer, new NativeV2Message("no manifest"));
+
+            action.Should().Throw<SerializationException>()
+                .WithMessage("*must return a non-empty manifest*");
         }
 
 
         private static string LegacyTypeQualifiedName(Type type)
         {
-            string coreAssemblyName = typeof(object).GetTypeInfo().Assembly.GetName().Name;
-            var assemblyName = type.GetTypeInfo().Assembly.GetName().Name;
+            string coreAssemblyName = typeof(object).Assembly.GetName().Name;
+            var assemblyName = type.Assembly.GetName().Name;
             var shortened = assemblyName.Equals(coreAssemblyName)
-                ? type.GetTypeInfo().FullName
-                : $"{type.GetTypeInfo().FullName}, {assemblyName}";
+                ? type.FullName
+                : $"{type.FullName}, {assemblyName}";
             return shortened;
         }
 
@@ -608,6 +669,60 @@ namespace Akka.Tests.Serialization
                 .Where(ex => ex.Message.Contains("Serializer Id [101] is not one of the internal Akka.NET serializer."));
         }
 
+        [Fact(DisplayName = "Should be able to serialize object property with JObject value")]
+        public void ObjectPropertyJObjectTest()
+        {
+            var serializer = Sys.Serialization.FindSerializerForType(typeof(object)).Should().BeOfType<NewtonSoftJsonSerializer>().Subject;
+            var obj = JObject.FromObject(new
+            {
+                FormattedMessage = "We are apple 20 points above value 10.01 ms",
+                Message = "We are {0} {1} points above value {2} ms",
+                Parameters = new List<object> { "apple", 20, 10.01F, 50L, (decimal) 9.9 },
+                MessageType = 200
+            });
+            var instance = new ObjectTestClass { MyObject = obj};
+
+            var serialized = serializer.ToBinary(instance);
+            
+            // Stack overflowed in the original bug
+            var deserialized = serializer.FromBinary<ObjectTestClass>(serialized);
+            deserialized.MyObject.Should().BeOfType<JObject>();
+            var jObj = (JObject) deserialized.MyObject;
+            
+            ((JValue)jObj["FormattedMessage"])!.Value.Should().Be("We are apple 20 points above value 10.01 ms");
+            ((JValue)jObj["Message"])!.Value.Should().Be("We are {0} {1} points above value {2} ms");
+            var arr = ((JArray)jObj["Parameters"]);
+            ((JValue)arr![0]).Value.Should().Be("apple");
+            ((JValue)arr[1]).Value.Should().BeOfType<int>();
+            ((JValue)arr[1]).Value.Should().Be(20);
+            ((JValue)arr[2]).Value.Should().BeOfType<float>();
+            ((JValue)arr[2]).Value.Should().Be(10.01F);
+            ((JValue)arr[3]).Value.Should().BeOfType<long>();
+            ((JValue)arr[3]).Value.Should().Be(50L);
+            ((JValue)arr[4]).Value.Should().BeOfType<decimal>();
+            ((JValue)arr[4]).Value.Should().Be((decimal)9.9);
+            ((JValue)jObj["MessageType"])!.Value.Should().Be(200);
+        }
+
+        [Fact(DisplayName = "Should be able to serialize object property with anonymous type value")]
+        public void ObjectPropertyObjectTest()
+        {
+            var serializer = Sys.Serialization.FindSerializerForType(typeof(object)).Should().BeOfType<NewtonSoftJsonSerializer>().Subject;
+            var obj = new
+            {
+                FormattedMessage = "We are apple 20 points above value 10.01 ms",
+                Message = "We are {0} {1} points above value {2} ms",
+                Parameters = new List<object> { "apple", 20, 10.01F, 50L, (decimal) 9.9 },
+                MessageType = 200
+            };
+            var instance = new ObjectTestClass { MyObject = obj};
+
+            var serialized = serializer.ToBinary(instance);
+            
+            var deserialized = serializer.FromBinary<ObjectTestClass>(serialized);
+            deserialized.MyObject.Should().BeEquivalentTo(obj);
+        }
+        
         public SerializationSpec():base(GetConfig())
         {
         }
@@ -617,10 +732,12 @@ namespace Akka.Tests.Serialization
                 serializers {
                     dummy = """ + typeof(DummySerializer).AssemblyQualifiedName + @"""
                     dummy2 = """ + typeof(DummyConfigurableSerializer).AssemblyQualifiedName + @"""
+                    native-v2 = """ + typeof(NativeV2Serializer).AssemblyQualifiedName + @"""
                 }
 
                 serialization-bindings {
                   ""System.String"" = dummy
+                  """ + typeof(NativeV2Message).AssemblyQualifiedName + @""" = native-v2
                 }
                 serialization-settings {
                     dummy2 {
@@ -695,6 +812,91 @@ namespace Akka.Tests.Serialization
             }
         }
 
+        public sealed class NativeV2Message : IEquatable<NativeV2Message>
+        {
+            public NativeV2Message(string value)
+            {
+                Value = value;
+            }
+
+            public string Value { get; }
+
+            public bool Equals(NativeV2Message other)
+            {
+                if (ReferenceEquals(null, other)) return false;
+                if (ReferenceEquals(this, other)) return true;
+                return Value == other.Value;
+            }
+
+            public override bool Equals(object obj)
+            {
+                if (ReferenceEquals(null, obj)) return false;
+                if (ReferenceEquals(this, obj)) return true;
+                return obj.GetType() == GetType() && Equals((NativeV2Message)obj);
+            }
+
+            public override int GetHashCode()
+            {
+                return Value.GetHashCode();
+            }
+        }
+
+        public sealed class NativeV2Serializer : SerializerV2
+        {
+            public const string NativeManifest = "native-v2";
+
+            public NativeV2Serializer(ExtendedActorSystem system) : base(system)
+            {
+            }
+
+            public override int Identifier => -106;
+
+            public override string Manifest(object obj) => NativeManifest;
+
+            public override int SizeHint(object obj)
+            {
+                return Encoding.UTF8.GetByteCount(((NativeV2Message)obj).Value);
+            }
+
+            public override int Serialize(object obj, IBufferWriter<byte> writer)
+            {
+                var value = ((NativeV2Message)obj).Value;
+                var byteCount = Encoding.UTF8.GetByteCount(value);
+                var span = writer.GetSpan(byteCount);
+                var written = Encoding.UTF8.GetBytes(value, span);
+                writer.Advance(written);
+                return written;
+            }
+
+            public override object Deserialize(ReadOnlySequence<byte> bytes, string manifest)
+            {
+                if (manifest != NativeManifest)
+                    throw new SerializationException($"Unknown manifest [{manifest}]");
+                return new NativeV2Message(Encoding.UTF8.GetString(bytes.ToArray()));
+            }
+        }
+
+        public sealed class EmptyManifestV2Serializer : SerializerV2
+        {
+            public EmptyManifestV2Serializer(ExtendedActorSystem system) : base(system)
+            {
+            }
+
+            public override int Identifier => -107;
+
+            public override string Manifest(object obj) => string.Empty;
+
+            public override int Serialize(object obj, IBufferWriter<byte> writer)
+            {
+                return 0;
+            }
+
+            public override object Deserialize(ReadOnlySequence<byte> bytes, string manifest)
+            {
+                return new object();
+            }
+        }
+
         public sealed class OtherClassA { }
 
         public sealed class OtherClassB { }
@@ -708,6 +910,122 @@ namespace Akka.Tests.Serialization
                 public string Value { get; set; }
             }
         }
+        
+        public sealed class ObjectTestClass
+        {
+            public object MyObject { get; set; }
+        }
+    }
+
+    public class DisallowUnregisteredTypesSpec : AkkaSpec
+    {
+        private static readonly Config StrictConfig = ConfigurationFactory.ParseString(@"
+            akka.actor.serialization-settings.allow-unregistered-types = false
+        ");
+
+        public DisallowUnregisteredTypesSpec() : base(StrictConfig) { }
+
+        [Fact(DisplayName = "Should throw for unregistered type when fallback disabled")]
+        public void Should_throw_for_unregistered_type_when_fallback_disabled()
+        {
+            var serialization = Sys.Serialization;
+            var unregisteredType = new UnregisteredMessage("test");
+
+            var ex = Assert.Throws<SerializationException>(() =>
+                serialization.FindSerializerFor(unregisteredType));
+
+            ex.Message.Should().Contain("No serializer binding found");
+            ex.Message.Should().Contain("allow-unregistered-types");
+        }
+
+        [Fact(DisplayName = "Should still work for explicitly bound types when fallback disabled")]
+        public void Should_still_work_for_explicitly_bound_types_when_fallback_disabled()
+        {
+            var serialization = Sys.Serialization;
+            // byte[] is explicitly bound in default config
+            var serializer = serialization.FindSerializerFor(new byte[] { 1, 2, 3 });
+            serializer.Should().BeOfType<ByteArraySerializer>();
+        }
+
+        private sealed class UnregisteredMessage
+        {
+            public string Value { get; }
+            public UnregisteredMessage(string value) => Value = value;
+        }
+    }
+
+    public class AllowUnregisteredTypesSpec : AkkaSpec
+    {
+        [Fact(DisplayName = "Should have allow-unregistered-types enabled by default")]
+        public void Should_have_allow_unregistered_types_enabled_by_default()
+        {
+            var config = Sys.Settings.Config;
+            var allowUnregisteredTypes = config.GetBoolean("akka.actor.serialization-settings.allow-unregistered-types");
+            allowUnregisteredTypes.Should().BeTrue();
+        }
+
+        [Fact(DisplayName = "Should use object fallback by default")]
+        public void Should_use_object_fallback_by_default()
+        {
+            var serialization = Sys.Serialization;
+            var unregisteredType = new SomeRandomType();
+
+            // Should not throw, should return json serializer
+            var serializer = serialization.FindSerializerFor(unregisteredType);
+            serializer.Should().BeOfType<NewtonSoftJsonSerializer>();
+        }
+
+        private sealed class SomeRandomType { }
+    }
+
+    /// <summary>
+    /// Regression coverage for #8354, the mirror image of #6502/#6503: instead of a member
+    /// statically typed as <c>object</c>, the member here is statically typed as a concrete
+    /// <see cref="ISurrogated"/> type (<see cref="Address"/>). When the JSON for that member
+    /// carries no `$type` metadata (`encode-type-names = false`, or an external producer),
+    /// <see cref="NewtonSoftJsonSerializer.SurrogateConverter"/> used to hand the resulting
+    /// <see cref="JObject"/> straight back to itself for the same type, recursing forever and
+    /// crashing the process with a native, uncatchable <see cref="StackOverflowException"/>.
+    /// </summary>
+    public class SurrogatedMemberWithoutTypeNamesSpec : AkkaSpec
+    {
+        private static readonly Config Conf = ConfigurationFactory.ParseString(@"
+            akka.actor {
+                serialization-settings.json {
+                    encode-type-names = false
+                }
+            }
+        ");
+
+        public SurrogatedMemberWithoutTypeNamesSpec() : base(Conf)
+        {
+        }
+
+        [Fact(DisplayName = "Should deserialize a member statically typed as a concrete ISurrogated type when the JSON carries no $type metadata (#8354)")]
+        public void Should_deserialize_ISurrogated_typed_member_without_type_metadata()
+        {
+            var serializer = Sys.Serialization.FindSerializerForType(typeof(object))
+                .Should().BeOfType<NewtonSoftJsonSerializer>().Subject;
+
+            var message = new MessageWithAddress
+            {
+                TargetAddress = new Address("akka.tcp", "sys", "localhost", 8081)
+            };
+
+            var serialized = serializer.ToBinary(message);
+
+            // Used to trigger unbounded recursion between SurrogateConverter and
+            // TranslateSurrogate, crashing the process with a native, uncatchable
+            // StackOverflowException before the #8354 fix.
+            var deserialized = serializer.FromBinary<MessageWithAddress>(serialized);
+
+            deserialized.Should().NotBeNull();
+            deserialized.TargetAddress.Should().Be(message.TargetAddress);
+        }
+
+        public sealed class MessageWithAddress
+        {
+            public Address TargetAddress { get; set; }
+        }
     }
 }
-

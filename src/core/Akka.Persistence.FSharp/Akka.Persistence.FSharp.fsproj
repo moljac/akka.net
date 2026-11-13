@@ -1,24 +1,28 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-  <Import Project="..\..\common.props" />
 
-  <PropertyGroup>
-    <AssemblyTitle>Akka.Persistence.FSharp</AssemblyTitle>
-    <Description>F# API for persistence actors in Akka.NET</Description>
-    <TargetFrameworks>$(NetStandardLibVersion)</TargetFrameworks>
-    <PackageTags>akka;actors;actor model;Akka;concurrency;F#;Fsharp;persistence;eventsource</PackageTags>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-  </PropertyGroup>
+    <PropertyGroup>
+        <Description>F# API for persistence actors in Akka.NET</Description>
+        <TargetFrameworks>$(NetStandardLibVersion);$(NetLibVersion)</TargetFrameworks>
+        <PackageTags>akka;actors;actor model;Akka;concurrency;F#;Fsharp;persistence;eventsource</PackageTags>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Include="FsApi.fs" />
-  </ItemGroup>
+    <ItemGroup>
+        <Compile Include="FsApi.fs"/>
+    </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\Akka.FSharp\Akka.FSharp.fsproj" />
-    <ProjectReference Include="..\Akka.Persistence\Akka.Persistence.csproj" />
-  </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Akka.FSharp\Akka.FSharp.fsproj"/>
+        <ProjectReference Include="..\Akka.Persistence\Akka.Persistence.csproj"/>
+    </ItemGroup>
 
-   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-    <DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
-  </PropertyGroup>
+    <ItemGroup>
+        <!-- Pin the SDK-implicit FSharp.Core so restore doesn't depend on which SDK the
+             build agent has installed (implicit-version drift causes NU1605 downgrade errors
+             against Akka.FSharp, which pins $(FsharpVersion)). Use Update (not Include) so we
+             don't duplicate the implicit reference (NU1504). -->
+        <PackageReference Update="FSharp.Core" Version="$(FsharpVersion)"/>
+    </ItemGroup>
+
 </Project>

@@ -1,17 +1,18 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TestActor.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Util;
 
 namespace Akka.TestKit
 {
     /// <summary>
-    /// TBD
+    /// Messages and settings used to control the test actor.
     /// </summary>
     public static class TestActor
     {
@@ -19,19 +20,19 @@ namespace Akka.TestKit
         /// A delegate that returns <c>true</c> if the <paramref name="message"/> should be ignored.
         /// </summary>
         /// <param name="message">The message.</param>
-        /// <returns>TBD</returns>
+        /// <returns><c>true</c> if the message should be ignored; otherwise, <c>false</c>.</returns>
         public delegate bool Ignore(object message);
 
         /// <summary>
-        /// TBD
+        /// Gets the autopilot value that disables autopilot handling.
         /// </summary>
         public static AutoPilot NoAutoPilot { get { return TestKit.NoAutoPilot.Instance; } }
         /// <summary>
-        /// TBD
+        /// Gets the autopilot value that keeps the current autopilot active.
         /// </summary>
         public static AutoPilot KeepRunning { get { return TestKit.KeepRunning.Instance; } }
         /// <summary>
-        /// TBD
+        /// Gets the sentinel envelope used when no message has been dequeued.
         /// </summary>
         public static NullMessageEnvelope NullMessage { get { return NullMessageEnvelope.Instance; } }
 
@@ -46,13 +47,13 @@ namespace Akka.TestKit
             private readonly Ignore _ignore;
 
             /// <summary>
-            /// TBD
+            /// Creates a request to ignore messages accepted by the specified predicate.
             /// </summary>
-            /// <param name="ignore">TBD</param>
+            /// <param name="ignore">The predicate that returns true for messages to ignore.</param>
             public SetIgnore(Ignore ignore) { _ignore = ignore; }
 
             /// <summary>
-            /// TBD
+            /// Gets the predicate used to decide whether a message should be ignored.
             /// </summary>
             public Ignore Ignore { get { return _ignore; } }
         }
@@ -64,18 +65,19 @@ namespace Akka.TestKit
         /// </summary>
         public class Watch : INoSerializationVerificationNeeded
         {
-            private readonly IActorRef _actorToWatch;
-
-            /// <summary>
-            /// TBD
-            /// </summary>
-            /// <param name="actorToWatch">TBD</param>
-            public Watch(IActorRef actorToWatch) { _actorToWatch = actorToWatch; }
-
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public IActorRef Actor { get { return _actorToWatch; } }
+            public Watch(IActorRef actorToWatch)
+            {
+                Actor = actorToWatch;
+            }
+            
+            public IActorRef Actor { get; }
+        }
+        
+        internal sealed class WatchAck : INoSerializationVerificationNeeded
+        {
+            private WatchAck() { }
+            
+            public static readonly WatchAck Instance = new();
         }
 
         /// <summary>
@@ -84,18 +86,22 @@ namespace Akka.TestKit
         /// </summary>
         public class Unwatch : INoSerializationVerificationNeeded
         {
-            private readonly IActorRef _actorToUnwatch;
+            public Unwatch(IActorRef actorToUnwatch)
+            {
+                Actor = actorToUnwatch;
+            }
+            
+            public IActorRef Actor { get; }
+        }
 
-            /// <summary>
-            /// TBD
-            /// </summary>
-            /// <param name="actorToUnwatch">TBD</param>
-            public Unwatch(IActorRef actorToUnwatch) { _actorToUnwatch = actorToUnwatch; }
-
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public IActorRef Actor { get { return _actorToUnwatch; } }
+        /// <summary>
+        /// INTERNAL API
+        /// </summary>
+        internal sealed class UnwatchAck : INoSerializationVerificationNeeded
+        {
+            private UnwatchAck() { }
+            
+            public static readonly UnwatchAck Instance = new();
         }
 
         /// <summary>
@@ -109,13 +115,13 @@ namespace Akka.TestKit
             private readonly AutoPilot _autoPilot;
 
             /// <summary>
-            /// TBD
+            /// Creates a request to install the specified autopilot.
             /// </summary>
-            /// <param name="autoPilot">TBD</param>
+            /// <param name="autoPilot">The autopilot that handles messages until it returns a different autopilot.</param>
             public SetAutoPilot(AutoPilot autoPilot) { _autoPilot = autoPilot; }
 
             /// <summary>
-            /// TBD
+            /// Gets the autopilot to install.
             /// </summary>
             public AutoPilot AutoPilot { get { return _autoPilot; } }
         }

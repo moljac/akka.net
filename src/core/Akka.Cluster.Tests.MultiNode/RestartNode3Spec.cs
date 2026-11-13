@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RestartNode3Spec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,6 +12,7 @@ using Akka.Actor;
 using Akka.Cluster.TestKit;
 using Akka.Configuration;
 using Akka.Event;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using Akka.Remote.Transport;
 using FluentAssertions;
@@ -68,9 +69,13 @@ namespace Akka.Cluster.Tests.MultiNode
         {
             _config = config;
             secondSystem = new Lazy<ActorSystem>(() => ActorSystem.Create(Sys.Name, Sys.Settings.Config));
+            // Pin the restarted system to the SAME wire address for BOTH transports - under
+            // AKKA_MNTR_TRANSPORT=artery the classic dot-netty key is inert and the fresh
+            // system would bind a random artery canonical.port instead.
             restartedSecondSystem = new Lazy<ActorSystem>(() => ActorSystem.Create(
                 Sys.Name,
-                ConfigurationFactory.ParseString("akka.remote.dot-netty.tcp.port=" + secondUniqueAddress.Address.Port)
+                ConfigurationFactory.ParseString("akka.remote.dot-netty.tcp.port=" + secondUniqueAddress.Address.Port
+                        + "\nakka.remote.artery.canonical.port=" + secondUniqueAddress.Address.Port)
                     .WithFallback(Sys.Settings.Config)));
         }
 

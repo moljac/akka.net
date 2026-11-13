@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UdpListener.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,7 +17,6 @@ using Akka.Util.Internal;
 namespace Akka.IO
 {
     using static Udp;
-    using ByteBuffer = ArraySegment<byte>;
 
     /// <summary>
     /// INTERNAL API
@@ -68,7 +67,7 @@ namespace Akka.IO
 
         protected sealed override Socket Socket { get; }
         /// <summary>
-        /// TBD
+        /// Gets the UDP extension instance used for socket configuration and resource management.
         /// </summary>
         protected sealed override UdpExt Udp { get; }
 
@@ -130,9 +129,7 @@ namespace Akka.IO
             ReceiveAsync();
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
+        /// <inheritdoc/>
         protected override void PostStop()
         {
             if (Socket.Connected)

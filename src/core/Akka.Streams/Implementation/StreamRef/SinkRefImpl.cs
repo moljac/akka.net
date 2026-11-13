@@ -1,21 +1,25 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SinkRefImpl.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Annotations;
+using Akka.Event;
 using Akka.Streams.Dsl;
 using Akka.Streams.Serialization;
 using Akka.Streams.Stage;
 using Akka.Util;
+using Akka.Util.Internal;
 
 namespace Akka.Streams.Implementation.StreamRef
 {
@@ -25,7 +29,22 @@ namespace Akka.Streams.Implementation.StreamRef
     [InternalApi]
     internal abstract class SinkRefImpl : ISurrogated
     {
+        /// <summary>
+        /// Builds the closed <see cref="SinkRefImpl{T}"/> for a stream-ref element type discovered at
+        /// deserialization time. With <see cref="AkkaFeatures.IsDynamicTypeLoadingSupported"/> off, this fails
+        /// clearly instead of asking Native AOT to construct an arbitrary generic instantiation it never
+        /// compiled ahead of time.
+        /// </summary>
         public static SinkRefImpl Create(Type eventType, IActorRef initialPartnerRef)
+        {
+            if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+                return CreateGeneric(eventType, initialPartnerRef);
+
+            throw new SerializationException(SerializationTools.StreamRefTypeNotSupported(eventType.FullName ?? eventType.Name));
+        }
+
+        [RequiresDynamicCode("Builds a SinkRefImpl<T> for a stream-ref element type discovered at runtime. Native AOT does not guarantee that constructing an arbitrary closed generic type at runtime will work.")]
+        private static SinkRefImpl CreateGeneric(Type eventType, IActorRef initialPartnerRef)
         {
             var destType = typeof(SinkRefImpl<>).MakeGenericType(eventType);
             return (SinkRefImpl)Activator.CreateInstance(destType, initialPartnerRef);
@@ -45,11 +64,19 @@ namespace Akka.Streams.Implementation.StreamRef
     [InternalApi]
     internal sealed class SinkRefImpl<T> : SinkRefImpl, ISinkRef<T>
     {
-        public SinkRefImpl(IActorRef initialPartnerRef) : base(initialPartnerRef) { }
-        public override Type EventType => typeof(T);
-        public override ISurrogate ToSurrogate(ActorSystem system) => SerializationTools.ToSurrogate(this);
+        private readonly Lazy<Sink<T, NotUsed>> _sink;
 
-        public Sink<T, NotUsed> Sink => Dsl.Sink.FromGraph(new SinkRefStageImpl<T>(InitialPartnerRef)).MapMaterializedValue(_ => NotUsed.Instance);
+        public SinkRefImpl(IActorRef initialPartnerRef) : base(initialPartnerRef)
+        {
+            _sink = new Lazy<Sink<T, NotUsed>>(() =>
+                Dsl.Sink.FromGraph(new SinkRefStageImpl<T>(InitialPartnerRef))
+                    .MapMaterializedValue(_ => NotUsed.Instance));
+        }
+
+        public override Type EventType => typeof(T);
+        public Sink<T, NotUsed> Sink => _sink.Value;
+
+        public override ISurrogate ToSurrogate(ActorSystem system) => SerializationTools.ToSurrogate(this);
     }
 
     /// <summary>
@@ -77,11 +104,10 @@ namespace Akka.Streams.Implementation.StreamRef
             private StreamRefAttributes.SubscriptionTimeout _subscriptionTimeout;
             private string _stageActorName;
 
-            private StreamRefsMaster StreamRefsMaster => _streamRefsMaster ?? (_streamRefsMaster = StreamRefsMaster.Get(ActorMaterializerHelper.Downcast(Materializer).System));
-            private StreamRefSettings Settings => _settings ?? (_settings = ActorMaterializerHelper.Downcast(Materializer).Settings.StreamRefSettings);
-            private StreamRefAttributes.SubscriptionTimeout SubscriptionTimeout => _subscriptionTimeout ?? (_subscriptionTimeout =
-                                                                                       _inheritedAttributes.GetAttribute(new StreamRefAttributes.SubscriptionTimeout(Settings.SubscriptionTimeout)));
-            protected override string StageActorName => _stageActorName ?? (_stageActorName = StreamRefsMaster.NextSinkRefName());
+            private StreamRefsMaster StreamRefsMaster => _streamRefsMaster ??= StreamRefsMaster.Get(ActorMaterializerHelper.Downcast(Materializer).System);
+            private StreamRefSettings Settings => _settings ??= ActorMaterializerHelper.Downcast(Materializer).Settings.StreamRefSettings;
+            private StreamRefAttributes.SubscriptionTimeout SubscriptionTimeout => _subscriptionTimeout ??= _inheritedAttributes.GetAttribute(new StreamRefAttributes.SubscriptionTimeout(Settings.SubscriptionTimeout));
+            protected override string StageActorName => _stageActorName ??= StreamRefsMaster.NextSinkRefName();
 
             private StageActor _stageActor;
 
@@ -193,8 +219,8 @@ namespace Akka.Streams.Implementation.StreamRef
                 if ((string)timerKey == SubscriptionTimeoutKey)
                 {
                     // we know the future has been competed by now, since it is in preStart
-                    var ex = new StreamRefSubscriptionTimeoutException($"[{StageActorName}] Remote side did not subscribe (materialize) handed out Sink reference [${_promise.Task.Result}], " +
-                                                                       $"within subscription timeout: ${SubscriptionTimeout.Timeout}!");
+                    var ex = new StreamRefSubscriptionTimeoutException($"[{StageActorName}] Remote side did not subscribe (materialize) handed out Sink reference [{_promise.Task.Result}], " +
+                                                                       $"within subscription timeout: {SubscriptionTimeout.Timeout}!");
 
                     throw ex; // this will also log the exception, unlike failStage; this should fail rarely, but would be good to have it "loud"
                 }
@@ -286,11 +312,11 @@ namespace Akka.Streams.Implementation.StreamRef
             Shape = new SinkShape<TIn>(Inlet);
         }
 
-        public Inlet<TIn> Inlet { get; } = new Inlet<TIn>("SinkRef.in");
+        public Inlet<TIn> Inlet { get; } = new("SinkRef.in");
         public override SinkShape<TIn> Shape { get; }
         public override ILogicAndMaterializedValue<Task<ISourceRef<TIn>>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
         {
-            var promise = new TaskCompletionSource<ISourceRef<TIn>>();
+            var promise = TaskEx.NonBlockingTaskCompletionSource<ISourceRef<TIn>>();
             return new LogicAndMaterializedValue<Task<ISourceRef<TIn>>>(new Logic(this, promise, inheritedAttributes), promise.Task);
         }
     }

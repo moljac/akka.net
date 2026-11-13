@@ -1,12 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AckedDeliverySpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Akka.TestKit;
 using Akka.Util;
@@ -16,7 +17,7 @@ using Xunit;
 namespace Akka.Remote.Tests
 {
     
-    public class AckedDeliverySpec : AkkaSpec
+    public class AckedDeliverySpec
     {
         sealed class Sequenced : IHasSequenceNumber
         {
@@ -205,6 +206,33 @@ namespace Akka.Remote.Tests
         }
 
         [Fact]
+        public void SendBuffer_must_ignore_stale_ack_from_previous_association()
+        {
+            // Reproduces GitHub #6414: a fresh send buffer (MaxSeq = -1) receives a stale ACK
+            // from a previous association. This must be a no-op, not a throw.
+            var b0 = new AckedSendBuffer<Sequenced>(10);
+
+            // ACK[0] from stale receiver state - MaxSeq is -1, CumulativeAck is 0
+            var result = b0.Acknowledge(new Ack(new SeqNo(0)));
+            Assert.Same(b0, result); // should return the same instance (no-op)
+        }
+
+        [Fact]
+        public void SendBuffer_must_ignore_stale_ack_when_buffer_has_messages_with_lower_seqnos()
+        {
+            // A buffer with some messages receives a stale ACK referencing a higher sequence
+            // number than anything buffered - should be a no-op.
+            var b0 = new AckedSendBuffer<Sequenced>(10);
+            var msg0 = Msg(0);
+            var msg1 = Msg(1);
+            var b1 = b0.Buffer(msg0).Buffer(msg1); // MaxSeq = 1
+
+            // Stale ACK referencing SeqNo(5) which we never sent
+            var result = b1.Acknowledge(new Ack(new SeqNo(5)));
+            Assert.Same(b1, result); // should return the same instance (no-op)
+        }
+
+        [Fact]
         public void SendBuffer_must_throw_exception_if_nonbuffered_sequence_number_is_NACKed()
         {
             var b0 = new AckedSendBuffer<Sequenced>(10);
@@ -369,7 +397,7 @@ namespace Akka.Remote.Tests
             };
 
             //Dropping phase
-            global::System.Diagnostics.Debug.WriteLine("Starting unreliable delivery for {0} messages, with delivery probably P = {1}", msgCount, deliveryProbability);
+            Debug.WriteLine("Starting unreliable delivery for {0} messages, with delivery probably P = {1}", msgCount, deliveryProbability);
             var nextSteps = msgCount*2;
             while (nextSteps > 0)
             {
@@ -378,8 +406,8 @@ namespace Akka.Remote.Tests
                 receiverStep(deliveryProbability);
                 nextSteps--;
             }
-            global::System.Diagnostics.Debug.WriteLine("Successfully delivered {0} messages from {1}", received.Count, msgCount);
-            global::System.Diagnostics.Debug.WriteLine("Entering reliable phase");
+            Debug.WriteLine("Successfully delivered {0} messages from {1}", received.Count, msgCount);
+            Debug.WriteLine("Entering reliable phase");
 
             //Finalizing phase
             for (var i = 1; i <= msgCount; i++)
@@ -390,13 +418,13 @@ namespace Akka.Remote.Tests
 
             if (!received.SequenceEqual(referenceList))
             {
-                global::System.Diagnostics.Debug.WriteLine(string.Join(Environment.NewLine, log));
-                global::System.Diagnostics.Debug.WriteLine("Received: ");
-                global::System.Diagnostics.Debug.WriteLine(string.Join(Environment.NewLine, received.Select(x => x.ToString())));
-                Assert.True(false,"Not all messages were received");
+                Debug.WriteLine(string.Join(Environment.NewLine, log));
+                Debug.WriteLine("Received: ");
+                Debug.WriteLine(string.Join(Environment.NewLine, received.Select(x => x.ToString())));
+                Assert.Fail("Not all messages were received");
             }
 
-            global::System.Diagnostics.Debug.WriteLine("All messages have been successfully delivered");
+            Debug.WriteLine("All messages have been successfully delivered");
         }
 
         #endregion

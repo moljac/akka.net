@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SerializationTransportInformationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -19,7 +20,6 @@ using Akka.TestKit.TestActors;
 using FluentAssertions;
 using Akka.Util.Internal;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Remote.Tests.Serialization
 {
@@ -115,7 +115,7 @@ namespace Akka.Remote.Tests.Serialization
 
     public abstract class AbstractSerializationTransportInformationSpec : AkkaSpec
     {
-        public static readonly Config Config = @"
+        private static readonly Config Config = @"
             akka {
                 loglevel = info
                 actor
@@ -151,7 +151,7 @@ namespace Akka.Remote.Tests.Serialization
         public Address System2Address => RARP.For(System2).Provider.DefaultAddress;
 
         [Fact]
-        public void Serialization_of_ActorRef_in_remote_message_must_resolve_Address()
+        public async Task Serialization_of_ActorRef_in_remote_message_must_resolve_Address()
         {
             System2.ActorOf(act =>
             {
@@ -160,28 +160,29 @@ namespace Akka.Remote.Tests.Serialization
 
             var echoSel = Sys.ActorSelection(new RootActorPath(System2Address) / "user" / "echo");
             echoSel.Tell(new Identify(1));
-            var echo = ExpectMsg<ActorIdentity>().Subject;
+            var echo = (await ExpectMsgAsync<ActorIdentity>()).Subject;
 
             echo.Tell(new TestMessage(TestActor, echo));
-            var t1 = ExpectMsg<TestMessage>();
+            var t1 = await ExpectMsgAsync<TestMessage>();
             t1.From.Should().Be(TestActor);
             t1.To.Should().Be(echo);
 
             echo.Tell(new JsonSerTestMessage(TestActor, echo));
-            var t2 = ExpectMsg<JsonSerTestMessage>();
+            var t2 = await ExpectMsgAsync<JsonSerTestMessage>();
             t2.From.Should().Be(TestActor);
             t2.To.Should().Be(echo);
 
             echo.Tell(TestActor);
-            ExpectMsg(TestActor);
+            await ExpectMsgAsync(TestActor);
 
             echo.Tell(echo);
-            ExpectMsg(echo);
+            await ExpectMsgAsync(echo);
         }
 
         protected override void AfterAll()
         {
-            Shutdown(System2, verifySystemShutdown: true);
+            Shutdown(System2);
+            base.AfterAll();
         }
     }
 
@@ -194,6 +195,87 @@ namespace Akka.Remote.Tests.Serialization
 
         public SerializationTransportInformationSpec(ITestOutputHelper helper) : base(DotNettyConfig, helper)
         {
+        }
+    }
+
+    /// <summary>
+    /// Concurrency regression coverage for <see cref="Akka.Serialization.Serialization.CurrentTransportInformation"/>.
+    ///
+    /// <see cref="Akka.Serialization.Serialization.CurrentTransportInformation"/> is <c>[ThreadStatic]</c> - each
+    /// serialize/deserialize call is expected to run start-to-finish on a single OS thread, with the transport
+    /// context set and restored directly around it (see the XML doc on the field itself). This spec pins N distinct
+    /// long-running worker threads (each backed by its own <see cref="Address"/>, mimicking N different remote
+    /// peers) and drives thousands of serializations concurrently through each one, asserting that a thread's
+    /// serialized <see cref="IActorRef"/> path never reflects a DIFFERENT thread's transport address. If
+    /// <c>CurrentTransportInformation</c> were ever accidentally shared (e.g. turned into a plain static field) or
+    /// leaked across an await/Task.Run boundary, this would surface as cross-contaminated addresses here.
+    /// </summary>
+    public class SerializationTransportInformationConcurrencySpec : AkkaSpec
+    {
+        public SerializationTransportInformationConcurrencySpec(ITestOutputHelper output) : base(output)
+        {
+        }
+
+        // Mirrors what Serialization.WithTransport does internally, but lets us pin an arbitrary fake peer
+        // Address per call instead of always deriving it from a single ActorSystem's own default address.
+        private static T WithFakeTransport<T>(ActorSystem system, Address address, Func<T> action)
+        {
+            var oldInfo = Akka.Serialization.Serialization.CurrentTransportInformation;
+            Akka.Serialization.Serialization.CurrentTransportInformation = new Information(address, system);
+            try
+            {
+                return action();
+            }
+            finally
+            {
+                Akka.Serialization.Serialization.CurrentTransportInformation = oldInfo;
+            }
+        }
+
+        [Fact(DisplayName = "CurrentTransportInformation should be isolated across concurrently-serializing threads")]
+        public async Task Serialization_of_ActorRef_should_be_thread_isolated_by_transport_information()
+        {
+            var echo = Sys.ActorOf(Props.Create(() => new BlackHoleActor()), "concurrency-echo");
+
+            // Floor at 4 so single-core CI agents still exercise real concurrency.
+            var threadCount = Math.Max(4, Environment.ProcessorCount);
+            const int iterations = 5000;
+
+            var mismatches = new ConcurrentBag<string>();
+            var exceptions = new ConcurrentBag<Exception>();
+
+            var tasks = Enumerable.Range(0, threadCount).Select(t => Task.Run(() =>
+            {
+                var host = $"fake-host-{t}";
+                var port = 20000 + t;
+                var fakeAddress = new Address("akka.tcp", Sys.Name, host, port);
+                // Actor paths carry a trailing "#<uid>" suffix, so match on the transport host:port segment
+                // (immediately followed by the actor path) rather than the string's exact ending.
+                var expectedSegment = $"@{host}:{port}/user/concurrency-echo";
+
+                for (var i = 0; i < iterations; i++)
+                {
+                    try
+                    {
+                        var path = WithFakeTransport(Sys, fakeAddress,
+                            () => Akka.Serialization.Serialization.SerializedActorPath(echo));
+
+                        if (!path.Contains(expectedSegment))
+                        {
+                            mismatches.Add($"thread {t} iteration {i}: expected path containing [{expectedSegment}], got [{path}]");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                }
+            })).ToArray();
+
+            await Task.WhenAll(tasks);
+
+            exceptions.Should().BeEmpty(because: "concurrent serialization must not throw when transport information is properly thread-isolated");
+            mismatches.Should().BeEmpty(because: "each thread's transport information must never leak into another thread's serialized actor path");
         }
     }
 }

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ReplayFilter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -14,24 +14,24 @@ using Akka.Pattern;
 namespace Akka.Persistence.Journal
 {
     /// <summary>
-    /// TBD
+    /// Determines how the replay filter handles events that may indicate overlapping journal writers.
     /// </summary>
     public enum ReplayFilterMode
     {
         /// <summary>
-        /// TBD
+        /// Logs and fails recovery when replayed events have invalid ordering or come from an older writer.
         /// </summary>
         Fail,
         /// <summary>
-        /// TBD
+        /// Logs invalid replay ordering or old-writer events and continues replaying them.
         /// </summary>
         Warn,
         /// <summary>
-        /// TBD
+        /// Logs and discards events identified as coming from an older or overlapping writer.
         /// </summary>
         RepairByDiscardOld,
         /// <summary>
-        /// TBD
+        /// Disables replay filtering; this value cannot be used to create a <see cref="ReplayFilter"/> actor.
         /// </summary>
         Disabled
     }
@@ -42,20 +42,20 @@ namespace Akka.Persistence.Journal
     /// </summary>
     public class ReplayFilter : ActorBase
     {
-        private readonly LinkedList<ReplayedMessage>  _buffer = new LinkedList<ReplayedMessage>();
-        private readonly LinkedList<string> _oldWriters = new LinkedList<string>();
+        private readonly LinkedList<ReplayedMessage>  _buffer = new();
+        private readonly LinkedList<string> _oldWriters = new();
         private string _writerUuid = string.Empty;
         private long _sequenceNr = -1;
         private readonly ILoggingAdapter _log = Context.GetLogger();
 
         /// <summary>
-        /// TBD
+        /// Initializes a replay filter for a persistent actor.
         /// </summary>
-        /// <param name="persistentActor">TBD</param>
-        /// <param name="mode">TBD</param>
-        /// <param name="windowSize">TBD</param>
-        /// <param name="maxOldWriters">TBD</param>
-        /// <param name="debugEnabled">TBD</param>
+        /// <param name="persistentActor">Persistent actor to which accepted replay messages are forwarded.</param>
+        /// <param name="mode">Action to take when replayed events have invalid ordering or writer identity.</param>
+        /// <param name="windowSize">Number of replay messages buffered while checking writer order.</param>
+        /// <param name="maxOldWriters">Maximum number of previous writer identifiers tracked.</param>
+        /// <param name="debugEnabled">Whether replay messages and completion are logged at debug level.</param>
         public ReplayFilter(IActorRef persistentActor, ReplayFilterMode mode, int windowSize, int maxOldWriters, bool debugEnabled)
         {
             PersistentActor = persistentActor;
@@ -66,13 +66,13 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// TBD
+        /// Creates actor properties for a replay filter.
         /// </summary>
-        /// <param name="persistentActor">TBD</param>
-        /// <param name="mode">TBD</param>
-        /// <param name="windowSize">TBD</param>
-        /// <param name="maxOldWriters">TBD</param>
-        /// <param name="debugEnabled">TBD</param>
+        /// <param name="persistentActor">Persistent actor to which accepted replay messages are forwarded.</param>
+        /// <param name="mode">Action to take when replayed events have invalid ordering or writer identity.</param>
+        /// <param name="windowSize">Number of replay messages buffered while checking writer order.</param>
+        /// <param name="maxOldWriters">Maximum number of previous writer identifiers tracked.</param>
+        /// <param name="debugEnabled">Whether replay messages and completion are logged at debug level.</param>
         /// <exception cref="ArgumentNullException">
         /// This exception is thrown for a number of reasons. These include:
         /// <ul>
@@ -81,7 +81,7 @@ namespace Akka.Persistence.Journal
         /// <li>The specified <paramref name="mode"/> is <see cref="ReplayFilterMode.Disabled"/>.</li>
         /// </ul>
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>Actor properties for the replay filter.</returns>
         public static Props Props(IActorRef persistentActor, ReplayFilterMode mode, int windowSize, int maxOldWriters, bool debugEnabled)
         {
             if (windowSize <= 0)
@@ -94,48 +94,47 @@ namespace Akka.Persistence.Journal
         }
 
         /// <summary>
-        /// TBD
+        /// Persistent actor to which accepted replay messages are forwarded.
         /// </summary>
         public IActorRef PersistentActor { get; }
 
         /// <summary>
-        /// TBD
+        /// Action taken when replayed events have invalid ordering or writer identity.
         /// </summary>
         public ReplayFilterMode Mode { get; }
 
         /// <summary>
-        /// TBD
+        /// Number of replay messages buffered while checking writer order.
         /// </summary>
         public int WindowSize { get; }
 
         /// <summary>
-        /// TBD
+        /// Maximum number of previous writer identifiers tracked.
         /// </summary>
         public int MaxOldWriters { get; }
 
         /// <summary>
-        /// TBD
+        /// Whether replay messages and completion are logged at debug level.
         /// </summary>
         public bool DebugEnabled { get; }
 
         /// <summary>
-        /// TBD
+        /// Validates replayed messages and forwards them to the persistent actor.
         /// </summary>
-        /// <param name="message">TBD</param>
+        /// <param name="message">Message received by the replay filter.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the <see cref="Mode"/> is set to <see cref="ReplayFilterMode.Disabled"/>.
         /// </exception>
         /// <exception cref="IllegalStateException">
         /// This exception is thrown when either the replayed event is in the wrong order or from an old writer.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>true if the message was a replay or recovery completion message and was handled; otherwise, false.</returns>
         protected override bool Receive(object message)
         {
-            if (message is ReplayedMessage)
+            if (message is ReplayedMessage value)
             {
-                var r = (ReplayedMessage) message;
                 if (DebugEnabled && _log.IsDebugEnabled)
-                    _log.Debug($"Replay: {r.Persistent}");
+                    _log.Debug($"Replay: {value.Persistent}");
 
                 try
                 {
@@ -146,13 +145,13 @@ namespace Akka.Persistence.Journal
                         PersistentActor.Tell(msg.Value, ActorRefs.NoSender);
                     }
 
-                    if (r.Persistent.WriterGuid.Equals(_writerUuid))
+                    if (value.Persistent.WriterGuid.Equals(_writerUuid))
                     {
                         // from same writer
-                        if (r.Persistent.SequenceNr < _sequenceNr)
+                        if (value.Persistent.SequenceNr < _sequenceNr)
                         {
-                            var errMsg = $@"Invalid replayed event [sequenceNr={r.Persistent.SequenceNr}, writerUUID={r.Persistent.WriterGuid}] as
-                                            the sequenceNr should be equal to or greater than already-processed event [sequenceNr={_sequenceNr}, writerUUID={_writerUuid}] from the same writer, for the same persistenceId [{r.Persistent.PersistenceId}].
+                            var errMsg = $@"Invalid replayed event [sequenceNr={value.Persistent.SequenceNr}, writerUUID={value.Persistent.WriterGuid}] as
+                                            the sequenceNr should be equal to or greater than already-processed event [sequenceNr={_sequenceNr}, writerUUID={_writerUuid}] from the same writer, for the same persistenceId [{value.Persistent.PersistenceId}].
                                             Perhaps, events were journaled out of sequence, or duplicate PersistentId for different entities?";
                             LogIssue(errMsg);
                             switch (Mode)
@@ -163,7 +162,7 @@ namespace Akka.Persistence.Journal
                                 case ReplayFilterMode.Fail:
                                     throw new IllegalStateException(errMsg);
                                 case ReplayFilterMode.Warn:
-                                    _buffer.AddLast(r);
+                                    _buffer.AddLast(value);
                                     break;
                                 case ReplayFilterMode.Disabled:
                                     throw new ArgumentException("Mode must not be Disabled");
@@ -172,15 +171,15 @@ namespace Akka.Persistence.Journal
                         else
                         {
                             // note that it is alright with == _sequenceNr, since such may be emitted by EventSeq
-                            _buffer.AddLast(r);
-                            _sequenceNr = r.Persistent.SequenceNr;
+                            _buffer.AddLast(value);
+                            _sequenceNr = value.Persistent.SequenceNr;
                         }
                     }
-                    else if (_oldWriters.Contains(r.Persistent.WriterGuid))
+                    else if (_oldWriters.Contains(value.Persistent.WriterGuid))
                     {
                         // from old writer
-                        var errMsg = $@"Invalid replayed event [sequenceNr={r.Persistent.SequenceNr}, writerUUID={r.Persistent.WriterGuid}].
-                                        There was already a newer writer whose last replayed event was [sequenceNr={_sequenceNr}, writerUUID={_writerUuid}] for the same persistenceId [{r.Persistent.PersistenceId}].
+                        var errMsg = $@"Invalid replayed event [sequenceNr={value.Persistent.SequenceNr}, writerUUID={value.Persistent.WriterGuid}].
+                                        There was already a newer writer whose last replayed event was [sequenceNr={_sequenceNr}, writerUUID={_writerUuid}] for the same persistenceId [{value.Persistent.PersistenceId}].
                                         Perhaps, the old writer kept journaling messages after the new writer created, or duplicate PersistentId for different entities?";
                         LogIssue(errMsg);
                         switch (Mode)
@@ -191,7 +190,7 @@ namespace Akka.Persistence.Journal
                             case ReplayFilterMode.Fail:
                                 throw new IllegalStateException(errMsg);
                             case ReplayFilterMode.Warn:
-                                _buffer.AddLast(r);
+                                _buffer.AddLast(value);
                                 break;
                             case ReplayFilterMode.Disabled:
                                 throw new ArgumentException("Mode must not be Disabled");
@@ -204,8 +203,8 @@ namespace Akka.Persistence.Journal
                             _oldWriters.AddLast(_writerUuid);
                         if (_oldWriters.Count > MaxOldWriters)
                             _oldWriters.RemoveFirst();
-                        _writerUuid = r.Persistent.WriterGuid;
-                        _sequenceNr = r.Persistent.SequenceNr;
+                        _writerUuid = value.Persistent.WriterGuid;
+                        _sequenceNr = value.Persistent.SequenceNr;
 
                         // clear the buffer from messages from other writers with higher SequenceNr
                         var node = _buffer.First;
@@ -215,8 +214,8 @@ namespace Akka.Persistence.Journal
                             var msg = node.Value;
                             if (msg.Persistent.SequenceNr >= _sequenceNr)
                             {
-                                var errMsg = $@"Invalid replayed event [sequenceNr=${r.Persistent.SequenceNr}, writerUUID=${r.Persistent.WriterGuid}] from a new writer.
-                                                An older writer already sent an event [sequenceNr=${msg.Persistent.SequenceNr}, writerUUID=${msg.Persistent.WriterGuid}] whose sequence number was equal or greater for the same persistenceId [${r.Persistent.PersistenceId}].
+                                var errMsg = $@"Invalid replayed event [sequenceNr=${value.Persistent.SequenceNr}, writerUUID=${value.Persistent.WriterGuid}] from a new writer.
+                                                An older writer already sent an event [sequenceNr=${msg.Persistent.SequenceNr}, writerUUID=${msg.Persistent.WriterGuid}] whose sequence number was equal or greater for the same persistenceId [${value.Persistent.PersistenceId}].
                                                 Perhaps, the new writer journaled the event out of sequence, or duplicate PersistentId for different entities?";
                                 LogIssue(errMsg);
                                 switch (Mode)
@@ -234,21 +233,21 @@ namespace Akka.Persistence.Journal
                                         throw new ArgumentException("Mode must not be Disabled");
                                 }
                             }
+
                             node = next;
                         }
-                        _buffer.AddLast(r);
+
+                        _buffer.AddLast(value);
                     }
 
                 }
                 catch (IllegalStateException ex)
+                    when (Mode == ReplayFilterMode.Fail)
                 {
-                    if (Mode == ReplayFilterMode.Fail)
-                        Fail(ex);
-                    else
-                        throw;
+                    Fail(ex);
                 }
             }
-            else if (message is RecoverySuccess || message is ReplayMessagesFailure)
+            else if (message is RecoverySuccess or ReplayMessagesFailure)
             {
                 if (DebugEnabled)
                     _log.Debug($"Replay completed: {message}");
@@ -296,7 +295,7 @@ namespace Akka.Persistence.Journal
                 {
                     // discard
                 }
-                else if (message is RecoverySuccess || message is ReplayMessagesFailure)
+                else if (message is RecoverySuccess or ReplayMessagesFailure)
                 {
                     Context.Stop(Self);
                 }

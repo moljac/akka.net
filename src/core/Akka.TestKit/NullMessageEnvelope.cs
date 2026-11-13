@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="NullMessageEnvelope.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -10,14 +10,14 @@ using Akka.Actor;
 namespace Akka.TestKit
 {
     /// <summary>
-    /// TBD
+    /// Sentinel envelope indicating that the test actor has not dequeued a message.
     /// </summary>
     public sealed class NullMessageEnvelope : MessageEnvelope
     {
         /// <summary>
-        /// TBD
+        /// The shared sentinel instance.
         /// </summary>
-        public static NullMessageEnvelope Instance=new NullMessageEnvelope();
+        public static NullMessageEnvelope Instance = new();
 
         private NullMessageEnvelope(){}
 

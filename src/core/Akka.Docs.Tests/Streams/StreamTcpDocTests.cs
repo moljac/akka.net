@@ -1,22 +1,22 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="StreamTcpDocTests.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading.Tasks;
 using Akka;
 using Akka.Streams;
 using Akka.Streams.Dsl;
-using Akka.TestKit.Xunit2;
+using Akka.TestKit.Xunit;
 using Xunit;
-using Xunit.Abstractions;
 using Akka.Actor;
-using Akka.IO;
 using Akka.Util;
 using Tcp = Akka.Streams.Dsl.Tcp;
 using Akka.Configuration;
@@ -38,7 +38,7 @@ namespace DocsExamples.Streams
         {
             #region echo-server-simple-bind
             // define an incoming request processing logic
-            Flow<ByteString, ByteString, NotUsed> echo = Flow.Create<ByteString>();
+            Flow<ReadOnlySequence<byte>, ReadOnlySequence<byte>, NotUsed> echo = Flow.Create<ReadOnlySequence<byte>>();
 
             Tcp.ServerBinding binding = await Sys.TcpStream()
                 .BindAndHandle(echo, Materializer, "localhost", 9000);
@@ -61,14 +61,14 @@ namespace DocsExamples.Streams
             {
                 Console.WriteLine($"New connection from: {connection.RemoteAddress}");
 
-                var echo = Flow.Create<ByteString>()
+                var echo = Flow.Create<ReadOnlySequence<byte>>()
                     .Via(Framing.Delimiter(
-                        ByteString.FromString("\n"),
+                        Encoding.ASCII.GetBytes("\n").AsMemory(),
                         maximumFrameLength: 256,
                         allowTruncation: true))
-                    .Select(c => c.ToString())
+                    .Select(c => Encoding.ASCII.GetString(c.ToArray()))
                     .Select(c => c + "!!!\n")
-                    .Select(ByteString.FromString);
+                    .Select(s => new ReadOnlySequence<byte>(Encoding.ASCII.GetBytes(s).AsMemory()));
 
                 connection.HandleWith(echo, Materializer);
             }, Materializer);
@@ -84,84 +84,93 @@ namespace DocsExamples.Streams
             connections.RunForeach(connection =>
             {
                 #region close-incoming-connection
-                var closed = Flow.FromSinkAndSource(Sink.Cancelled<ByteString>(), Source.Empty<ByteString>());
+                var closed = Flow.FromSinkAndSource(Sink.Cancelled<ReadOnlySequence<byte>>(), Source.Empty<ReadOnlySequence<byte>>());
                 connection.HandleWith(closed, Materializer);
                 #endregion
             }, Materializer);
         }
 
         [Fact]
-        public void Simple_server_must_initial_server_banner_echo_server()
+        public async Task Simple_server_must_initial_server_banner_echo_server()
         {
-            var connections = Sys.TcpStream().Bind("127.0.0.1", 8888);
             var serverProbe = CreateTestProbe();
 
             #region welcome-banner-chat-server
-            connections.RunForeach(connection =>
-            {
-                // server logic, parses incoming commands
-                var commandParser = Flow.Create<string>().TakeWhile(c => c != "BYE").Select(c => c + "!");
+            // Use ToMaterialized to capture the binding task so we can await it
+            var (bindingTask, _) = Sys.TcpStream().Bind("127.0.0.1", 0) // Use port 0 for dynamic port assignment
+                .ToMaterialized(Sink.ForEach<Tcp.IncomingConnection>(connection =>
+                {
+                    // server logic, parses incoming commands
+                    var commandParser = Flow.Create<string>().TakeWhile(c => c != "BYE").Select(c => c + "!");
 
-                var welcomeMessage = $"Welcome to: {connection.LocalAddress}, you are: {connection.RemoteAddress}!";
-                var welcome = Source.Single(welcomeMessage);
+                    var welcomeMessage = $"Welcome to: {connection.LocalAddress}, you are: {connection.RemoteAddress}!";
+                    var welcome = Source.Single(welcomeMessage);
 
-                var serverLogic = Flow.Create<ByteString>()
-                    .Via(Framing.Delimiter(
-                        ByteString.FromString("\n"),
-                        maximumFrameLength: 256,
-                        allowTruncation: true))
-                    .Select(c => c.ToString())
-                    .Select(command =>
-                    {
-                        serverProbe.Tell(command);
-                        return command;
-                    })
-                    .Via(commandParser)
-                    .Merge(welcome)
-                    .Select(c => c + "\n")
-                    .Select(ByteString.FromString);
+                    var serverLogic = Flow.Create<ReadOnlySequence<byte>>()
+                        .Via(Framing.Delimiter(
+                            Encoding.ASCII.GetBytes("\n").AsMemory(),
+                            maximumFrameLength: 256,
+                            allowTruncation: true))
+                        .Select(c => Encoding.ASCII.GetString(c.ToArray()))
+                        .Select(command =>
+                        {
+                            serverProbe.Tell(command);
+                            return command;
+                        })
+                        .Via(commandParser)
+                        .Merge(welcome)
+                        .Select(c => c + "\n")
+                        .Select(s => new ReadOnlySequence<byte>(Encoding.ASCII.GetBytes(s).AsMemory()));
 
-                connection.HandleWith(serverLogic, Materializer);
-            }, Materializer);
+                    connection.HandleWith(serverLogic, Materializer);
+                }), Keep.Both)
+                .Run(Materializer);
             #endregion
+
+            // Wait for server to bind before connecting client - fixes race condition
+            var binding = await bindingTask;
+            var serverPort = ((System.Net.IPEndPoint)binding.LocalAddress).Port;
 
             var input = new ConcurrentQueue<string>(new[] { "Hello world", "What a lovely day" });
 
             string ReadLine(string prompt) => input.TryDequeue(out var cmd) ? cmd : "q";
 
-            {
-                var connection = Sys.TcpStream().OutgoingConnection("127.0.0.1", 8888);
-            }
-
+            try
             {
                 #region repl-client
-                var connection = Sys.TcpStream().OutgoingConnection("127.0.0.1", 8888);
+                var connection = Sys.TcpStream().OutgoingConnection("127.0.0.1", serverPort);
 
                 var replParser = Flow.Create<string>().TakeWhile(c => c != "q")
                     .Concat(Source.Single("BYE"))
-                    .Select(elem => ByteString.FromString($"{elem}\n"));
+                    .Select(elem => new ReadOnlySequence<byte>(Encoding.ASCII.GetBytes($"{elem}\n").AsMemory()));
 
-                var repl = Flow.Create<ByteString>()
+                var repl = Flow.Create<ReadOnlySequence<byte>>()
                     .Via(Framing.Delimiter(
-                        ByteString.FromString("\n"),
+                        Encoding.ASCII.GetBytes("\n").AsMemory(),
                         maximumFrameLength: 256,
                         allowTruncation: true))
-                    .Select(c => c.ToString())
+                    .Select(c => Encoding.ASCII.GetString(c.ToArray()))
                     .Select(text =>
                     {
                         Output.WriteLine($"Server: {text}");
                         return text;
                     })
-                    .Select(text => ReadLine("> "))
+                    .Select(_ => ReadLine("> "))
                     .Via(replParser);
 
-                connection.Join(repl).Run(Materializer);
+                // Client stream runs in background - completion is not awaited
+                // since we verify behavior via serverProbe
+                _ = connection.Join(repl).Run(Materializer);
                 #endregion
-            }
 
-            serverProbe.ExpectMsg("Hello world", TimeSpan.FromSeconds(20));
-            serverProbe.ExpectMsg("What a lovely day");
-            serverProbe.ExpectMsg("BYE");
+                await serverProbe.ExpectMsgAsync<string>(s => s == "Hello world", TimeSpan.FromSeconds(20));
+                await serverProbe.ExpectMsgAsync<string>(s => s == "What a lovely day");
+                await serverProbe.ExpectMsgAsync<string>(s => s == "BYE");
+            }
+            finally
+            {
+                await binding.Unbind();
+            }
         }
     }
 }

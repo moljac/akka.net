@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="TraceLogger.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -31,23 +31,31 @@ namespace Akka.Event
     /// </summary>
     public class TraceLogger : UntypedActor
     {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="message">TBD</param>
+        /// <inheritdoc/>
         protected override void OnReceive(object message)
         {
-            message.Match()
-                 .With<InitializeLogger>(m => Sender.Tell(new LoggerInitialized()))
-                 .With<Error>(m => Trace.TraceError(m.ToString()))
-                 .With<Warning>(m => Trace.TraceWarning(m.ToString()))
-                 .With<DeadLetter>(m => Trace.TraceWarning(string.Format("Deadletter - unable to send message {0} from {1} to {2}", m.Message, m.Sender, m.Sender), typeof(DeadLetter).ToString()))
-                 .With<UnhandledMessage>(m => Trace.TraceWarning("Unhandled message!"))
-                 .Default(m =>
-                 {
-                     if (m != null)
-                         Trace.TraceInformation(m.ToString());
-                 });
+            switch (message)
+            {
+                case InitializeLogger _:
+                    Sender.Tell(new LoggerInitialized());
+                    break;
+                case Error m:
+                    Trace.TraceError(m.ToString());
+                    break;
+                case Warning m:
+                    Trace.TraceWarning(m.ToString());
+                    break;
+                case DeadLetter m:
+                    Trace.TraceWarning($"Deadletter - unable to send message {m.Message} from {m.Sender} to {m.Sender}", typeof(DeadLetter));
+                    break;
+                case UnhandledMessage _:
+                    Trace.TraceWarning("Unhandled message!");
+                    break;
+                default:
+                    if (message != null)
+                        Trace.TraceInformation(message.ToString());
+                    break;
+            }
         }
     }
 }

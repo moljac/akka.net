@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <Description>Akka.Cluster and Akka.Cluster.Sharding Microsoft.Extensions.Hosting support.</Description>
+        <TargetFramework>$(NetStandardLibVersion)</TargetFramework>
+        <Nullable>enable</Nullable>
+        <PackageTags>$(AkkaPackageTags);hosting;cluster;sharding</PackageTags>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <PackageProjectUrl>https://getakka.net/articles/hosting/index.html</PackageProjectUrl>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Drop the repo-root README that Directory.Build.props packs into every package,
+             then pack this module's own README in its place. -->
+        <None Remove="$([System.IO.Path]::GetDirectoryName($(DirectoryBuildPropsPath)))/README.md" />
+        <None Update="README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Akka.Persistence.Hosting\Akka.Persistence.Hosting.csproj" />
+        <ProjectReference Include="..\Akka.Remote.Hosting\Akka.Remote.Hosting.csproj" />
+        <ProjectReference Include="..\..\cluster\Akka.Cluster.Sharding\Akka.Cluster.Sharding.csproj" />
+        <ProjectReference Include="..\..\cluster\Akka.DistributedData\Akka.DistributedData.csproj" />
+    </ItemGroup>
+
+</Project>

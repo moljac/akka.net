@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AtLeastOnceDeliverySemantic.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -30,32 +30,29 @@ namespace Akka.Persistence
         /// <summary>
         /// Initializes a new instance of the <see cref="AtLeastOnceDeliverySnapshot"/> class.
         /// </summary>
-        /// <param name="currentDeliveryId">TBD</param>
-        /// <param name="unconfirmedDeliveries">TBD</param>
+        /// <param name="currentDeliveryId">Highest delivery identifier assigned so far.</param>
+        /// <param name="unconfirmedDeliveries">Deliveries that have not yet been confirmed.</param>
         /// <exception cref="ArgumentNullException">
         /// This exception is thrown when the specified <paramref name="unconfirmedDeliveries"/> array is undefined.
         /// </exception>
         public AtLeastOnceDeliverySnapshot(long currentDeliveryId, UnconfirmedDelivery[] unconfirmedDeliveries)
         {
-            if (unconfirmedDeliveries == null)
-                throw new ArgumentNullException(nameof(unconfirmedDeliveries),
-                    "AtLeastOnceDeliverySnapshot expects not null array of unconfirmed deliveries");
-
             CurrentDeliveryId = currentDeliveryId;
-            UnconfirmedDeliveries = unconfirmedDeliveries;
+            UnconfirmedDeliveries = unconfirmedDeliveries ?? throw new ArgumentNullException(nameof(unconfirmedDeliveries),
+                "AtLeastOnceDeliverySnapshot expects not null array of unconfirmed deliveries");
         }
 
         /// <summary>
-        /// TBD
+        /// Highest delivery identifier assigned so far.
         /// </summary>
         public long CurrentDeliveryId { get; }
 
         /// <summary>
-        /// TBD
+        /// Deliveries that have not yet been confirmed.
         /// </summary>
         public UnconfirmedDelivery[] UnconfirmedDeliveries { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(AtLeastOnceDeliverySnapshot other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -65,10 +62,10 @@ namespace Akka.Persistence
                    && UnconfirmedDeliveries.SequenceEqual(other.UnconfirmedDeliveries);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as AtLeastOnceDeliverySnapshot);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -79,7 +76,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"AtLeastOnceDeliverySnapshot<currentDeliveryId: {CurrentDeliveryId}, unconfirmedDeliveries: {UnconfirmedDeliveries.Length}>";
     }
 
@@ -93,25 +90,20 @@ namespace Akka.Persistence
         /// <summary>
         /// Initializes a new instance of the <see cref="UnconfirmedWarning"/> class.
         /// </summary>
-        /// <param name="unconfirmedDeliveries">TBD</param>
+        /// <param name="unconfirmedDeliveries">Deliveries that have not yet been confirmed.</param>
         /// <exception cref="ArgumentNullException">
         /// This exception is thrown when the specified <paramref name="unconfirmedDeliveries"/> array is undefined.
         /// </exception>
-        public UnconfirmedWarning(UnconfirmedDelivery[] unconfirmedDeliveries)
-        {
-            if (unconfirmedDeliveries == null)
-                throw new ArgumentNullException(nameof(unconfirmedDeliveries),
-                    "UnconfirmedWarning expects not null array of unconfirmed deliveries");
-
-            UnconfirmedDeliveries = unconfirmedDeliveries;
-        }
+        public UnconfirmedWarning(UnconfirmedDelivery[] unconfirmedDeliveries) =>
+            UnconfirmedDeliveries = unconfirmedDeliveries ?? throw new ArgumentNullException(nameof(unconfirmedDeliveries),
+                "UnconfirmedWarning expects not null array of unconfirmed deliveries");
 
         /// <summary>
-        /// TBD
+        /// Unconfirmed deliveries included in this warning.
         /// </summary>
         public UnconfirmedDelivery[] UnconfirmedDeliveries { get; }
 
-        /// <inheritdoc/>
+        
         public bool Equals(UnconfirmedWarning other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -120,13 +112,13 @@ namespace Akka.Persistence
             return Equals(UnconfirmedDeliveries, other.UnconfirmedDeliveries);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as UnconfirmedWarning);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode() => UnconfirmedDeliveries != null ? UnconfirmedDeliveries.GetHashCode() : 0;
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"UnconfirmedWarning<unconfirmedDeliveries: {UnconfirmedDeliveries.Length}>";
     }
 
@@ -141,9 +133,9 @@ namespace Akka.Persistence
         /// <summary>
         /// Initializes a new instance of the <see cref="UnconfirmedDelivery"/> class.
         /// </summary>
-        /// <param name="deliveryId">TBD</param>
-        /// <param name="destination">TBD</param>
-        /// <param name="message">TBD</param>
+        /// <param name="deliveryId">Identifier assigned to the delivery.</param>
+        /// <param name="destination">Actor path to which the message is sent.</param>
+        /// <param name="message">Message that is being redelivered.</param>
         public UnconfirmedDelivery(long deliveryId, ActorPath destination, object message)
         {
             DeliveryId = deliveryId;
@@ -152,21 +144,21 @@ namespace Akka.Persistence
         }
 
         /// <summary>
-        /// TBD
+        /// Identifier assigned to the delivery.
         /// </summary>
         public long DeliveryId { get; }
 
         /// <summary>
-        /// TBD
+        /// Actor path to which the message is sent.
         /// </summary>
         public ActorPath Destination { get; }
 
         /// <summary>
-        /// TBD
+        /// Message that is being redelivered.
         /// </summary>
         public object Message { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(UnconfirmedDelivery other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -177,10 +169,10 @@ namespace Akka.Persistence
                    && Equals(Message, other.Message);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as UnconfirmedDelivery);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -192,7 +184,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"UnconfirmedDelivery<deliveryId: {DeliveryId}, dest: {Destination}, message: {Message}>";
     }
 
@@ -238,7 +230,7 @@ namespace Akka.Persistence
     #endregion
 
     /// <summary>
-    /// TBD
+    /// Maintains unconfirmed delivery state, sends messages, and retries them until they are confirmed.
     /// </summary>
     public class AtLeastOnceDeliverySemantic
     {
@@ -300,7 +292,7 @@ namespace Akka.Persistence
             /// <summary>
             /// The singleton instance of the redelivery tick
             /// </summary>
-            public static RedeliveryTick Instance { get; } = new RedeliveryTick();
+            public static RedeliveryTick Instance { get; } = new();
 
             private RedeliveryTick() { }
 
@@ -318,8 +310,8 @@ namespace Akka.Persistence
         /// <summary>
         /// Initializes a new instance of the <see cref="AtLeastOnceDeliverySemantic"/> class.
         /// </summary>
-        /// <param name="context">TBD</param>
-        /// <param name="settings">TBD</param>
+        /// <param name="context">Actor context used to send messages and schedule redelivery.</param>
+        /// <param name="settings">Settings that control redelivery and unconfirmed message limits.</param>
         public AtLeastOnceDeliverySemantic(IActorContext context, PersistenceSettings.AtLeastOnceDeliverySettings settings)
         {
             _context = context;
@@ -388,11 +380,11 @@ namespace Akka.Persistence
         }
 
         /// <summary>
-        /// TBD
+        /// Registers a message for at-least-once delivery and sends it unless the actor is recovering.
         /// </summary>
-        /// <param name="destination">TBD</param>
-        /// <param name="deliveryMessageMapper">TBD</param>
-        /// <param name="isRecovering">TBD</param>
+        /// <param name="destination">Actor path to which the message will be delivered.</param>
+        /// <param name="deliveryMessageMapper">Function that creates the message to send from its delivery identifier.</param>
+        /// <param name="isRecovering">Whether the actor is currently recovering; during recovery the message is recorded without being sent.</param>
         /// <exception cref="MaxUnconfirmedMessagesExceededException">
         /// This exception is thrown when the actor exceeds the <see cref="MaxUnconfirmedMessages"/> count.
         /// </exception>
@@ -422,7 +414,7 @@ namespace Akka.Persistence
         /// Call this method when a message has been confirmed by the destination,
         /// or to abort re-sending.
         /// </summary>
-        /// <param name="deliveryId">TBD</param>
+        /// <param name="deliveryId">Identifier of the delivery being confirmed.</param>
         /// <returns>True the first time the <paramref name="deliveryId"/> is confirmed, false for duplicate confirmations.</returns>
         public bool ConfirmDelivery(long deliveryId)
         {
@@ -479,7 +471,7 @@ namespace Akka.Persistence
         /// It is easiest to include the bytes of the <see cref="AtLeastOnceDeliverySnapshot"/>
         /// as a blob in your custom snapshot.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>Snapshot containing the current delivery identifier and all unconfirmed deliveries.</returns>
         public AtLeastOnceDeliverySnapshot GetDeliverySnapshot()
         {
             UnconfirmedDelivery[] unconfirmedDeliveries = _unconfirmed
@@ -493,7 +485,7 @@ namespace Akka.Persistence
         /// If snapshot from <see cref="GetDeliverySnapshot" /> was saved it will be received during recovery
         /// phase in a <see cref="SnapshotOffer" /> message and should be set with this method.
         /// </summary>
-        /// <param name="snapshot">TBD</param>
+        /// <param name="snapshot">Delivery state snapshot to restore.</param>
         public void SetDeliverySnapshot(AtLeastOnceDeliverySnapshot snapshot)
         {
             _deliverySequenceNr = snapshot.CurrentDeliveryId;
@@ -506,7 +498,7 @@ namespace Akka.Persistence
         }
 
         /// <summary>
-        /// TBD
+        /// Cancels the scheduled redelivery task, if one is active.
         /// </summary>
         public void Cancel()
         {
@@ -517,7 +509,7 @@ namespace Akka.Persistence
 
 
         /// <summary>
-        /// TBD
+        /// Redelivers outstanding messages and schedules future retries after journal replay completes.
         /// </summary>
         public void OnReplaySuccess()
         {
@@ -527,11 +519,11 @@ namespace Akka.Persistence
         }
 
         /// <summary>
-        /// TBD
+        /// Handles internal redelivery timer messages.
         /// </summary>
-        /// <param name="receive">TBD</param>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="receive">Actor receive handler for the message.</param>
+        /// <param name="message">Message received by the actor.</param>
+        /// <returns>true when the message is a redelivery tick and was handled; otherwise, false.</returns>
         public bool AroundReceive(Receive receive, object message)
         {
             if (message is RedeliveryTick)

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="DeltaPropagationSelector.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -29,6 +29,20 @@ namespace Akka.DistributedData
         protected abstract ImmutableArray<Address> AllNodes { get; }
         protected abstract int MaxDeltaSize { get; }
         protected abstract DeltaPropagation CreateDeltaPropagation(ImmutableDictionary<string, (IReplicatedData data, long from, long to)> deltas);
+
+        protected static DataEnvelope CreateDeltaEnvelope(DataEnvelope currentEnvelope, IReplicatedData delta)
+        {
+            if (currentEnvelope?.Pruning.Values.Any(state => state is PruningPerformed) == true)
+            {
+                // Peers that missed the pruned data need the rewritten full state together with
+                // the pruning marker. A delta-only envelope can make their next gossip look like
+                // evidence that pruned keys were removed, so keep the marker and rewritten dots
+                // on the full-state path until the pruning marker expires.
+                return currentEnvelope;
+            }
+
+            return currentEnvelope?.WithData(delta) ?? new DataEnvelope(delta);
+        }
 
         public long CurrentVersion(string key) => _deltaCounter.GetValueOrDefault(key, 0L);
 
@@ -70,21 +84,23 @@ namespace Akka.DistributedData
                 else
                 {
                     var i = (int)(_deltaNodeRoundRobinCounter % all.Length);
-                    slice = all.Slice(i, sliceSize).ToImmutableArray();
-                
+                    var remainingFromI = all.Length - i;
+                    var takeFromI = Math.Min(sliceSize, remainingFromI);
+                    slice = all.Slice(i, takeFromI).ToImmutableArray();
+
                     if (slice.Length != sliceSize)
                         slice = slice.AddRange(all.Take(sliceSize - slice.Length));
                 }
 
                 _deltaNodeRoundRobinCounter += sliceSize;
 
-                var result = ImmutableDictionary<Address, DeltaPropagation>.Empty.ToBuilder();
+                var result = ImmutableDictionary.CreateBuilder<Address, DeltaPropagation>();
                 var cache = new Dictionary<(string, long, long), IReplicatedData>();
                 foreach (var node in slice)
                 {
                     // collect the deltas that have not already been sent to the node and merge
                     // them into a delta group
-                    var deltas = ImmutableDictionary<string, (IReplicatedData, long, long)>.Empty.ToBuilder();
+                    var deltas = ImmutableDictionary.CreateBuilder<string, (IReplicatedData, long, long)>();
                     foreach (var entry in _deltaEntries)
                     {
                         var key = entry.Key;
@@ -139,8 +155,7 @@ namespace Akka.DistributedData
 
         public bool HasDeltaEntries(string key)
         {
-            ImmutableSortedDictionary<long, IReplicatedData> entries;
-            if (_deltaEntries.TryGetValue(key, out entries))
+            if (_deltaEntries.TryGetValue(key, out var entries))
             {
                 return !entries.IsEmpty;
             }

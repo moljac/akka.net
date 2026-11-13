@@ -1,12 +1,16 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AkkaPduCodec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using System.Threading;
 using Akka.Actor;
 using Google.Protobuf;
 using System.Runtime.Serialization;
@@ -43,46 +47,46 @@ namespace Akka.Remote.Transport
      * Interface used to represent Akka PDUs (Protocol Data Unit)
      */
     /// <summary>
-    /// TBD
+    /// Marker interface for the control and data protocol data units encoded by the remoting transport.
     /// </summary>
     internal interface IAkkaPdu { }
 
     /// <summary>
-    /// TBD
+    /// Control PDU that begins an association with a remote endpoint.
     /// </summary>
     internal sealed class Associate : IAkkaPdu
     {
         /// <summary>
-        /// TBD
+        /// Creates an association PDU from the remote handshake information.
         /// </summary>
-        /// <param name="info">TBD</param>
+        /// <param name="info">The origin address and UID advertised by the associating endpoint.</param>
         public Associate(HandshakeInfo info)
         {
             Info = info;
         }
 
         /// <summary>
-        /// TBD
+        /// Handshake information carried by the association PDU.
         /// </summary>
         public HandshakeInfo Info { get; private set; }
     }
 
     /// <summary>
-    /// TBD
+    /// Control PDU that indicates why an association is being terminated.
     /// </summary>
     internal sealed class Disassociate : IAkkaPdu
     {
         /// <summary>
-        /// TBD
+        /// Creates a disassociation PDU with the specified reason.
         /// </summary>
-        /// <param name="reason">TBD</param>
+        /// <param name="reason">The disassociation reason to encode.</param>
         public Disassociate(DisassociateInfo reason)
         {
             Reason = reason;
         }
 
         /// <summary>
-        /// TBD
+        /// Reason for terminating the association.
         /// </summary>
         public DisassociateInfo Reason { get; private set; }
     }
@@ -95,39 +99,39 @@ namespace Akka.Remote.Transport
     internal sealed class Heartbeat : IAkkaPdu { }
 
     /// <summary>
-    /// TBD
+    /// Data PDU containing serialized transport payload bytes.
     /// </summary>
     internal sealed class Payload : IAkkaPdu
     {
         /// <summary>
-        /// TBD
+        /// Creates a payload PDU from its serialized bytes.
         /// </summary>
-        /// <param name="bytes">TBD</param>
+        /// <param name="bytes">The serialized payload bytes.</param>
         public Payload(ByteString bytes)
         {
             Bytes = bytes;
         }
 
         /// <summary>
-        /// TBD
+        /// Serialized payload bytes carried by this PDU.
         /// </summary>
         public ByteString Bytes { get; private set; }
     }
 
     /// <summary>
-    /// TBD
+    /// Decoded remote message envelope, including its optional sender and reliable-delivery sequence number.
     /// </summary>
     internal sealed class Message : IAkkaPdu, IHasSequenceNumber
     {
         /// <summary>
-        /// TBD
+        /// Creates a decoded message envelope.
         /// </summary>
-        /// <param name="recipient">TBD</param>
-        /// <param name="recipientAddress">TBD</param>
-        /// <param name="serializedMessage">TBD</param>
-        /// <param name="senderOptional">TBD</param>
-        /// <param name="seq">TBD</param>
-        public Message(IInternalActorRef recipient, Address recipientAddress, SerializedMessage serializedMessage, IActorRef senderOptional = null, SeqNo seq = null)
+        /// <param name="recipient">Actor reference that receives the message.</param>
+        /// <param name="recipientAddress">Address associated with the recipient path.</param>
+        /// <param name="serializedMessage">Serialized message payload and serializer metadata.</param>
+        /// <param name="senderOptional">Optional sender actor reference, or <see langword="null"/> when no sender was encoded.</param>
+        /// <param name="seq">Optional reliable-delivery sequence number; <see langword="null"/> when reliable delivery is disabled.</param>
+        public Message(IInternalActorRef recipient, Address recipientAddress, SerializedMessage serializedMessage, IActorRef senderOptional = null, SeqNo? seq = null)
         {
             Seq = seq;
             SenderOptional = senderOptional;
@@ -137,34 +141,37 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Actor reference that receives the message.
         /// </summary>
         public IInternalActorRef Recipient { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Address associated with the recipient path.
         /// </summary>
         public Address RecipientAddress { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Serialized message payload and serializer metadata.
         /// </summary>
         public SerializedMessage SerializedMessage { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Optional sender actor reference, or <see langword="null"/> when no sender was encoded.
         /// </summary>
         public IActorRef SenderOptional { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Returns whether this message carries a reliable-delivery sequence number.
         /// </summary>
         public bool ReliableDeliveryEnabled { get { return Seq != null; } }
 
         /// <summary>
-        /// TBD
+        /// The optional sequence number for reliable delivery. Null when reliable delivery is not used.
         /// </summary>
-        public SeqNo Seq { get; private set; }
+        public SeqNo? Seq { get; private set; }
+
+        /// <inheritdoc/>
+        SeqNo IHasSequenceNumber.Seq => Seq!.Value;
     }
 
     /// <summary>
@@ -173,10 +180,10 @@ namespace Akka.Remote.Transport
     internal sealed class AckAndMessage
     {
         /// <summary>
-        /// TBD
+        /// Container for the acknowledgement and message decoded from one reliable-delivery envelope.
         /// </summary>
-        /// <param name="ackOption">TBD</param>
-        /// <param name="messageOption">TBD</param>
+        /// <param name="ackOption">Acknowledgement information, or <see langword="null"/> when none was encoded.</param>
+        /// <param name="messageOption">Decoded message, or <see langword="null"/> when the envelope contains only an acknowledgement.</param>
         public AckAndMessage(Ack ackOption, Message messageOption)
         {
             MessageOption = messageOption;
@@ -184,12 +191,12 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Acknowledgement decoded from the envelope, if present.
         /// </summary>
         public Ack AckOption { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Message decoded from the envelope, if present.
         /// </summary>
         public Message MessageOption { get; private set; }
     }
@@ -215,15 +222,15 @@ namespace Akka.Remote.Transport
         /// <see cref="ByteString"/>.
         /// </summary>
         /// <param name="raw">Encoded raw byte representation of an Akka PDU</param>
-        /// <returns>Class representation of a PDU that can be used in a <see cref="PatternMatch"/>.</returns>
+        /// <returns>Class representation of a PDU.</returns>
         public abstract IAkkaPdu DecodePdu(ByteString raw);
 
         /// <summary>
         /// Takes an <see cref="IAkkaPdu"/> representation of an Akka PDU and returns its encoded form
         /// as a <see cref="ByteString"/>.
         /// </summary>
-        /// <param name="pdu">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="pdu">PDU to encode.</param>
+        /// <returns>Encoded PDU bytes, or <see langword="null"/> when the PDU type is unsupported.</returns>
         public virtual ByteString EncodePdu(IAkkaPdu pdu)
         {
             switch (pdu)
@@ -242,71 +249,82 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Encodes a payload PDU.
         /// </summary>
-        /// <param name="payload">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="payload">Serialized payload bytes.</param>
+        /// <returns>The encoded payload PDU.</returns>
         public abstract ByteString ConstructPayload(ByteString payload);
 
         /// <summary>
-        /// TBD
+        /// Encodes an association control PDU.
         /// </summary>
-        /// <param name="info">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="info">Handshake information to include in the PDU.</param>
+        /// <returns>The encoded association PDU.</returns>
         public abstract ByteString ConstructAssociate(HandshakeInfo info);
 
         /// <summary>
-        /// TBD
+        /// Encodes a disassociation control PDU.
         /// </summary>
-        /// <param name="reason">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="reason">Disassociation reason to encode.</param>
+        /// <returns>The encoded disassociation PDU.</returns>
         public abstract ByteString ConstructDisassociate(DisassociateInfo reason);
 
         /// <summary>
-        /// TBD
+        /// Encodes a heartbeat control PDU.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The encoded heartbeat PDU.</returns>
         public abstract ByteString ConstructHeartbeat();
 
         /// <summary>
-        /// TBD
+        /// Decodes a reliable-delivery message envelope and its optional acknowledgement.
         /// </summary>
-        /// <param name="raw">TBD</param>
-        /// <param name="provider">TBD</param>
-        /// <param name="localAddress">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="raw">Serialized acknowledgement and/or message envelope.</param>
+        /// <param name="provider">Remote actor reference provider used to resolve encoded actor paths.</param>
+        /// <param name="localAddress">Local transport address used when resolving actor references.</param>
+        /// <returns>The decoded acknowledgement and message, each of which may be absent.</returns>
         public abstract AckAndMessage DecodeMessage(ByteString raw, IRemoteActorRefProvider provider, Address localAddress);
 
         /// <summary>
-        /// TBD
+        /// INTERNAL API. Lower-allocation inbound decode. Codecs that do not provide a specialized
+        /// implementation fall back to <see cref="DecodeMessage(ByteString,IRemoteActorRefProvider,Address)"/>.
         /// </summary>
-        /// <param name="localAddress">TBD</param>
-        /// <param name="recipient">TBD</param>
-        /// <param name="serializedMessage">TBD</param>
-        /// <param name="senderOption">TBD</param>
-        /// <param name="seqOption">TBD</param>
-        /// <param name="ackOption">TBD</param>
-        /// <returns>TBD</returns>
-        public abstract ByteString ConstructMessage(Address localAddress, IActorRef recipient,
-            SerializedMessage serializedMessage, IActorRef senderOption = null, SeqNo seqOption = null, Ack ackOption = null);
+        public virtual AckAndMessage DecodeMessageFast(ReadOnlySequence<byte> raw, IRemoteActorRefProvider provider, Address localAddress)
+        {
+            // Default fallback for codecs without a specialized fast path: materialize a ByteString and use the
+            // generated decoder. (The concrete AkkaPduProtobuffCodec overrides this with the low-allocation path.)
+            return DecodeMessage(ByteString.CopyFrom(raw.ToArray()), provider, localAddress);
+        }
 
         /// <summary>
-        /// TBD
+        /// Encodes a remote message envelope and, optionally, its reliable-delivery acknowledgement data.
         /// </summary>
-        /// <param name="ack">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="localAddress">Local address used to serialize actor references without an address.</param>
+        /// <param name="recipient">Actor reference that receives the message.</param>
+        /// <param name="serializedMessage">Serialized message payload and serializer metadata.</param>
+        /// <param name="senderOption">Optional sender actor reference.</param>
+        /// <param name="seqOption">Optional reliable-delivery sequence number.</param>
+        /// <param name="ackOption">Optional acknowledgement to include with the message.</param>
+        /// <returns>The encoded message envelope.</returns>
+        public abstract ByteString ConstructMessage(Address localAddress, IActorRef recipient,
+            SerializedMessage serializedMessage, IActorRef senderOption = null, SeqNo? seqOption = null, Ack ackOption = null);
+
+        /// <summary>
+        /// Encodes a standalone reliable-delivery acknowledgement.
+        /// </summary>
+        /// <param name="ack">Acknowledgement information to encode.</param>
+        /// <returns>The encoded acknowledgement.</returns>
         public abstract ByteString ConstructPureAck(Ack ack);
     }
 
     /// <summary>
-    /// TBD
+    /// Protobuf implementation of the remoting PDU codec.
     /// </summary>
-    internal class AkkaPduProtobuffCodec : AkkaPduCodec
+    internal sealed class AkkaPduProtobuffCodec : AkkaPduCodec
     {
         /// <summary>
-        /// TBD
+        /// Decodes a protobuf-encoded remoting PDU.
         /// </summary>
-        /// <param name="raw">TBD</param>
+        /// <param name="raw">Raw protobuf bytes representing the PDU.</param>
         /// <exception cref="PduCodecException">
         /// This exception is thrown when the Akka PDU in the specified byte string,
         /// <paramref name="raw" />, meets one of the following conditions:
@@ -315,7 +333,7 @@ namespace Akka.Remote.Transport
         /// <li>The PDU is a control message with an invalid format. </li>
         /// </ul>
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>The decoded payload or control PDU.</returns>
         public override IAkkaPdu DecodePdu(ByteString raw)
         {
             try
@@ -332,23 +350,23 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Encodes the specified payload as an Akka protocol message.
         /// </summary>
-        /// <param name="payload">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="payload">Serialized payload bytes.</param>
+        /// <returns>The encoded protocol message.</returns>
         public override ByteString ConstructPayload(ByteString payload)
         {
             return new AkkaProtocolMessage() { Payload = payload }.ToByteString();
         }
 
         /// <summary>
-        /// TBD
+        /// Encodes the endpoint's handshake information as an association control PDU.
         /// </summary>
-        /// <param name="info">TBD</param>
+        /// <param name="info">Handshake information containing the origin address and UID.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="info"/> contains an invalid address.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>The encoded association control PDU.</returns>
         public override ByteString ConstructAssociate(HandshakeInfo info)
         {
             var handshakeInfo = new AkkaHandshakeInfo()
@@ -361,10 +379,10 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Encodes the disassociation reason as the corresponding control PDU.
         /// </summary>
-        /// <param name="reason">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="reason">Disassociation reason to encode.</param>
+        /// <returns>The encoded disassociation control PDU.</returns>
         public override ByteString ConstructDisassociate(DisassociateInfo reason)
         {
             switch (reason)
@@ -401,12 +419,12 @@ namespace Akka.Remote.Transport
         private const ulong SeqUndefined = ulong.MaxValue;
 
         /// <summary>
-        /// TBD
+        /// Decodes an acknowledgement and/or remote message from the serialized envelope container.
         /// </summary>
-        /// <param name="raw">TBD</param>
-        /// <param name="provider">TBD</param>
-        /// <param name="localAddress">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="raw">Serialized protobuf acknowledgement and/or message envelope.</param>
+        /// <param name="provider">Remote actor reference provider used to resolve encoded actor paths.</param>
+        /// <param name="localAddress">Local address supplied when resolving actor references.</param>
+        /// <returns>The decoded acknowledgement and message, each of which may be absent.</returns>
         public override AckAndMessage DecodeMessage(ByteString raw, IRemoteActorRefProvider provider, Address localAddress)
         {
             var ackAndEnvelope = AckAndEnvelopeContainer.Parser.ParseFrom(raw);
@@ -426,16 +444,23 @@ namespace Akka.Remote.Transport
                 if (envelopeContainer != null)
                 {
                     var recipient = provider.ResolveActorRefWithLocalAddress(envelopeContainer.Recipient.Path, localAddress);
-                    
-                    //todo get parsed address from provider
-                    var recipientAddress = ActorPathCache.Cache.GetOrCompute(envelopeContainer.Recipient.Path).Address;
+
+                    // RecipientAddress is functionally consumed by DefaultMessageDispatcher.Dispatch only
+                    // for NON-local (remote-deployed) recipients (the Transport.Addresses.Contains check).
+                    // In that case the resolved ref is a RemoteActorRef whose Path IS the parsed wire path,
+                    // so recipient.Path.Address is byte-identical to the value the previous
+                    // ActorPathCache.GetOrCompute(path).Address produced — but WITHOUT a second FastHash +
+                    // path-cache probe per inbound message. For local recipients the field is unused by the
+                    // dispatcher (the only observable delta is the address printed in an obscure
+                    // dropped-message error log for a local ref that is neither ILocalRef nor Repointable).
+                    var recipientAddress = recipient.Path.Address;
                     
                     var serializedMessage = envelopeContainer.Message;
                     IActorRef senderOption = null;
                     if (envelopeContainer.Sender != null)
                         senderOption = provider.ResolveActorRefWithLocalAddress(envelopeContainer.Sender.Path, localAddress);
                     
-                    SeqNo seqOption = null;
+                    SeqNo? seqOption = null;
                     if (envelopeContainer.Seq != SeqUndefined)
                     {
                         unchecked
@@ -452,6 +477,359 @@ namespace Akka.Remote.Transport
             return new AckAndMessage(ackOption, messageOption);
         }
 
+        // ===========================================================================================
+        //  Hand-rolled tag-dispatch decode of AckAndEnvelopeContainer (Phase-2 lever B2a).
+        //
+        //  Produces results IDENTICAL to DecodeMessage(...) (the generated-protobuf path, kept as the
+        //  differential-test oracle) but WITHOUT allocating the AckAndEnvelopeContainer / RemoteEnvelope /
+        //  ActorRefData wrapper objects. The inner message payload (the SerializedMessage/Payload bytes) is
+        //  extracted as an opaque byte range and parsed with the SAME generated parser, so message
+        //  (de)serialization is unchanged.
+        //
+        //  CRITICAL (wire interop is the whole point): protobuf fields may arrive in ANY order with
+        //  unknown fields interspersed (a different/older/newer encoder, JVM Akka). So this is a real
+        //  tag-dispatch loop with unknown-field skipping — NOT positional. Wire tags = (field<<3)|wireType:
+        //    AckAndEnvelopeContainer: ack=1 (msg, tag 10), envelope=2 (msg, tag 18)
+        //    RemoteEnvelope:          recipient=1 (msg, 10), message=2 (msg, 18), sender=4 (msg, 34),
+        //                             seq=5 (fixed64, tag 41)
+        //    ActorRefData:            path=1 (string, tag 10)
+        //    AcknowledgementInfo:     cumulativeAck=1 (fixed64, tag 9), nacks=2 (fixed64; tag 17 unpacked,
+        //                             tag 18 packed)
+        // ===========================================================================================
+        private const int WireVarint = 0;
+        private const int WireFixed64 = 1;
+        private const int WireLengthDelimited = 2;
+        private const int WireFixed32 = 5;
+
+        // ===========================================================================================
+        //  Byte-keyed inbound actor-ref resolve cache (Phase-2 lever B2b).
+        //
+        //  Inbound recipient/sender paths repeat massively per association (same handful of actors),
+        //  so caching the resolved IInternalActorRef keyed by the raw UTF-8 path BYTES lets the hot path
+        //  skip String materialization + Utf8 transcode + FastHash(UTF-16) + the string-keyed resolve/path
+        //  caches entirely on a hit. Also subsumes lever B1: the remote SENDER ref (which the codec
+        //  otherwise re-creates via CreateRemoteRef => new RemoteActorRef every message) is cached here.
+        //
+        //  Correctness: the codec is created per association (one per EndpointWriter, line ~919 in
+        //  Endpoint.cs) and decode runs only on that association's single EndpointReader actor, so
+        //  localAddress is constant and access is single-threaded. The cache is nonetheless made
+        //  lock-free + race-SAFE as defense-in-depth: each slot holds an IMMUTABLE entry published/read
+        //  via Volatile, so any unexpected concurrent decode can only miss or read a self-consistent
+        //  entry — never tear. Every hit is validated by localAddress equality + full path-byte equality,
+        //  so a hash collision or a localAddress change can only cause a (correct) miss, never a wrong ref.
+        // ===========================================================================================
+        private const int RefCacheSize = 256; // power of two
+        private readonly RefCacheEntry[] _refCache = new RefCacheEntry[RefCacheSize];
+
+        private sealed class RefCacheEntry
+        {
+            public readonly byte[] PathBytes;
+            public readonly Address LocalAddress;
+            public readonly IInternalActorRef Ref;
+
+            public RefCacheEntry(byte[] pathBytes, Address localAddress, IInternalActorRef @ref)
+            {
+                PathBytes = pathBytes;
+                LocalAddress = localAddress;
+                Ref = @ref;
+            }
+        }
+
+        private IInternalActorRef ResolveCached(ReadOnlySequence<byte> pathBytes, Address localAddress, IRemoteActorRefProvider provider)
+        {
+            // Single-segment (the common case) avoids any copy; multi-segment paths (split across TCP
+            // chunks) are materialized contiguously for hashing + comparison.
+            ReadOnlySpan<byte> span;
+            byte[] contiguous = null;
+            if (pathBytes.IsSingleSegment)
+            {
+                span = pathBytes.FirstSpan;
+            }
+            else
+            {
+                contiguous = pathBytes.ToArray();
+                span = contiguous;
+            }
+
+            var slot = (int)(Fnv1a(span) & (RefCacheSize - 1));
+            var entry = Volatile.Read(ref _refCache[slot]);
+            if (entry != null && entry.LocalAddress.Equals(localAddress) && span.SequenceEqual(entry.PathBytes))
+                return entry.Ref;
+
+            // Miss: materialize the path string and resolve through the canonical (correct) provider path,
+            // which keeps populating the existing string-keyed caches too.
+            var path = Encoding.UTF8.GetString(span);
+            var resolved = provider.ResolveActorRefWithLocalAddress(path, localAddress);
+            var key = contiguous ?? span.ToArray();
+            Volatile.Write(ref _refCache[slot], new RefCacheEntry(key, localAddress, resolved));
+            return resolved;
+        }
+
+        private static uint Fnv1a(ReadOnlySpan<byte> data)
+        {
+            uint hash = 2166136261u;
+            for (var i = 0; i < data.Length; i++)
+            {
+                hash ^= data[i];
+                hash *= 16777619u;
+            }
+
+            return hash;
+        }
+
+        public override AckAndMessage DecodeMessageFast(ReadOnlySequence<byte> raw, IRemoteActorRefProvider provider, Address localAddress)
+        {
+            Ack ackOption = null;
+            Message messageOption = null;
+
+            var reader = new SequenceReader<byte>(raw);
+            while (!reader.End)
+            {
+                if (!TryReadVarint32(ref reader, out var tag))
+                    throw new PduCodecException("Decoding PDU failed: truncated tag in AckAndEnvelopeContainer");
+
+                switch (tag)
+                {
+                    case 10: // ack = AcknowledgementInfo
+                        ackOption = ParseAck(ReadLengthDelimited(raw, ref reader));
+                        break;
+                    case 18: // envelope = RemoteEnvelope
+                        messageOption = ParseEnvelope(ReadLengthDelimited(raw, ref reader), provider, localAddress);
+                        break;
+                    default:
+                        SkipField(raw, ref reader, tag);
+                        break;
+                }
+            }
+
+            return new AckAndMessage(ackOption, messageOption);
+        }
+
+        private Message ParseEnvelope(ReadOnlySequence<byte> envelope, IRemoteActorRefProvider provider, Address localAddress)
+        {
+            bool hasRecipient = false;
+            ReadOnlySequence<byte> recipientPathBytes = default;
+            bool hasSender = false;
+            ReadOnlySequence<byte> senderPathBytes = default;
+            ReadOnlySequence<byte> messageBytes = default;
+            bool hasMessage = false;
+            // proto3 default for the (uint64) seq field is 0, NOT the SeqUndefined sentinel. The generated
+            // parser therefore maps an ABSENT seq field to Seq=0 => SeqNo(0) (because 0 != SeqUndefined),
+            // and only a present SeqUndefined (MaxValue) maps to null. Mirror that exactly. (A real Akka
+            // encoder always writes seq explicitly — as a value or SeqUndefined — but a different encoder
+            // could omit it, and matching proto semantics keeps interop correct.)
+            ulong seq = 0;
+
+            var reader = new SequenceReader<byte>(envelope);
+            while (!reader.End)
+            {
+                if (!TryReadVarint32(ref reader, out var tag))
+                    throw new PduCodecException("Decoding PDU failed: truncated tag in RemoteEnvelope");
+
+                switch (tag)
+                {
+                    case 10: // recipient = ActorRefData
+                        recipientPathBytes = ParseActorRefPathSlice(ReadLengthDelimited(envelope, ref reader));
+                        hasRecipient = true;
+                        break;
+                    case 18: // message = SerializedMessage (Payload) — kept opaque
+                        messageBytes = ReadLengthDelimited(envelope, ref reader);
+                        hasMessage = true;
+                        break;
+                    case 34: // sender = ActorRefData
+                        senderPathBytes = ParseActorRefPathSlice(ReadLengthDelimited(envelope, ref reader));
+                        hasSender = true;
+                        break;
+                    case 41: // seq = fixed64
+                        if (!reader.TryReadLittleEndian(out long seqRaw))
+                            throw new PduCodecException("Decoding PDU failed: truncated seq fixed64");
+                        seq = unchecked((ulong)seqRaw);
+                        break;
+                    default:
+                        SkipField(envelope, ref reader, tag);
+                        break;
+                }
+            }
+
+            // A well-formed RemoteEnvelope always carries recipient + message; the generated path would
+            // NPE on a missing recipient/message. Surface a codec exception instead of a raw NRE.
+            if (!hasRecipient)
+                throw new PduCodecException("Decoding PDU failed: RemoteEnvelope missing recipient");
+
+            // ResolveCached materializes the path string + resolves on a miss; on a hit (the common case)
+            // it skips String.Ctor + Utf8 transcode + FastHash entirely. An ActorRefData with an absent
+            // path sub-field yields an empty slice => "" path, mirroring protobuf's default-string behavior.
+            var recipient = ResolveCached(recipientPathBytes, localAddress, provider);
+            // See B0: recipient.Path.Address is byte-identical to the parsed wire address where it is
+            // functionally consumed (non-local recipients), without a second FastHash.
+            var recipientAddress = recipient.Path.Address;
+
+            IActorRef senderOption = hasSender
+                ? ResolveCached(senderPathBytes, localAddress, provider)
+                : null;
+
+            SeqNo? seqOption = seq != SeqUndefined ? new SeqNo(unchecked((long)seq)) : (SeqNo?)null;
+
+            var serializedMessage = hasMessage ? SerializedMessage.Parser.ParseFrom(messageBytes) : null;
+
+            return new Message(recipient, recipientAddress, serializedMessage, senderOption, seqOption);
+        }
+
+        private static ReadOnlySequence<byte> ParseActorRefPathSlice(ReadOnlySequence<byte> actorRefData)
+        {
+            ReadOnlySequence<byte> path = default; // absent path sub-field => empty (proto3 default "")
+            var reader = new SequenceReader<byte>(actorRefData);
+            while (!reader.End)
+            {
+                if (!TryReadVarint32(ref reader, out var tag))
+                    throw new PduCodecException("Decoding PDU failed: truncated tag in ActorRefData");
+
+                switch (tag)
+                {
+                    case 10: // path = string
+                        path = ReadLengthDelimited(actorRefData, ref reader);
+                        break;
+                    default:
+                        SkipField(actorRefData, ref reader, tag);
+                        break;
+                }
+            }
+
+            return path;
+        }
+
+        private static Ack ParseAck(ReadOnlySequence<byte> ackData)
+        {
+            long cumulativeAck = 0;
+            List<SeqNo> nacks = null;
+
+            var reader = new SequenceReader<byte>(ackData);
+            while (!reader.End)
+            {
+                if (!TryReadVarint32(ref reader, out var tag))
+                    throw new PduCodecException("Decoding PDU failed: truncated tag in AcknowledgementInfo");
+
+                switch (tag)
+                {
+                    case 9: // cumulativeAck = fixed64
+                        if (!reader.TryReadLittleEndian(out cumulativeAck))
+                            throw new PduCodecException("Decoding PDU failed: truncated cumulativeAck fixed64");
+                        break;
+                    case 17: // nacks (unpacked repeated fixed64) — one element
+                        if (!reader.TryReadLittleEndian(out long nack))
+                            throw new PduCodecException("Decoding PDU failed: truncated nack fixed64");
+                        (nacks ??= new List<SeqNo>()).Add(new SeqNo(nack));
+                        break;
+                    case 18: // nacks (packed repeated fixed64)
+                    {
+                        var packed = ReadLengthDelimited(ackData, ref reader);
+                        var packedReader = new SequenceReader<byte>(packed);
+                        while (!packedReader.End)
+                        {
+                            if (!packedReader.TryReadLittleEndian(out long packedNack))
+                                throw new PduCodecException("Decoding PDU failed: truncated packed nack fixed64");
+                            (nacks ??= new List<SeqNo>()).Add(new SeqNo(packedNack));
+                        }
+
+                        break;
+                    }
+                    default:
+                        SkipField(ackData, ref reader, tag);
+                        break;
+                }
+            }
+
+            // Matches DecodeMessage: Ack(SeqNo, nacks). Empty/absent nacks => empty list (the single-arg
+            // ctor delegates to new List<SeqNo>()).
+            return nacks is null
+                ? new Ack(new SeqNo(cumulativeAck))
+                : new Ack(new SeqNo(cumulativeAck), nacks);
+        }
+
+        private static ReadOnlySequence<byte> ReadLengthDelimited(ReadOnlySequence<byte> source, ref SequenceReader<byte> reader)
+        {
+            if (!TryReadVarint32(ref reader, out var length) || length < 0)
+                throw new PduCodecException("Decoding PDU failed: invalid length-delimited field length");
+            if (reader.Remaining < length)
+                throw new PduCodecException("Decoding PDU failed: truncated length-delimited field");
+
+            var slice = source.Slice(reader.Position, length);
+            reader.Advance(length);
+            return slice;
+        }
+
+        private static void SkipField(ReadOnlySequence<byte> source, ref SequenceReader<byte> reader, int tag)
+        {
+            switch (tag & 0x7)
+            {
+                case WireVarint:
+                    SkipVarint(ref reader);
+                    break;
+                case WireFixed64:
+                    if (reader.Remaining < 8)
+                        throw new PduCodecException("Decoding PDU failed: truncated fixed64 field");
+                    reader.Advance(8);
+                    break;
+                case WireFixed32:
+                    if (reader.Remaining < 4)
+                        throw new PduCodecException("Decoding PDU failed: truncated fixed32 field");
+                    reader.Advance(4);
+                    break;
+                case WireLengthDelimited:
+                    ReadLengthDelimited(source, ref reader);
+                    break;
+                default:
+                    throw new PduCodecException($"Decoding PDU failed: unsupported wire type {tag & 0x7} (tag {tag})");
+            }
+        }
+
+        private static bool TryReadVarint32(ref SequenceReader<byte> reader, out int value)
+        {
+            long result = 0;
+            var shift = 0;
+
+            while (shift < 35)
+            {
+                if (!reader.TryRead(out var b))
+                {
+                    value = 0;
+                    return false;
+                }
+
+                result |= (long)(b & 0x7F) << shift;
+                if ((b & 0x80) == 0)
+                {
+                    if (result > int.MaxValue)
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = (int)result;
+                    return true;
+                }
+
+                shift += 7;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        private static void SkipVarint(ref SequenceReader<byte> reader)
+        {
+            // up to 10 bytes for a 64-bit varint
+            for (var i = 0; i < 10; i++)
+            {
+                if (!reader.TryRead(out var b))
+                    throw new PduCodecException("Decoding PDU failed: truncated varint");
+                if ((b & 0x80) == 0)
+                    return;
+            }
+
+            throw new PduCodecException("Decoding PDU failed: varint exceeds 10 bytes");
+        }
+
         private AcknowledgementInfo AckBuilder(Ack ack)
         {
             var acki = new AcknowledgementInfo();
@@ -462,22 +840,22 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Encodes a message envelope and optional acknowledgement as an envelope container.
         /// </summary>
-        /// <param name="localAddress">TBD</param>
-        /// <param name="recipient">TBD</param>
-        /// <param name="serializedMessage">TBD</param>
-        /// <param name="senderOption">TBD</param>
-        /// <param name="seqOption">TBD</param>
-        /// <param name="ackOption">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="localAddress">Local address used to serialize actor references without an address.</param>
+        /// <param name="recipient">Actor reference that receives the message.</param>
+        /// <param name="serializedMessage">Serialized message payload and serializer metadata.</param>
+        /// <param name="senderOption">Optional sender actor reference.</param>
+        /// <param name="seqOption">Optional reliable-delivery sequence number.</param>
+        /// <param name="ackOption">Optional acknowledgement to include with the message.</param>
+        /// <returns>The encoded acknowledgement and message envelope.</returns>
         public override ByteString ConstructMessage(Address localAddress, IActorRef recipient, SerializedMessage serializedMessage,
-            IActorRef senderOption = null, SeqNo seqOption = null, Ack ackOption = null)
+            IActorRef senderOption = null, SeqNo? seqOption = null, Ack ackOption = null)
         {
             var ackAndEnvelope = new AckAndEnvelopeContainer();
             var envelope = new RemoteEnvelope() { Recipient = SerializeActorRef(recipient.Path.Address, recipient) };
             if (senderOption != null && senderOption.Path != null) { envelope.Sender = SerializeActorRef(localAddress, senderOption); }
-            if (seqOption != null) { envelope.Seq = (ulong)seqOption.RawValue; } else envelope.Seq = SeqUndefined;
+            if (seqOption is { } seq) { envelope.Seq = (ulong)seq.RawValue; } else envelope.Seq = SeqUndefined;
             if (ackOption != null) { ackAndEnvelope.Ack = AckBuilder(ackOption); }
             envelope.Message = serializedMessage;
             ackAndEnvelope.Envelope = envelope;
@@ -486,10 +864,10 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Encodes a standalone reliable-delivery acknowledgement.
         /// </summary>
-        /// <param name="ack">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="ack">Acknowledgement information to encode.</param>
+        /// <returns>The encoded acknowledgement container.</returns>
         public override ByteString ConstructPureAck(Ack ack)
         {
             return new AckAndEnvelopeContainer() { Ack = AckBuilder(ack) }.ToByteString();
@@ -504,7 +882,7 @@ namespace Akka.Remote.Transport
                     var handshakeInfo = controlPdu.HandshakeInfo;
                     if (handshakeInfo != null) // HasHandshakeInfo
                     {
-                        return new Associate(new HandshakeInfo(DecodeAddress(handshakeInfo.Origin), (int)handshakeInfo.Uid));
+                        return new Associate(new HandshakeInfo(DecodeAddress(handshakeInfo.Origin), (long)handshakeInfo.Uid));
                     }
                     break;
                 case CommandType.Disassociate:

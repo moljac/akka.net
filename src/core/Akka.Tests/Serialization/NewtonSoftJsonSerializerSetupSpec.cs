@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="NewtonSoftJsonSerializerSetupSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -21,7 +21,6 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Serialization;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Tests.Serialization
 {
@@ -52,7 +51,7 @@ namespace Akka.Tests.Serialization
         [Fact]
         public void Setup_should_be_used_inside_Json_serializer()
         {
-            var serializer = (NewtonSoftJsonSerializer) Sys.Serialization.FindSerializerForType(typeof(object));
+            var serializer = Sys.Serialization.FindSerializerForType(typeof(object)).Should().BeOfType<NewtonSoftJsonSerializer>().Subject;
             var settings = serializer.Settings;
             settings.ReferenceLoopHandling.Should().Be(ReferenceLoopHandling.Error);
             settings.MissingMemberHandling.Should().Be(MissingMemberHandling.Error);
@@ -63,7 +62,7 @@ namespace Akka.Tests.Serialization
         [Fact]
         public void Setup_should_not_change_mandatory_settings()
         {
-            var serializer = (NewtonSoftJsonSerializer) Sys.Serialization.FindSerializerForType(typeof(object));
+            var serializer = Sys.Serialization.FindSerializerForType(typeof(object)).Should().BeOfType<NewtonSoftJsonSerializer>().Subject;
             var settings = serializer.Settings;
             settings.ContractResolver.Should().BeOfType<NewtonSoftJsonSerializer.AkkaContractResolver>();
             settings.ObjectCreationHandling.Should().Be(ObjectCreationHandling.Replace);

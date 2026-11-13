@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemotePathParsingSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,9 +11,11 @@ using System.Net.Sockets;
 using Akka.Actor;
 using Akka.TestKit;
 using FsCheck;
+using FsCheck.Fluent;
 using FsCheck.Xunit;
 using static Akka.Util.RuntimeDetector;
 
+#pragma warning disable xUnit1028
 namespace Akka.Tests.Actor
 {
     /// <summary>
@@ -25,9 +27,9 @@ namespace Akka.Tests.Actor
         {
             // TODO: Mono does not support IPV6 Uris correctly https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (Aaronontheweb 9/13/2016)
             if (IsMono)
-                return Arb.From(Gen.Elements<IPEndPoint>(new IPEndPoint(IPAddress.Loopback, 1337),
+                return Arb.From(Gen.Elements(new IPEndPoint(IPAddress.Loopback, 1337),
                new IPEndPoint(IPAddress.Any, 1337)));
-            return Arb.From(Gen.Elements<IPEndPoint>(new IPEndPoint(IPAddress.Loopback, 1337),
+            return Arb.From(Gen.Elements(new IPEndPoint(IPAddress.Loopback, 1337),
               new IPEndPoint(IPAddress.IPv6Loopback, 1337),
               new IPEndPoint(IPAddress.Any, 1337), new IPEndPoint(IPAddress.IPv6Any, 1337)));
         }
@@ -50,8 +52,8 @@ namespace Akka.Tests.Actor
 
         public static string ExtractHost(EndPoint endpoint)
         {
-            if (endpoint is IPEndPoint)
-                return ((IPEndPoint)endpoint).Address.ToString();
+            if (endpoint is IPEndPoint point)
+                return point.Address.ToString();
             return ((DnsEndPoint)endpoint).Host;
         }
 
@@ -78,12 +80,7 @@ namespace Akka.Tests.Actor
     /// </summary>
     public class RemotePathParsingSpec : AkkaSpec
     {
-        public RemotePathParsingSpec()
-        {
-            Arb.Register(typeof(EndpointGenerators));
-        }
-
-        [Property]
+        [Property(Arbitrary = new[] { typeof(EndpointGenerators) })]
         public Property Address_should_parse_from_any_valid_EndPoint(EndPoint ep)
         {
             var addr = EndpointGenerators.ParseAddress(ep);
@@ -91,7 +88,7 @@ namespace Akka.Tests.Actor
             return parsedAddr.Equals(addr).Label($"Should be able to parse endpoint to address and back; expected {addr} but was {parsedAddr}");
         }
 
-        [Property]
+        [Property(Arbitrary = new[] { typeof(EndpointGenerators) })]
         public Property ActorPath_Should_parse_from_any_valid_EndPoint(EndPoint ep)
         {
             var addr = EndpointGenerators.ParseAddress(ep);

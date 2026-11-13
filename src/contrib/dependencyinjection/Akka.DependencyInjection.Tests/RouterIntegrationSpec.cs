@@ -1,0 +1,158 @@
+﻿//-----------------------------------------------------------------------
+// <copyright file="RouterIntegrationSpec.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Akka.Actor;
+using Akka.Event;
+using Akka.Routing;
+using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit;
+
+namespace Akka.DependencyInjection.Tests
+{
+    public class RouterIntegrationSpec: IAsyncLifetime
+    {
+        private readonly IServiceProvider _serviceProvider;
+        private readonly AkkaService _akkaService;
+        private readonly ITestOutputHelper _output;
+        private TestKit.Xunit.TestKit _testKit;
+        
+        public RouterIntegrationSpec(ITestOutputHelper output)
+        {
+            _output = output;
+            var services = new ServiceCollection()
+                .AddSingleton<InjectedService>()
+                .AddSingleton<AkkaService>()
+                .AddHostedService<AkkaService>();
+
+            _serviceProvider = services.BuildServiceProvider();
+            _akkaService = _serviceProvider.GetRequiredService<AkkaService>();
+        }
+
+        /// <summary>
+        /// Ensures a router has fully initialized all its routees before returning.
+        /// Uses GetRoutees message to query actual router state - no timing assumptions.
+        /// </summary>
+        private async Task<IActorRef> CreateAndWaitForRouter(Props props, string name, int expectedRouteeCount, TimeSpan? timeout = null)
+        {
+            var system = _akkaService.ActorSystem;
+            var router = system.ActorOf(props, name);
+            var actualTimeout = timeout ?? TimeSpan.FromSeconds(10);
+
+            // Use Ask pattern to query router's actual state
+            var routees = await router.Ask<Routees>(new GetRoutees(), actualTimeout);
+
+            if (routees.Members.Count() != expectedRouteeCount)
+            {
+                throw new InvalidOperationException(
+                    $"Router {name} initialization failed: expected {expectedRouteeCount} routees but got {routees.Members.Count()}");
+            }
+
+            return router;
+        }
+
+        [Fact(DisplayName = "DI should work with ConsistentHashingPool router")]
+        public async Task ShouldWorkWithConsistentHashingPoolTest()
+        {
+            TestDiActor.Counter.Reset();
+            var system = _serviceProvider.GetRequiredService<AkkaService>().ActorSystem;
+            var probe = _testKit.CreateTestProbe(system);
+            system.EventStream.Subscribe(probe, typeof(Error));
+
+            var props = DependencyResolver.For(system).Props<TestDiActor>().WithRouter(new ConsistentHashingPool(100));
+
+            // Structural synchronization: wait for router to have all 100 routees ready
+            var actor = await CreateAndWaitForRouter(props.WithDeploy(Deploy.Local), "testDIActorRouter", 100);
+
+            var counterHash = new HashSet<long>();
+            foreach (var i in Enumerable.Range(0, 500))
+            {
+                var msg = new ConsistentHashableEnvelope(GetMessage.Instance, i);
+                actor.Tell(msg, probe);
+                var result = probe.ExpectMsg<Message>();
+                result.Value.Should().Be("I was injected");
+                result.Counter.Should().BeGreaterOrEqualTo(0).And.BeLessThan(100);
+                counterHash.Add(result.Counter);
+            }
+
+            counterHash.Count.Should().BeGreaterOrEqualTo(50); // at least half of the 100 possible routes have to be hit
+        }
+        
+        [Fact(DisplayName = "DI should work with RoundRobinPool router")]
+        public async Task ShouldWorkWithRoundRobinPoolTest()
+        {
+            TestDiActor.Counter.Reset();
+            var system = _serviceProvider.GetRequiredService<AkkaService>().ActorSystem;
+            var probe = _testKit.CreateTestProbe(system);
+            system.EventStream.Subscribe(probe, typeof(Error));
+
+            var props = DependencyResolver.For(system).Props<TestDiActor>().WithRouter(new RoundRobinPool(100));
+
+            // Structural synchronization: wait for router to have all 100 routees ready
+            var actor = await CreateAndWaitForRouter(props.WithDeploy(Deploy.Local), "testDIActorRouter2", 100);
+
+            var counterHash = new HashSet<long>();
+            foreach (var i in Enumerable.Range(0, 100))
+            {
+                var msg = new ConsistentHashableEnvelope(GetMessage.Instance, i);
+                actor.Tell(msg, probe);
+                var result = probe.ExpectMsg<Message>();
+                result.Value.Should().Be("I was injected");
+                result.Counter.Should().BeGreaterOrEqualTo(0).And.BeLessThan(100);
+                counterHash.Add(result.Counter);
+            }
+
+            // all 100 possible routes have to be hit
+            foreach (var i in Enumerable.Range(0, 100))
+            {
+                counterHash.Should().Contain(i);
+            }
+        }
+
+        [Fact(DisplayName = "DI should work with RandomPool router")]
+        public async Task ShouldWorkWithRandomPoolTest()
+        {
+            TestDiActor.Counter.Reset();
+            var system = _serviceProvider.GetRequiredService<AkkaService>().ActorSystem;
+            var probe = _testKit.CreateTestProbe(system);
+            system.EventStream.Subscribe(probe, typeof(Error));
+
+            var props = DependencyResolver.For(system).Props<TestDiActor>().WithRouter(new RandomPool(100));
+
+            // Structural synchronization: wait for router to have all 100 routees ready
+            var actor = await CreateAndWaitForRouter(props.WithDeploy(Deploy.Local), "testDIActorRouter3", 100);
+
+            var counterHash = new HashSet<long>();
+            foreach (var i in Enumerable.Range(0, 500))
+            {
+                var msg = new ConsistentHashableEnvelope(GetMessage.Instance, i);
+                actor.Tell(msg, probe);
+                var result = probe.ExpectMsg<Message>();
+                result.Value.Should().Be("I was injected");
+                result.Counter.Should().BeGreaterOrEqualTo(0).And.BeLessThan(100);
+                counterHash.Add(result.Counter);
+            }
+
+            counterHash.Count.Should().BeGreaterOrEqualTo(50); // at least half of the 100 possible routes have to be hit
+        }
+        
+        public async ValueTask InitializeAsync()
+        {
+            await _akkaService.StartAsync(default);
+            _testKit = new TestKit.Xunit.TestKit(_akkaService.ActorSystem, _output);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _akkaService.StopAsync();
+        }
+    }
+}

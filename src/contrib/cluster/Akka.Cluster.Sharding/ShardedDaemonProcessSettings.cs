@@ -1,10 +1,11 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ShardedDaemonProcessSettings.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+#nullable enable
 using System;
 using Akka.Actor;
 using Akka.Annotations;
@@ -24,12 +25,12 @@ namespace Akka.Cluster.Sharding
         /// <summary>
         /// Specify sharding settings that should be used for the sharded daemon process instead of loading from config.
         /// </summary>
-        public readonly ClusterShardingSettings ShardingSettings;
+        public readonly ClusterShardingSettings? ShardingSettings;
 
         /// <summary>
         /// Specifies that the ShardedDaemonProcess should run on nodes with a specific role.
         /// </summary>
-        public readonly string Role;
+        public readonly string? Role;
 
         /// <summary>
         /// Create default settings for system
@@ -48,14 +49,14 @@ namespace Akka.Cluster.Sharding
         /// <summary>
         /// Not for user constructions, use factory methods to instantiate.
         /// </summary>
-        private ShardedDaemonProcessSettings(TimeSpan keepAliveInterval, ClusterShardingSettings shardingSettings = null, string role = null)
+        private ShardedDaemonProcessSettings(TimeSpan keepAliveInterval, ClusterShardingSettings? shardingSettings = null, string? role = null)
         {
             KeepAliveInterval = keepAliveInterval;
             ShardingSettings = shardingSettings;
             Role = role;
         }
 
-        private ShardedDaemonProcessSettings Copy(TimeSpan? keepAliveInterval = null, ClusterShardingSettings shardingSettings = null, string role = null)
+        private ShardedDaemonProcessSettings Copy(TimeSpan? keepAliveInterval = null, ClusterShardingSettings? shardingSettings = null, string? role = null)
         {
             return new ShardedDaemonProcessSettings(keepAliveInterval ?? KeepAliveInterval, shardingSettings ?? ShardingSettings, role ?? Role);
         }
@@ -71,7 +72,7 @@ namespace Akka.Cluster.Sharding
         /// Some settings can not be changed (remember-entities and related settings, passivation, number-of-shards),
         /// changing those settings will be ignored.
         /// </summary>
-        /// <param name="shardingSettings">TBD</param>
+        /// <param name="shardingSettings">The sharding settings to use for this daemon process.</param>
         public ShardedDaemonProcessSettings WithShardingSettings(ClusterShardingSettings shardingSettings) => Copy(shardingSettings: shardingSettings);
 
         /// <summary>
@@ -79,7 +80,7 @@ namespace Akka.Cluster.Sharding
         /// If the role is not specified all nodes in the cluster are used. If the given role does
         /// not match the role of the current node the ShardedDaemonProcess will not be started.
         /// </summary>
-        /// <param name="role">TBD</param>
+        /// <param name="role">The cluster role required for nodes hosting this daemon process, or <c>null</c> to retain the current role.</param>
         public ShardedDaemonProcessSettings WithRole(string role) => Copy(role: role);
     }
 }

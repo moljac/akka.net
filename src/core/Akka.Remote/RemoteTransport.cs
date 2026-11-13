@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemoteTransport.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Annotations;
@@ -28,10 +29,10 @@ namespace Akka.Remote
     public abstract class RemoteTransport
     {
         /// <summary>
-        /// TBD
+        /// Initializes a remote transport with its owning actor system and actor reference provider.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <param name="provider">TBD</param>
+        /// <param name="system">The actor system that owns the transport.</param>
+        /// <param name="provider">The provider used to create and resolve remote actor references.</param>
         protected RemoteTransport(ExtendedActorSystem system, RemoteActorRefProvider provider)
         {
             System = system;
@@ -39,12 +40,12 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the actor system that owns this transport.
         /// </summary>
         public ExtendedActorSystem System { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Gets the remote actor reference provider associated with this transport.
         /// </summary>
         public RemoteActorRefProvider Provider { get; private set; }
 
@@ -64,7 +65,7 @@ namespace Akka.Remote
         /// </summary>
         protected bool UseUntrustedMode { get; set; }
         /// <summary>
-        /// TBD
+        /// Gets or sets whether remote lifecycle events are logged.
         /// </summary>
         public bool logRemoteLifeCycleEvents { get; protected set; }
 
@@ -87,9 +88,9 @@ namespace Akka.Remote
         /// <summary>
         /// Sends the given message to the recipient, supplying <paramref name="sender"/> if any.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <param name="sender">TBD</param>
-        /// <param name="recipient">TBD</param>
+        /// <param name="message">The message to send.</param>
+        /// <param name="sender">The sender actor reference, if one is available.</param>
+        /// <param name="recipient">The remote actor reference that receives the message.</param>
         public abstract void Send(object message, IActorRef sender, RemoteActorRef recipient);
 
         /// <summary>
@@ -99,6 +100,7 @@ namespace Akka.Remote
         /// <param name="cmd">a Command message to send to the transport</param>
         /// <returns>A task that indicates when the message was successfully handled or dropped</returns>
         public abstract Task<bool> ManagementCommand(object cmd);
+        public abstract Task<bool> ManagementCommand(object cmd, CancellationToken cancellationToken);
 
         /// <summary>
         /// Resolves the correct local address to be used for contacting the given remote address
@@ -113,7 +115,7 @@ namespace Akka.Remote
         /// <param name="address">Address of the remote system to be quarantined</param>
         /// <param name="uid">UID of the remote system; if the uid is not defined it will not be a strong quarantine but the current
         /// endpoint writer will be stopped (dropping system messages) and the address will be gated.</param>
-        public abstract void Quarantine(Address address, int? uid);
+        public abstract void Quarantine(Address address, long? uid);
     }
 
     /// <summary>
@@ -143,4 +145,3 @@ namespace Akka.Remote
         }
     }
 }
-

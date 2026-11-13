@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="InterpreterSupervisionSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,10 +12,9 @@ using Akka.Streams.Implementation.Fusing;
 using Akka.Streams.Implementation.Stages;
 using Akka.Streams.Stage;
 using Akka.Streams.Supervision;
-using Akka.Streams.TestKit.Tests;
+using Akka.Streams.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 using Cancel = Akka.Streams.Tests.Implementation.Fusing.GraphInterpreterSpecKit.OneBoundedSetup.Cancel;
 using Decider = Akka.Streams.Supervision.Decider;
 using OnComplete = Akka.Streams.Tests.Implementation.Fusing.GraphInterpreterSpecKit.OneBoundedSetup.OnComplete;
@@ -33,8 +32,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
         {
         }
 
-        private ResumeSelect<TIn, TOut> ResumingSelect<TIn, TOut>(Func<TIn, TOut> func)
-          => new ResumeSelect<TIn, TOut>(func);
+        private ResumeSelect<TIn, TOut> ResumingSelect<TIn, TOut>(Func<TIn, TOut> func) => new(func);
         
         private sealed class ResumeSelect<TIn, TOut> : GraphStage<FlowShape<TIn, TOut>>
         {
@@ -79,9 +77,9 @@ namespace Akka.Streams.Tests.Implementation.Fusing
 
             protected override Attributes InitialAttributes { get; } = DefaultAttributes.Select;
 
-            public Inlet<TIn> In { get; } = new Inlet<TIn>("Select.in");
+            public Inlet<TIn> In { get; } = new("Select.in");
 
-            public Outlet<TOut> Out { get; } = new Outlet<TOut>("Select.out");
+            public Outlet<TOut> Out { get; } = new("Select.out");
 
             public override FlowShape<TIn, TOut> Shape { get; }
 
@@ -96,7 +94,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
         public void Interpreter_error_handling_should_handle_external_failure()
         {
             WithOneBoundedSetup(new Select<int, int>(x => x + 1),
-                (lastEvents, upstream, downstream) =>
+                (lastEvents, upstream, _) =>
                 {
                     lastEvents().Should().BeEmpty();
 
@@ -119,7 +117,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
                     downstream.RequestOne();
                     lastEvents().Should().BeEquivalentTo(new RequestOne());
                     upstream.OnNext(0); // boom
-                    lastEvents().Should().BeEquivalentTo(new Cancel(), new OnError(TE()));
+                    lastEvents().Should().BeEquivalentTo(new Cancel(TE()), new OnError(TE()));
                 });
         }
 
@@ -141,7 +139,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
                     downstream.RequestOne();
                     lastEvents().Should().BeEquivalentTo(new RequestOne());
                     upstream.OnNext(-1); // boom
-                    lastEvents().Should().BeEquivalentTo(new Cancel(), new OnError(TE()));
+                    lastEvents().Should().BeEquivalentTo(new Cancel(TE()), new OnError(TE()));
                 });
         }
 
@@ -244,7 +242,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
                     lastEvents().Should().BeEquivalentTo(new OnNext(-1));
 
                     upstream.OnNext(2); // boom
-                    lastEvents().Should().BeEquivalentTo(new OnError(TE()), new Cancel());
+                    lastEvents().Should().BeEquivalentTo(new OnError(TE()), new Cancel(TE()));
                 });
         }
 
@@ -271,7 +269,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
                     downstream.RequestOne();
                     var events = lastEvents();
                     events.OfType<OnError>().Select(x => x.Cause.InnerException).Should().BeEquivalentTo(TE());
-                    events.OfType<Cancel>().Should().BeEquivalentTo(new Cancel());
+                    events.OfType<Cancel>().Should().BeEquivalentTo(new Cancel(new AggregateException(TE())));
                 });
         }
 

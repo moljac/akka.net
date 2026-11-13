@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="NewtonSoftJsonSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,6 +11,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Serialization;
 using System.Text;
 using Akka.Actor;
 using Akka.Configuration;
@@ -31,7 +32,7 @@ namespace Akka.Serialization
         /// <summary>
         /// A default instance of <see cref="NewtonSoftJsonSerializerSettings"/> used when no custom configuration has been provided.
         /// </summary>
-        public static readonly NewtonSoftJsonSerializerSettings Default = new NewtonSoftJsonSerializerSettings(
+        public static readonly NewtonSoftJsonSerializerSettings Default = new(
             encodeTypeNames: true,
             preserveObjectReferences: true,
             converters: Enumerable.Empty<Type>(),
@@ -126,12 +127,9 @@ namespace Akka.Serialization
         /// <param name="stringBuilderMaxSize">Max retained size used for pooled string builders if enabled</param>
         public NewtonSoftJsonSerializerSettings(bool encodeTypeNames, bool preserveObjectReferences, IEnumerable<Type> converters, bool usePooledStringBuilder, int stringBuilderMinSize, int stringBuilderMaxSize)
         {
-            if (converters == null)
-                throw new ArgumentNullException(nameof(converters), $"{nameof(NewtonSoftJsonSerializerSettings)} requires a sequence of converters.");
-
             EncodeTypeNames = encodeTypeNames;
             PreserveObjectReferences = preserveObjectReferences;
-            Converters = converters;
+            Converters = converters ?? throw new ArgumentNullException(nameof(converters), $"{nameof(NewtonSoftJsonSerializerSettings)} requires a sequence of converters.");
             UsePooledStringBuilder = usePooledStringBuilder;
             StringBuilderMinSize = stringBuilderMinSize;
             StringBuilderMaxSize = stringBuilderMaxSize;
@@ -145,15 +143,26 @@ namespace Akka.Serialization
     public class NewtonSoftJsonSerializer : Serializer
     {
         private readonly JsonSerializer _serializer;
-        
+
+        /// <summary>
+        /// A copy of <see cref="_serializer"/> with the <see cref="SurrogateConverter"/> removed.
+        /// Used to break the infinite recursion described in #8354: when a message member is
+        /// statically typed as a concrete <see cref="ISurrogated"/> type (e.g. <see cref="Address"/>)
+        /// but the JSON for that member carries no `$type` metadata, <see cref="SurrogateConverter"/>
+        /// would otherwise hand the resulting <see cref="JObject"/> straight back to itself for the
+        /// very same type, looping forever and crashing the process with an uncatchable native
+        /// <see cref="StackOverflowException"/>.
+        /// </summary>
+        private readonly JsonSerializer _surrogateExcludedSerializer;
+
         private readonly ObjectPool<StringBuilder> _sbPool;
         /// <summary>
-        /// TBD
+        /// The <see cref="JsonSerializerSettings"/> used to configure JSON serialization and deserialization behavior.
         /// </summary>
         public JsonSerializerSettings Settings { get; }
 
         /// <summary>
-        /// TBD
+        /// The underlying <see cref="JsonSerializer"/> instance used to perform JSON conversion.
         /// </summary>
         public object Serializer { get { return _serializer; } }
 
@@ -196,7 +205,7 @@ namespace Akka.Serialization
             if (system != null)
             {
                 var settingsSetup = system.Settings.Setup.Get<NewtonSoftJsonSerializerSetup>()
-                    .GetOrElse(NewtonSoftJsonSerializerSetup.Create(s => {}));
+                    .GetOrElse(NewtonSoftJsonSerializerSetup.Create(_ => {}));
 
                 settingsSetup.ApplySettings(Settings);
             }
@@ -217,9 +226,23 @@ namespace Akka.Serialization
             Settings.ContractResolver = new AkkaContractResolver();
 
             _serializer = JsonSerializer.Create(Settings);
+
+            // Build the fallback serializer from the same fully-configured Settings so every user
+            // customization (SerializationBinder, DateParseHandling, Culture, MaxDepth, etc.) applied
+            // via NewtonSoftJsonSerializerSetup is preserved. JsonSerializer.Create copies the
+            // converters into the serializer's own collection, so removing the SurrogateConverter
+            // here affects neither Settings nor _serializer.
+            _surrogateExcludedSerializer = JsonSerializer.Create(Settings);
+            var surrogateConverter = _surrogateExcludedSerializer.Converters.FirstOrDefault(c => c is SurrogateConverter);
+            if (surrogateConverter != null)
+                _surrogateExcludedSerializer.Converters.Remove(surrogateConverter);
         }
 
-
+        /// <inheritdoc />
+        /// <remarks>
+        /// A subclass keeps resolving its own id from HOCON via <see cref="Serializer.Identifier"/>.
+        /// </remarks>
+        public override int Identifier => GetType() == typeof(NewtonSoftJsonSerializer) ? 1 : base.Identifier;
 
         private static JsonConverter CreateConverter(Type converterType, ExtendedActorSystem actorSystem)
         {
@@ -331,8 +354,7 @@ namespace Akka.Serialization
 
         private static object TranslateSurrogate(object deserializedValue, NewtonSoftJsonSerializer parent, Type type)
         {
-            var j = deserializedValue as JObject;
-            if (j != null)
+            if (deserializedValue is JObject j)
             {
                 //The JObject represents a special akka.net wrapper for primitives (int,float,decimal) to preserve correct type when deserializing
                 if (j["$"] != null)
@@ -341,17 +363,75 @@ namespace Akka.Serialization
                     return GetValue(value);
                 }
 
+                // Bug: #6502 Newtonsoft could not deserialize pure JObject inside an object payload.
+                // If type is `object`, deep-convert object and return as is.
+                if (type == typeof(object))
+                {
+                    return RestoreJToken(j);
+                }
+
+                // Bug: #8354 mirror of #6502 - `type` here is the member's static type, which can
+                // itself be a concrete ISurrogated type (e.g. Address). If the JSON for that member
+                // carries no `$type` metadata (encode-type-names off, or an external producer),
+                // calling `j.ToObject(type, parent._serializer)` would hand this same JObject back
+                // to SurrogateConverter for the very same type, which produces the same untyped
+                // JObject again, looping forever until the native stack overflows and kills the
+                // process. Deserialize with the SurrogateConverter excluded so plain reflection-based
+                // binding is used instead, and surface a catchable, descriptive exception if that
+                // still can't produce a value.
+                if (typeof(ISurrogated).IsAssignableFrom(type))
+                {
+                    try
+                    {
+                        return j.ToObject(type, parent._surrogateExcludedSerializer);
+                    }
+                    catch (JsonException ex)
+                    {
+                        throw new SerializationException(
+                            $"Unable to deserialize a value of type [{type}] from JSON that does not carry " +
+                            "`$type` metadata. This can happen when `encode-type-names` is disabled, or when " +
+                            "the payload was produced by a non-Akka.NET producer. Ensure the JSON contains " +
+                            $"enough information to construct [{type}] directly.", ex);
+                    }
+                }
+
                 //The JObject is not of our concern, let Json.NET deserialize it.
                 return j.ToObject(type, parent._serializer);
             }
-            var surrogate = deserializedValue as ISurrogate;
 
             //The deserialized object is a surrogate, unwrap it
-            if (surrogate != null)
+            if (deserializedValue is ISurrogate surrogate)
             {
                 return surrogate.FromSurrogate(parent.system);
             }
             return deserializedValue;
+        }
+
+        private static JToken RestoreJToken(JToken value)
+        {
+            switch (value)
+            {
+                case JObject obj:
+                    if (obj["$"] != null)
+                    {
+                        var v = obj["$"].Value<string>();
+                        return new JValue(GetValue(v));
+                    }
+                    var dict = (IDictionary<string, JToken>)obj;
+                    foreach (var kvp in dict)
+                    {
+                        dict[kvp.Key] = RestoreJToken(kvp.Value);
+                    }
+                    return obj;
+                case JArray arr:
+                    for (var i = 0; i < arr.Count; i++)
+                    {
+                        arr[i] = RestoreJToken(arr[i]);
+                    }
+                    return arr;
+                default:
+                    return value;
+            }
         }
 
         private static object GetValue(string V)
@@ -369,15 +449,16 @@ namespace Akka.Serialization
         }
 
         /// <summary>
-        /// TBD
+        /// A custom <see cref="JsonConverter"/> that handles types implementing <see cref="ISurrogated"/>
+        /// and corrects numeric type conversions (int, float, decimal) during deserialization.
         /// </summary>
         internal class SurrogateConverter : JsonConverter
         {
             private readonly NewtonSoftJsonSerializer _parent;
             /// <summary>
-            /// TBD
+            /// Initializes a new instance of the <see cref="SurrogateConverter"/> class.
             /// </summary>
-            /// <param name="parent">TBD</param>
+            /// <param name="parent">The parent serializer that provides the actor system context for surrogate resolution.</param>
             public SurrogateConverter(NewtonSoftJsonSerializer parent)
             {
                 _parent = parent;
@@ -429,7 +510,7 @@ namespace Akka.Serialization
             /// <param name="serializer">The calling serializer.</param>
             public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
             {
-                if (value is int || value is decimal || value is float)
+                if (value is int or decimal or float)
                 {
                     writer.WriteStartObject();
                     writer.WritePropertyName("$");
@@ -454,12 +535,12 @@ namespace Akka.Serialization
 
             private object GetString(object value)
             {
-                if (value is int)
-                    return "I" + ((int)value).ToString(NumberFormatInfo.InvariantInfo);
-                if (value is float)
-                    return "F" + ((float)value).ToString(NumberFormatInfo.InvariantInfo);
-                if (value is decimal)
-                    return "M" + ((decimal)value).ToString(NumberFormatInfo.InvariantInfo);
+                if (value is int i)
+                    return "I" + i.ToString(NumberFormatInfo.InvariantInfo);
+                if (value is float f)
+                    return "F" + f.ToString(NumberFormatInfo.InvariantInfo);
+                if (value is decimal value1)
+                    return "M" + value1.ToString(NumberFormatInfo.InvariantInfo);
                 throw new NotSupportedException();
             }
         }

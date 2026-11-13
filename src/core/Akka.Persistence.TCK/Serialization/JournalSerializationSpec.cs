@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="JournalSerializationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -16,26 +16,26 @@ using Akka.Serialization;
 using Akka.Util;
 using Akka.Util.Internal;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Persistence.TCK.Serialization
 {
     public abstract class JournalSerializationSpec : PluginSpec
     {
         protected JournalSerializationSpec(Config config, string actorSystem, ITestOutputHelper output)
-            : base(ConfigurationFactory.ParseString(@"
-                akka.actor {
-                  serializers {
-                    my-payload = ""Akka.Persistence.TCK.Serialization.TestJournal+MyPayloadSerializer, Akka.Persistence.TCK""
-                    my-payload2 = ""Akka.Persistence.TCK.Serialization.TestJournal+MyPayload2Serializer, Akka.Persistence.TCK""
+            : base(ConfigurationFactory.ParseString(
+                $$"""
+                  akka.actor {
+                    serializers {
+                      my-payload = "{{typeof(TestJournal.MyPayloadSerializer).FullName}}, {{typeof(TestJournal.MyPayloadSerializer).Assembly.GetName().Name}}"
+                      my-payload2 = "{{typeof(TestJournal.MyPayload2Serializer).FullName}}, {{typeof(TestJournal.MyPayload2Serializer).Assembly.GetName().Name}}"
+                    }
+                    serialization-bindings {
+                      "{{typeof(TestJournal.MyPayload).FullName}}, {{typeof(TestJournal.MyPayload).Assembly.GetName().Name}}" = my-payload
+                      "{{typeof(TestJournal.MyPayload2).FullName}}, {{typeof(TestJournal.MyPayload2).Assembly.GetName().Name}}" = my-payload2
+                      "{{typeof(TestJournal.MyPayload3).FullName}}, {{typeof(TestJournal.MyPayload3).Assembly.GetName().Name}}" = my-payload
+                    }
                   }
-                  serialization-bindings {
-                    ""Akka.Persistence.TCK.Serialization.TestJournal+MyPayload, Akka.Persistence.TCK"" = my-payload
-                    ""Akka.Persistence.TCK.Serialization.TestJournal+MyPayload2, Akka.Persistence.TCK"" = my-payload2
-                    ""Akka.Persistence.TCK.Serialization.TestJournal+MyPayload3, Akka.Persistence.TCK"" = my-payload
-                  }
-                }
-            ").WithFallback(config), actorSystem, output)
+                  """).WithFallback(config), actorSystem, output)
         {
         }
 
@@ -49,7 +49,7 @@ namespace Akka.Persistence.TCK.Serialization
 
             var messages = new List<AtomicWrite>
             {
-                new AtomicWrite(persistentEvent)
+                new(persistentEvent)
             };
 
             Journal.Tell(new WriteMessages(messages, probe.Ref, ActorInstanceId));
@@ -71,7 +71,7 @@ namespace Akka.Persistence.TCK.Serialization
 
             var messages = new List<AtomicWrite>
             {
-                new AtomicWrite(persistentEvent)
+                new(persistentEvent)
             };
 
             Journal.Tell(new WriteMessages(messages, probe.Ref, ActorInstanceId));
@@ -93,7 +93,7 @@ namespace Akka.Persistence.TCK.Serialization
 
             var messages = new List<AtomicWrite>
             {
-                new AtomicWrite(persistentEvent)
+                new(persistentEvent)
             };
 
             Journal.Tell(new WriteMessages(messages, probe.Ref, ActorInstanceId));
@@ -117,7 +117,7 @@ namespace Akka.Persistence.TCK.Serialization
 
             var messages = new List<AtomicWrite>
             {
-                new AtomicWrite(new Persistent(stateChangeEvent, 1, Pid))
+                new(new Persistent(stateChangeEvent, 1, Pid))
             };
 
             Journal.Tell(new WriteMessages(messages, probe.Ref, ActorInstanceId));
@@ -193,8 +193,8 @@ namespace Akka.Persistence.TCK.Serialization
 
             public override byte[] ToBinary(object obj)
             {
-                if (obj is MyPayload2)
-                    return Encoding.UTF8.GetBytes(string.Format(".{0}:{1}", ((MyPayload2)obj).Data, ((MyPayload2)obj).N));
+                if (obj is MyPayload2 payload2)
+                    return Encoding.UTF8.GetBytes(string.Format(".{0}:{1}", payload2.Data, payload2.N));
                 return null;
             }
 

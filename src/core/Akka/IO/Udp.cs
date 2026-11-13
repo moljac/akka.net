@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Udp.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -18,10 +18,8 @@ using Akka.IO.Buffers;
 
 namespace Akka.IO
 {
-    using ByteBuffer = ArraySegment<byte>;
-
     /// <summary>
-    /// UDP Extension for Akka’s IO layer.
+    /// UDP Extension for Akka's IO layer.
     ///
     /// This extension implements the connectionless UDP protocol without
     /// calling `connect` on the underlying sockets, i.e. without restricting
@@ -36,11 +34,13 @@ namespace Akka.IO
 
         internal abstract class SocketCompleted : INoSerializationVerificationNeeded, IDeadLetterSuppression
         {
-            public ByteString Data { get; }
+            public ReadOnlyMemory<byte> Data { get; }
 
             protected SocketCompleted(SocketAsyncEventArgs eventArgs)
             {
-                Data = ByteString.CopyFrom(eventArgs.Buffer, eventArgs.Offset, eventArgs.BytesTransferred);
+                var copy = new byte[eventArgs.BytesTransferred];
+                eventArgs.Buffer.AsSpan(eventArgs.Offset, eventArgs.BytesTransferred).CopyTo(copy);
+                Data = copy;
             }
         }
 
@@ -85,25 +85,25 @@ namespace Akka.IO
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Singleton instance of the UDP extension.
         /// </summary>
-        public static readonly Udp Instance = new Udp();
+        public static readonly Udp Instance = new();
 
         /// <summary>
-        /// TBD
+        /// Gets the UDP manager actor reference for the specified actor system.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">The actor system to get the UDP manager for.</param>
+        /// <returns>The actor reference to the UDP manager.</returns>
         public static IActorRef Manager(ActorSystem system)
         {
             return Instance.Apply(system).Manager;
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a new UDP extension instance for the specified actor system.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">The actor system to create the extension for.</param>
+        /// <returns>A new UDP extension instance.</returns>
         public override UdpExt CreateExtension(ExtendedActorSystem system)
         {
             return new UdpExt(system);
@@ -118,7 +118,7 @@ namespace Akka.IO
             private object _failureMessage;
 
             /// <summary>
-            /// TBD
+            /// Gets a failure message representation of this command.
             /// </summary>
             public object FailureMessage
             {
@@ -138,19 +138,19 @@ namespace Akka.IO
             /// Default <see cref="NoAck"/> instance which is used when no acknowledgment information is
             /// explicitly provided. Its "token" is <see langword="null"/>.
             /// </summary>
-            public static readonly NoAck Instance = new NoAck(null);
+            public static readonly NoAck Instance = new(null);
 
             /// <summary>
-            /// TBD
+            /// Creates a new NoAck instance with the specified token.
             /// </summary>
-            /// <param name="token">TBD</param>
+            /// <param name="token">A token that can be used to identify this NoAck instance.</param>
             public NoAck(object token)
             {
                 Token = token;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the token associated with this NoAck instance.
             /// </summary>
             public object Token { get; }
 
@@ -169,19 +169,13 @@ namespace Akka.IO
         /// object as soon as the datagram has been successfully enqueued to the O/S
         /// kernel.
         ///
-        /// The sending UDP socket’s address belongs to the "simple sender" which does
+        /// The sending UDP socket's address belongs to the "simple sender" which does
         /// not handle inbound datagrams and sends from an ephemeral port; therefore
         /// sending using this mechanism is not suitable if replies are expected, use
         /// <see cref="Bind"/> in that case.
         /// </summary>
         public sealed class Send : Command
         {
-            [Obsolete("Akka.IO.Udp.Send public constructors are obsolete. Use `Send.Create` or `Send(ByteString, EndPoint, Event)` instead.")]
-            public Send(IEnumerator<ByteBuffer> payload, EndPoint target, Event ack)
-                : this(ByteString.FromBuffers(payload), target, ack)
-            {
-            }
-
             /// <summary>
             /// Creates a new send request to be executed via UDP socket to a addressed to the provided endpoint.
             /// Once send completes, this request will acknowledged back on the sender side with an <paramref name="ack"/>
@@ -190,7 +184,7 @@ namespace Akka.IO
             /// <param name="payload">Binary payload to be send.</param>
             /// <param name="target">An endpoint of the message receiver.</param>
             /// <param name="ack">Acknowledgement send back to the sender, once <paramref name="payload"/> has been send through a socket.</param>
-            public Send(ByteString payload, EndPoint target, Event ack)
+            public Send(ReadOnlyMemory<byte> payload, EndPoint target, Event ack)
             {
                 Payload = payload;
                 Target = target;
@@ -202,7 +196,7 @@ namespace Akka.IO
             /// <summary>
             /// A binary payload to be send to the <see cref="Target"/>. It must fit into a single UDP datagram.
             /// </summary>
-            public ByteString Payload { get; }
+            public ReadOnlyMemory<byte> Payload { get; }
 
             /// <summary>
             /// An endpoint, to which current <see cref="Payload"/> will be send.
@@ -229,8 +223,8 @@ namespace Akka.IO
             /// </summary>
             /// <param name="data">Binary payload to be send.</param>
             /// <param name="target">An endpoint of the message receiver.</param>
-            /// <returns>TBD</returns>
-            public static Send Create(ByteString data, EndPoint target) => new Send(data, target, NoAck.Instance);
+            /// <returns>A new Send command instance with NoAck as acknowledgment.</returns>
+            public static Send Create(ReadOnlyMemory<byte> data, EndPoint target) => new(data, target, NoAck.Instance);
         }
 
         /// <summary>
@@ -242,11 +236,11 @@ namespace Akka.IO
         public sealed class Bind : Command
         {
             /// <summary>
-            /// TBD
+            /// Creates a new Bind command to bind to a specified local address.
             /// </summary>
-            /// <param name="handler">TBD</param>
-            /// <param name="localAddress">TBD</param>
-            /// <param name="options">TBD</param>
+            /// <param name="handler">The actor that will handle incoming UDP messages.</param>
+            /// <param name="localAddress">The local address to bind the socket to.</param>
+            /// <param name="options">Socket options to apply to the UDP socket (optional).</param>
             public Bind(IActorRef handler, EndPoint localAddress, IEnumerable<Inet.SocketOption> options = null)
             {
                 Handler = handler;
@@ -255,15 +249,15 @@ namespace Akka.IO
             }
 
             /// <summary>
-            /// TBD
+            /// The actor that will handle incoming UDP messages.
             /// </summary>
             public IActorRef Handler { get; }
             /// <summary>
-            /// TBD
+            /// The local address to bind the socket to.
             /// </summary>
             public EndPoint LocalAddress { get; }
             /// <summary>
-            /// TBD
+            /// Socket options to apply to the UDP socket.
             /// </summary>
             public IEnumerable<Inet.SocketOption> Options { get; }
 
@@ -279,9 +273,9 @@ namespace Akka.IO
         public sealed class Unbind : Command
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance that represents an unbind command.
             /// </summary>
-            public static readonly Unbind Instance = new Unbind();
+            public static readonly Unbind Instance = new();
 
             private Unbind() { }
         }
@@ -299,37 +293,37 @@ namespace Akka.IO
         public sealed class SimpleSender : Command
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance that represents a simple sender command.
             /// </summary>
-            public static readonly SimpleSender Instance = new SimpleSender();
+            public static readonly SimpleSender Instance = new();
 
             /// <summary>
-            /// TBD
+            /// Creates a new SimpleSender command with the specified socket options.
             /// </summary>
-            /// <param name="options">TBD</param>
+            /// <param name="options">Socket options to apply to the UDP socket.</param>
             public SimpleSender(IEnumerable<Inet.SocketOption> options = null)
             {
                 Options = options ?? Enumerable.Empty<Inet.SocketOption>();
             }
 
             /// <summary>
-            /// TBD
+            /// Socket options to apply to the UDP socket.
             /// </summary>
             public IEnumerable<Inet.SocketOption> Options { get; }
         }
 
         /// <summary>
         /// Send this message to a listener actor (which sent a <see cref="Bound"/> message) to
-        /// have it stop reading datagrams from the network. If the O/S kernel’s receive
+        /// have it stop reading datagrams from the network. If the O/S kernel's receive
         /// buffer runs full then subsequent datagrams will be silently discarded.
         /// Re-enable reading from the socket using the `ResumeReading` command.
         /// </summary>
         public sealed class SuspendReading : Command
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance that represents a suspend reading command.
             /// </summary>
-            public static readonly SuspendReading Instance = new SuspendReading();
+            public static readonly SuspendReading Instance = new();
 
             private SuspendReading()
             { }
@@ -342,9 +336,9 @@ namespace Akka.IO
         public sealed class ResumeReading : Command
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance that represents a resume reading command.
             /// </summary>
-            public static readonly ResumeReading Instance = new ResumeReading();
+            public static readonly ResumeReading Instance = new();
 
             private ResumeReading()
             { }
@@ -360,27 +354,27 @@ namespace Akka.IO
         public sealed class Received : Event
         {
             /// <summary>
-            /// TBD
+            /// Creates a new Received event with the specified data and sender.
             /// </summary>
-            /// <param name="data">TBD</param>
-            /// <param name="sender">TBD</param>
-            public Received(ByteString data, EndPoint sender)
+            /// <param name="data">The UDP datagram payload.</param>
+            /// <param name="sender">The remote endpoint that sent the datagram.</param>
+            public Received(ReadOnlyMemory<byte> data, EndPoint sender)
             {
                 Data = data;
                 Sender = sender;
             }
 
             /// <summary>
-            /// TBD
+            /// The UDP datagram payload.
             /// </summary>
-            public ByteString Data { get; }
+            public ReadOnlyMemory<byte> Data { get; }
             /// <summary>
-            /// TBD
+            /// The remote endpoint that sent the datagram.
             /// </summary>
             public EndPoint Sender { get; }
 
             public override string ToString() =>
-                $"Received(bytes: {Data.Count}, from: {Sender})";
+                $"Received(bytes: {Data.Length}, from: {Sender})";
         }
 
         /// <summary>
@@ -390,15 +384,15 @@ namespace Akka.IO
         public sealed class CommandFailed : Event
         {
             /// <summary>
-            /// TBD
+            /// Creates a new CommandFailed event for the specified command.
             /// </summary>
-            /// <param name="cmd">TBD</param>
+            /// <param name="cmd">The command that failed.</param>
             public CommandFailed(Command cmd)
             {
                 Cmd = cmd;
             }
             /// <summary>
-            /// TBD
+            /// The command that failed.
             /// </summary>
             public Command Cmd { get; }
 
@@ -414,16 +408,16 @@ namespace Akka.IO
         public sealed class Bound : Event
         {
             /// <summary>
-            /// TBD
+            /// Creates a new Bound event with the specified local address.
             /// </summary>
-            /// <param name="localAddress">TBD</param>
+            /// <param name="localAddress">The local address the socket was bound to.</param>
             public Bound(EndPoint localAddress)
             {
                 LocalAddress = localAddress;
             }
 
             /// <summary>
-            /// TBD
+            /// The local address the socket was bound to.
             /// </summary>
             public EndPoint LocalAddress { get; }
 
@@ -435,9 +429,9 @@ namespace Akka.IO
         public sealed class SimpleSenderReady : Event
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance that represents a simple sender ready event.
             /// </summary>
-            public static readonly SimpleSenderReady Instance = new SimpleSenderReady();
+            public static readonly SimpleSenderReady Instance = new();
 
             private  SimpleSenderReady() { }
         }
@@ -449,14 +443,14 @@ namespace Akka.IO
         public sealed class Unbound
         {
             /// <summary>
-            /// TBD
+            /// Singleton instance that represents an unbound event.
             /// </summary>
-            public static readonly Unbound Instance = new Unbound();
+            public static readonly Unbound Instance = new();
             private Unbound() { }
         }
 
         /// <summary>
-        /// TBD
+        /// Socket option forwarders specific to UDP.
         /// </summary>
         public sealed class SO : Inet.SoForwarders
         {
@@ -468,22 +462,22 @@ namespace Akka.IO
             public sealed class Broadcast : Inet.SocketOption
             {
                 /// <summary>
-                /// TBD
+                /// Creates a new Broadcast socket option with the specified on/off state.
                 /// </summary>
-                /// <param name="on">TBD</param>
+                /// <param name="on">Whether to enable broadcasting.</param>
                 public Broadcast(bool on)
                 {
                     On = on;
                 }
                 /// <summary>
-                /// TBD
+                /// Indicates whether broadcasting is enabled.
                 /// </summary>
                 public bool On { get; }
 
                 /// <summary>
-                /// TBD
+                /// Applies the broadcast option to the socket before binding.
                 /// </summary>
-                /// <param name="s">TBD</param>
+                /// <param name="s">The socket to apply the option to.</param>
                 public override void BeforeDatagramBind(Socket s)
                 {
                     s.EnableBroadcast = On;
@@ -494,7 +488,7 @@ namespace Akka.IO
     }
 
     /// <summary>
-    /// TBD
+    /// Implementation of the UDP IO extension for Akka.
     /// </summary>
     public class UdpExt : IOExtension
     {
@@ -504,56 +498,39 @@ namespace Akka.IO
             
         }
 
+        /// <summary>
+        /// UDP always uses the shipped <see cref="DisabledBufferPool"/>; only its buffer size is configurable.
+        /// </summary>
+        private const string DisabledBufferPoolConfigPath = "akka.io.udp.disabled-buffer-pool";
+
         public UdpExt(ExtendedActorSystem system, UdpSettings settings)
         {
-            var bufferPoolConfig = system.Settings.Config.GetConfig(settings.BufferPoolConfigPath);
+            var bufferPoolConfig = system.Settings.Config.GetConfig(DisabledBufferPoolConfigPath);
             if (bufferPoolConfig.IsNullOrEmpty())
-                throw new ConfigurationException($"Cannot retrieve UDP buffer pool configuration: {settings.BufferPoolConfigPath} configuration node not found");
+                throw new ConfigurationException($"Cannot retrieve UDP buffer pool configuration: {DisabledBufferPoolConfigPath} configuration node not found");
 
             Setting = settings;
             Manager = system.SystemActorOf(
-                props: Props.Create(() => new UdpManager(this)).WithDeploy(Deploy.Local), 
+                props: Props.Create(() => new UdpManager(this)).WithDeploy(Deploy.Local),
                 name: "IO-UDP-FF");
 
             SocketEventArgsPool = new PreallocatedSocketEventAgrsPool(
                 settings.InitialSocketAsyncEventArgs,
-                CreateBufferPool(system, bufferPoolConfig),
+                new DisabledBufferPool(bufferPoolConfig.GetInt("buffer-size", 256)),
                 OnComplete);
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the UDP manager actor reference.
         /// </summary>
         public override IActorRef Manager { get; }
 
         /// <summary>
-        /// TBD
+        /// Gets the UDP settings for this extension.
         /// </summary>
         internal UdpSettings Setting { get; }
 
         internal PreallocatedSocketEventAgrsPool SocketEventArgsPool { get; }
-
-        private static IBufferPool CreateBufferPool(ExtendedActorSystem system, Config config)
-        {
-            if (config.IsNullOrEmpty())
-                throw ConfigurationException.NullOrEmptyConfig<IBufferPool>();
-
-            var type = Type.GetType(config.GetString("class", null), true);
-
-            if (!typeof(IBufferPool).IsAssignableFrom(type))
-                throw new ArgumentException($"Buffer pool of type {type} doesn't implement {nameof(IBufferPool)} interface");
-
-            try
-            {
-                // try to construct via `BufferPool(ExtendedActorSystem, Config)` ctor
-                return (IBufferPool)Activator.CreateInstance(type, system, config);
-            }
-            catch
-            {
-                // try to construct via `BufferPool(ExtendedActorSystem)` ctor
-                return (IBufferPool)Activator.CreateInstance(type, system);
-            }
-        }
 
         private void OnComplete(object sender, SocketAsyncEventArgs e)
         {
@@ -577,15 +554,15 @@ namespace Akka.IO
     }
 
     /// <summary>
-    /// TBD
+    /// Extension methods for working with UDP in Akka.NET.
     /// </summary>
     public static class UdpExtensions
     {
         /// <summary>
-        /// TBD
+        /// Gets the UDP manager actor reference for the specified actor system.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">The actor system to get the UDP manager for.</param>
+        /// <returns>The actor reference to the UDP manager.</returns>
         public static IActorRef Udp(this ActorSystem system)
         {
             return IO.Udp.Manager(system);

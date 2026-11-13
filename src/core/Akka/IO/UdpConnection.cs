@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UdpConnection.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -17,7 +17,6 @@ using Akka.Event;
 namespace Akka.IO
 {
     using static UdpConnected;
-    using ByteBuffer = ArraySegment<byte>;
 
     internal class UdpConnection : ActorBase, IRequiresMessageQueue<IUnboundedMessageQueueSemantics>
     {
@@ -32,8 +31,12 @@ namespace Akka.IO
         private Received _pendingRead;
 
         /// <summary>
-        /// TBD
+        /// Initializes a new instance of the <see cref="UdpConnection"/> class,
+        /// resolving DNS if needed and establishing a connected UDP socket to the remote address.
         /// </summary>
+        /// <param name="udp">The UDP connected extension providing settings and socket event argument pooling.</param>
+        /// <param name="commander">The actor that issued the <see cref="Connect"/> command and will receive connection results.</param>
+        /// <param name="connect">The connect command containing remote address, local address, handler, and socket options.</param>
         public UdpConnection(UdpConnectedExt udp, IActorRef commander, Connect connect)
         {
             Udp = udp;
@@ -193,7 +196,7 @@ namespace Akka.IO
                 var (send, sender) = _pendingSend.Value;
                 var data = send.Payload;
 
-                var bytesWritten = _socket.Send(data.Buffers);
+                var bytesWritten = _socket.Send(data.Span);
                 if (Udp.Settings.TraceLogging)
                     Log.Debug("Wrote [{0}] bytes to socket", bytesWritten);
 
@@ -207,9 +210,7 @@ namespace Akka.IO
             }
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
+        /// <inheritdoc/>
         protected override void PostStop()
         {
             Log.Debug("Closing DatagramChannel after being stopped");

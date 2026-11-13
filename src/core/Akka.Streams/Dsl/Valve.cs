@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Valve.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Threading.Tasks;
 using Akka.Streams.Stage;
+using Akka.Util.Internal;
 
 namespace Akka.Streams.Dsl
 {
@@ -52,21 +53,21 @@ namespace Akka.Streams.Dsl
 
         public Task<bool> Flip(SwitchMode flipToMode)
         {
-            var completion = new TaskCompletionSource<bool>();
+            var completion = TaskEx.NonBlockingTaskCompletionSource<bool>();
             _flipCallback((flipToMode, completion));
             return completion.Task;
         }
 
         public Task<SwitchMode> GetMode()
         {
-            var completion = new TaskCompletionSource<SwitchMode>();
+            var completion = TaskEx.NonBlockingTaskCompletionSource<SwitchMode>();
             _getModeCallback(completion);
             return completion.Task;
         }
     }
 
     /// <summary>
-    /// Materializes into a task of <see cref="IValveSwitch"/> which provides a the method flip that stops or restarts the flow of elements passing through the stage. 
+    /// Materializes into a task of <see cref="IValveSwitch"/> which provides a method that will stop or restart the flow of elements passing through the stage. 
     /// As long as the valve is closed it will backpressure.
     /// Note that closing the valve could result in one element being buffered inside the stage, and if the stream completes or fails while being closed, that element may be lost.
     /// </summary>
@@ -147,7 +148,7 @@ namespace Akka.Streams.Dsl
                     Pull(_valve.In);
             }
 
-            public void OnDownstreamFinish() => CompleteStage();
+            public void OnDownstreamFinish(Exception cause) => InternalOnDownstreamFinish(cause);
         }
 
         #endregion
@@ -176,7 +177,7 @@ namespace Akka.Streams.Dsl
 
         public override ILogicAndMaterializedValue<Task<IValveSwitch>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
         {
-            var completion = new TaskCompletionSource<IValveSwitch>();
+            var completion = TaskEx.NonBlockingTaskCompletionSource<IValveSwitch>();
             var logic = new ValveGraphStageLogic(this, completion);
 
             return new LogicAndMaterializedValue<Task<IValveSwitch>>(logic, completion.Task);

@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Deployer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Akka.Configuration;
 using Akka.Routing;
@@ -22,12 +23,62 @@ namespace Akka.Actor
     public class Deployer
     {
         /// <summary>
-        /// TBD
+        /// The routers that Akka.NET's own <c>akka.conf</c> maps under
+        /// <c>akka.actor.router.type-mapping</c>, constructed directly so that neither the trimmer nor the
+        /// Native AOT compiler has to see through a <see cref="Type.GetType(string)"/> call.
+        ///
+        /// The keys are the mapped type names, never the aliases: any alias can be pointed at a different
+        /// type in user HOCON - <c>round-robin-pool = "MyApp.MyRouter, MyApp"</c> is legal - and that
+        /// remapping has to keep working, so the alias itself says nothing about which router to build.
+        /// </summary>
+        private static readonly Dictionary<string, Func<Config, RouterConfig>> BuiltInRouterConfigs =
+            BuildBuiltInRouterConfigs();
+
+        /// <summary>
+        /// Builds <see cref="BuiltInRouterConfigs"/>: the 13 routers <c>akka.actor.router.type-mapping</c>
+        /// maps onto types inside Akka.dll and that can actually reach this table.
+        ///
+        /// Keyed by bare type name; TypeExtensions.ToBuiltInAkkaTypeName normalizes what HOCON carries.
+        /// </summary>
+        private static Dictionary<string, Func<Config, RouterConfig>> BuildBuiltInRouterConfigs()
+        {
+            var builtIn = new Dictionary<string, Func<Config, RouterConfig>>(StringComparer.Ordinal);
+
+            // NoRouter is deliberately absent: the only alias akka.conf maps onto it is "from-code", which
+            // CreateRouterConfig short-circuits before it ever reaches this table, and NoRouter has no public
+            // Config constructor - so an entry here would only change what happens when a user points some
+            // other alias at it.
+            Add<RoundRobinPool>(static deployment => new RoundRobinPool(deployment));
+            Add<RoundRobinGroup>(static deployment => new RoundRobinGroup(deployment));
+            Add<RandomPool>(static deployment => new RandomPool(deployment));
+            Add<RandomGroup>(static deployment => new RandomGroup(deployment));
+            Add<SmallestMailboxPool>(static deployment => new SmallestMailboxPool(deployment));
+            Add<BroadcastPool>(static deployment => new BroadcastPool(deployment));
+            Add<BroadcastGroup>(static deployment => new BroadcastGroup(deployment));
+            Add<ScatterGatherFirstCompletedPool>(static deployment => new ScatterGatherFirstCompletedPool(deployment));
+            Add<ScatterGatherFirstCompletedGroup>(static deployment => new ScatterGatherFirstCompletedGroup(deployment));
+            Add<ConsistentHashingPool>(static deployment => new ConsistentHashingPool(deployment));
+            Add<ConsistentHashingGroup>(static deployment => new ConsistentHashingGroup(deployment));
+            Add<TailChoppingPool>(static deployment => new TailChoppingPool(deployment));
+            Add<TailChoppingGroup>(static deployment => new TailChoppingGroup(deployment));
+
+            return builtIn;
+
+            // typeof(TRouter) is what keeps this trimmer-safe: the trimmer sees the type, keeps it, and hands
+            // us its own name, so the key can't drift out of step with the type it maps to.
+            void Add<TRouter>(Func<Config, RouterConfig> factory) where TRouter : RouterConfig
+            {
+                // "Akka.Routing.RoundRobinPool"
+                builtIn[typeof(TRouter).FullName] = factory;
+            }
+        }
+
+        /// <summary>
+        /// The default deployment settings applied as fallbacks when parsing actor deployments.
         /// </summary>
         protected readonly Config Default;
         private readonly Settings _settings;
-        private readonly AtomicReference<WildcardIndex<Deploy>> _deployments = 
-            new AtomicReference<WildcardIndex<Deploy>>(new WildcardIndex<Deploy>());
+        private readonly AtomicReference<WildcardIndex<Deploy>> _deployments = new(new WildcardIndex<Deploy>());
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Deployer"/> class.
@@ -51,10 +102,10 @@ namespace Akka.Actor
         }
 
         /// <summary>
-        /// TBD
+        /// Looks up deployment settings for an actor path beneath the <c>/user</c> guardian.
         /// </summary>
-        /// <param name="path">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="path">The actor path whose deployment configuration is requested.</param>
+        /// <returns>The matching deployment settings; this overload returns <see cref="Deploy.None"/> when its path checks reject the path, and may return <c>null</c> when no deployment matches.</returns>
         public Deploy Lookup(ActorPath path)
         {
             var rawElements = path.Elements;
@@ -68,19 +119,19 @@ namespace Akka.Actor
         }
 
         /// <summary>
-        /// TBD
+        /// Looks up deployment settings for a sequence of actor path elements.
         /// </summary>
-        /// <param name="path">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="path">The actor path elements to match against configured deployment paths.</param>
+        /// <returns>The matching deployment settings, or <c>null</c> when no configured path matches.</returns>
         public Deploy Lookup(IEnumerable<string> path)
         {
             return _deployments.Value.Find(path);
         }
 
         /// <summary>
-        /// TBD
+        /// Adds deployment settings to the deployer's path index.
         /// </summary>
-        /// <param name="deploy">TBD</param>
+        /// <param name="deploy">The deployment settings and path to register.</param>
         /// <exception cref="IllegalActorNameException">
         /// This exception is thrown if the actor name in the deployment path is empty or contains invalid ASCII.
         /// Valid ASCII includes letters and anything from <see cref="ActorPath.ValidSymbols"/>. Note that paths
@@ -88,7 +139,7 @@ namespace Akka.Actor
         /// </exception>
         public void SetDeploy(Deploy deploy)
         {
-            void add(IList<string> path, Deploy d)
+            void Add(IList<string> path, Deploy d)
             {
                 var w = _deployments.Value;
                 foreach (var t in path)
@@ -98,14 +149,14 @@ namespace Akka.Actor
                     if (!ActorPath.IsValidPathElement(t))
                     {
                         throw new IllegalActorNameException(
-                            $"Illegal actor name [{t}] in deployment [${d.Path}]. Actor paths MUST: not start with `$`, include only ASCII letters and can only contain these special characters: ${new string(ActorPath.ValidSymbols)}.");
+                            $"Illegal actor name [{t}] in deployment [${d.Path}]. {ActorPath.ValidActorNameDescription}");
                     }
                 }
-                if (!_deployments.CompareAndSet(w, w.Insert(path, d))) add(path, d);
+                if (!_deployments.CompareAndSet(w, w.Insert(path, d))) Add(path, d);
             }
 
             var elements = deploy.Path.Split('/').Drop(1).ToList();
-            add(elements, deploy);
+            Add(elements, deploy);
         }
 
         /// <summary>
@@ -122,7 +173,8 @@ namespace Akka.Actor
             var router = CreateRouterConfig(routerType, deployment);
             var dispatcher = deployment.GetString("dispatcher", "");
             var mailbox = deployment.GetString("mailbox", "");
-            var deploy = new Deploy(key, deployment, router, Deploy.NoScopeGiven, dispatcher, mailbox);
+            var stashCapacity = deployment.GetInt("stash-capacity", Deploy.NoStashSize);
+            var deploy = new Deploy(key, deployment, router, Deploy.NoScopeGiven, dispatcher, mailbox, stashCapacity);
             return deploy;
         }
 
@@ -140,8 +192,9 @@ namespace Akka.Actor
             if(routerTypeName == null)
             {
                 var message = $"Could not find type mapping for router alias [{routerTypeAlias}].";
-                if (routerTypeAlias == "cluster-metrics-adaptive-group" ||
-                    routerTypeAlias == "cluster-metrics-adaptive-pool")
+                if (routerTypeAlias is
+                    "cluster-metrics-adaptive-group" or
+                    "cluster-metrics-adaptive-pool")
                     message += " Please install Akka.Cluster.Metrics extension nuget package.";
                 else
                     message += " Did you forgot to install a specific router extension?";
@@ -149,6 +202,20 @@ namespace Akka.Actor
                 throw new ConfigurationException(message);
             }
 
+            if (Akka.Util.TypeExtensions.ToBuiltInAkkaTypeName(routerTypeName) is { } builtInRouterTypeName &&
+                BuiltInRouterConfigs.TryGetValue(builtInRouterTypeName, out var routerFactory))
+                return routerFactory(deployment);
+
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                    $"akka.actor.router.type-mapping.{routerTypeAlias}", routerTypeName, "one of the built-in routers"));
+
+            return CreateRouterConfigFromTypeName(routerTypeName, routerTypeAlias, deployment);
+        }
+
+        [RequiresUnreferencedCode("Loads the router type mapped under [akka.actor.router.type-mapping] by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static RouterConfig CreateRouterConfigFromTypeName(string routerTypeName, string routerTypeAlias, Config deployment)
+        {
             Type routerType;
             try
             {
@@ -157,8 +224,7 @@ namespace Akka.Actor
             catch (ArgumentNullException e)
             {
                 var message = $"Could not find extension Type [{routerTypeAlias}] for router alias [{routerTypeAlias}].";
-                if (routerTypeAlias == "cluster-metrics-adaptive-group" ||
-                    routerTypeAlias == "cluster-metrics-adaptive-pool")
+                if (routerTypeAlias is "cluster-metrics-adaptive-group" or "cluster-metrics-adaptive-pool")
                     message += " Please install Akka.Cluster.Metrics extension nuget package.";
                 else
                     message += " Did you forgot to install a specific router extension?";
@@ -167,9 +233,7 @@ namespace Akka.Actor
             }
 
             Debug.Assert(routerType != null, "routerType != null");
-            var routerConfig = (RouterConfig)Activator.CreateInstance(routerType, deployment);
-
-            return routerConfig;
+            return (RouterConfig)Activator.CreateInstance(routerType, deployment);
         }
     }
 }

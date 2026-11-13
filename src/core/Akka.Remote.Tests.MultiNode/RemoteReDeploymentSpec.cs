@@ -1,16 +1,19 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemoteReDeploymentSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Event;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using Akka.Remote.Transport;
+using FluentAssertions;
 
 namespace Akka.Remote.Tests.MultiNode
 {
@@ -46,7 +49,6 @@ namespace Akka.Remote.Tests.MultiNode
     public abstract class RemoteReDeploymentSpec : MultiNodeSpec
     {
         private readonly RemoteReDeploymentSpecConfig _config;
-        private readonly Func<RoleName, string, IActorRef> _identify;
 
         protected RemoteReDeploymentSpec(Type type) : this(new RemoteReDeploymentSpecConfig(), type)
         {
@@ -66,89 +68,141 @@ namespace Akka.Remote.Tests.MultiNode
         }
 
         [MultiNodeFact]
-        public void RemoteReDeployment_must_terminate_the_child_when_its_parent_system_is_replaced_by_a_new_one()
+        public async Task RemoteReDeployment_must_terminate_the_child_when_its_parent_system_is_replaced_by_a_new_one()
         {
             var echo = Sys.ActorOf(EchoProps(TestActor), "echo");
-            EnterBarrier("echo-started");
+            await EnterBarrierAsync("echo-started");
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
                 Sys.ActorOf(Props.Create(() => new Parent()), "parent")
                     .Tell(new ParentMessage(Props.Create(() => new Hello()), "hello"));
 
-                ExpectMsg<string>("HelloParent", TimeSpan.FromSeconds(15));
+                await ExpectMsgAsync("HelloParent", TimeSpan.FromSeconds(15));
             }, _config.Second);
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
-                ExpectMsg<string>("PreStart", TimeSpan.FromSeconds(15));
-                
+                await ExpectMsgAsync("PreStart", TimeSpan.FromSeconds(15));
             }, _config.First);
 
-            EnterBarrier("first-deployed");
+            await EnterBarrierAsync("first-deployed");
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
-                TestConductor.Blackhole(_config.Second, _config.First, ThrottleTransportAdapter.Direction.Both)
-                    .Wait();
-                TestConductor.Shutdown(_config.Second, true).Wait();
+                // Read the address while `second` is still registered with the conductor. The
+                // replacement system has to come back on this exact address, otherwise the remote
+                // deployment `first` holds points at nothing and every later step fails for a
+                // reason that has nothing to do with re-deployment.
+                var addressBeforeRestart = (await NodeAsync(_config.Second)).Address;
+
+                await TestConductor.BlackholeAsync(_config.Second, _config.First, ThrottleTransportAdapter.Direction.Both);
+                await TestConductor.ShutdownAsync(_config.Second, true);
                 if (ExpectQuarantine)
                 {
                     
-                    Within(SleepAfterKill, () => 
+                    await WithinAsync(SleepAfterKill, async () => 
                     {
-                        ExpectMsg("PostStop");
+                        await ExpectMsgAsync("PostStop");
                         //need to pad the timing here, since `ExpectNoMsg` will wait until exactly SleepAfterKill and fail the spec
-                        ExpectNoMsg(Remaining - TimeSpan.FromSeconds(0.2));
+                        await ExpectNoMsgAsync(Remaining - TimeSpan.FromSeconds(0.2));
                     });
                 }
                 else
                 {
-                    ExpectNoMsg(SleepAfterKill);
+                    await ExpectNoMsgAsync(SleepAfterKill);
                 }
-                AwaitAssert(() => Node(_config.Second), TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(100));
+                // The conductor parks an address query for a role it has no registration for and
+                // answers it the moment that role registers again, so awaiting this once is the
+                // handshake that the replacement node is back. Polling it instead queues further
+                // queries behind the first one, and the conductor client drops a query that
+                // arrives while another is still outstanding.
+                var addressAfterRestart = (await NodeAsync(_config.Second)).Address;
+                addressAfterRestart.Should().Be(addressBeforeRestart,
+                    "the replacement system on `second` must take over the address of the system it replaces");
             }, _config.First);
 
             ActorSystem tempSys = null;
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
-                Sys.WhenTerminated.Wait(TimeSpan.FromSeconds(30));
-                ExpectNoMsg(SleepAfterKill);
-                tempSys = StartNewSystem();
+                var addressBeforeRestart = ((ExtendedActorSystem)Sys).Provider.DefaultAddress;
+
+                await Sys.WhenTerminated.WaitAsync(TimeSpan.FromSeconds(30));
+                await ExpectNoMsgAsync(SleepAfterKill);
+                tempSys = await StartNewSystemAsync();
+
+                ((ExtendedActorSystem)tempSys).Provider.DefaultAddress.Should().Be(addressBeforeRestart,
+                    "the replacement system must bind the address of the system it replaces");
             }, _config.Second);
 
-            EnterBarrier("cable-cut");
+            await EnterBarrierAsync("cable-cut");
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
+            {
+                await TestConductor.PassThroughAsync(_config.Second, _config.First, ThrottleTransportAdapter.Direction.Both);
+            }, _config.First);
+
+            await RunOnAsync(async () =>
+            {
+                var firstEcho = await NodeAsync(_config.First) / "user" / "echo";
+                var sel = tempSys.ActorSelection(firstEcho);
+                var probe = CreateTestProbe(tempSys);
+
+                // Bound the retry loop here rather than nesting it inside a `within` block. A
+                // nested block that outruns its own budget loses the failure it was carrying, and
+                // the spec then walks into `ready-again` on an association that never came back:
+                // `first` reports a barrier timeout and `second` reports a 60 second barrier ask
+                // timeout, neither of which names the real problem. The 15 second budget also
+                // nests inside the 30 second barrier budget `first` spends waiting at
+                // `ready-again`.
+                await probe.AwaitAssertAsync(async () =>
+                {
+                    sel.Tell(new Identify("id-echo-again"), probe.Ref);
+                    var identity = await probe.ExpectMsgAsync<ActorIdentity>(TimeSpan.FromSeconds(2));
+                    if (identity.Subject is null)
+                        throw new InvalidOperationException("echo on `first` not reachable yet");
+                }, TimeSpan.FromSeconds(15), TimeSpan.FromMilliseconds(500));
+            }, _config.Second);
+
+            await EnterBarrierAsync("ready-again");
+
+            await RunOnAsync(async () =>
             {
                 var p = CreateTestProbe(tempSys);
                 tempSys.ActorOf(EchoProps(p.Ref), "echo");
                 p.Send(tempSys.ActorOf(Props.Create(() => new Parent()), "parent"),
                     new ParentMessage(Props.Create(() => new Hello()), "hello"));
-                p.ExpectMsg("HelloParent", TimeSpan.FromSeconds(15));
+                await p.ExpectMsgAsync("HelloParent", TimeSpan.FromSeconds(15));
             }, _config.Second);
 
-            EnterBarrier("re-deployed");
+            await EnterBarrierAsync("re-deployed");
 
-            RunOn(() =>
+            await RunOnAsync(async () =>
             {
-                Within(TimeSpan.FromSeconds(15), () =>
+                await WithinAsync(TimeSpan.FromSeconds(15), async () =>
                 {
                     if (ExpectQuarantine)
                     {
-                        ExpectMsg("PreStart");
+                        await ExpectMsgAsync("PreStart");
                     }
                     else
                     {
-                        ExpectMsgAllOf("PostStop", "PreStart");
+                        await foreach (var _ in ExpectMsgAllOfAsync(new []{ "PostStop", "PreStart" })) { }
                     }
                 });
             }, _config.First);
 
-            EnterBarrier("the-end");
+            await EnterBarrierAsync("the-end");
 
-            ExpectNoMsg(TimeSpan.FromSeconds(1));
+            await ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
+
+            await EnterBarrierAsync("stopping");
+
+            await RunOnAsync(async () =>
+            {
+                await tempSys.Terminate().WaitAsync(TimeSpan.FromSeconds(10));
+            }, _config.Second);
         }
 
         private Props EchoProps(IActorRef target)
@@ -167,8 +221,14 @@ namespace Akka.Remote.Tests.MultiNode
 
             protected override bool Receive(object message)
             {
-                return message.Match().With<ParentMessage>(_ => Context.ActorOf(_.Props, _.Name)).Default(m =>
-                    _monitor.Tell(m)).WasHandled;
+                if (message is ParentMessage msg)
+                {
+                    Context.ActorOf(msg.Props, msg.Name); 
+                    return true;
+                }
+
+                _monitor.Tell(message);
+                return true;
             }
         }
 

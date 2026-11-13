@@ -1,16 +1,17 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ParentSampleTest.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using Akka.Actor;
 using Akka.Actor.Dsl;
-using Akka.TestKit.Xunit2;
+using Akka.TestKit.Xunit;
 using Xunit;
 
+#pragma warning disable CS0414 // Field is assigned but its value is never used. This is for documentation purposes, its fine. 
 namespace DocsExamples.Testkit
 {
     public class ParentSampleTest : TestKit
@@ -24,11 +25,11 @@ namespace DocsExamples.Testkit
             public Parent()
             {
                 child = Context.ActorOf(Props.Create<Child>(), "child");
-                Receive<string>(str => str.Equals("pingit"), m =>
+                Receive<string>(str => str.Equals("pingit"), _ =>
                 {
                     child.Tell("ping");
                 });
-                Receive<string>(str => str.Equals("pong"), m =>
+                Receive<string>(str => str.Equals("pong"), _ =>
                 {
                     ponged = true;
                 });
@@ -39,7 +40,7 @@ namespace DocsExamples.Testkit
         {
             public Child()
             {
-                Receive<string>(str => str.Equals("ping"), m =>
+                Receive<string>(str => str.Equals("ping"), _ =>
                 {
                     Context.Parent.Tell("pong");
                 });
@@ -56,7 +57,7 @@ namespace DocsExamples.Testkit
             {
                 this.parent = parent;
 
-                Receive<string>(s => s.Equals("ping"), m =>
+                Receive<string>(s => s.Equals("ping"), _ =>
                 {
                     parent.Tell("pong", Self);
                 });
@@ -114,11 +115,11 @@ namespace DocsExamples.Testkit
                 child = childMaker(Context);
                 ponged = false;
 
-                Receive<string>(str => str.Equals("pingit"), m =>
+                Receive<string>(str => str.Equals("pingit"), _ =>
                 {
                     child.Tell("ping");
                 });
-                Receive<string>(str => str.Equals("pong"), m =>
+                Receive<string>(str => str.Equals("pong"), _ =>
                 {
                     ponged = true;
                 });

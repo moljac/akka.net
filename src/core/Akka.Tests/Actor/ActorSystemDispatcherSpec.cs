@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorSystemDispatcherSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -20,7 +20,6 @@ using Akka.TestKit;
 using Akka.Util;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Tests.Actor
 {
@@ -35,7 +34,7 @@ namespace Akka.Tests.Actor
         { }
 
         [Fact]
-        public void The_ActorSystem_must_not_use_passed_in_SynchronizationContext_if_executor_is_configured_in()
+        public async Task The_ActorSystem_must_not_use_passed_in_SynchronizationContext_if_executor_is_configured_in()
         {
             var config =
                 ConfigurationFactory.ParseString("akka.actor.default-dispatcher.executor = fork-join-executor")
@@ -49,7 +48,7 @@ namespace Akka.Tests.Actor
 
                 actor.Tell("ping", probe);
 
-                probe.ExpectMsg("ping", TimeSpan.FromSeconds(1));
+                await probe.ExpectMsgAsync("ping", TimeSpan.FromSeconds(1));
             }
             finally
             {

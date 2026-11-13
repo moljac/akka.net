@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RestartFirstSeedNodeSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,6 +12,7 @@ using System.Linq;
 using Akka.Actor;
 using Akka.Cluster.TestKit;
 using Akka.Configuration;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using FluentAssertions;
 
@@ -64,8 +65,12 @@ namespace Akka.Cluster.Tests.MultiNode
 
             restartedSeed1System = new Lazy<ActorSystem>(() =>
             {
+                // Pin the restarted system to the SAME wire address for BOTH transports - under
+                // AKKA_MNTR_TRANSPORT=artery the classic dot-netty key is inert and the fresh
+                // system would bind a random artery canonical.port instead.
                 var localConfig = ConfigurationFactory
-                    .ParseString("akka.remote.dot-netty.tcp.port=" + GetSeedNodes().First().Port)
+                    .ParseString("akka.remote.dot-netty.tcp.port=" + GetSeedNodes().First().Port
+                        + "\nakka.remote.artery.canonical.port=" + GetSeedNodes().First().Port)
                     .WithFallback(Sys.Settings.Config);
                 return ActorSystem.Create(Sys.Name, localConfig);
             });

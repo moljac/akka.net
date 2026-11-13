@@ -1,23 +1,23 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="IUnmutableFilter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 
-namespace Akka.TestKit
+#nullable enable
+namespace Akka.TestKit;
+
+// ReSharper disable once InconsistentNaming
+/// <summary>
+/// A disposable handle that restores logging for events muted by an event filter.
+/// </summary>
+public interface IUnmutableFilter : IDisposable
 {
-    // ReSharper disable once InconsistentNaming
     /// <summary>
-    /// TBD
+    /// Call this to let events that previously have been muted to be logged again.
     /// </summary>
-    public interface IUnmutableFilter : IDisposable
-    {
-        /// <summary>
-        /// Call this to let events that previously have been muted to be logged again.
-        /// </summary>
-        void Unmute();
-    }
+    void Unmute();
 }

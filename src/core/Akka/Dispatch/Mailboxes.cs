@@ -1,20 +1,24 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Mailboxes.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using Akka.Actor;
+using Akka.Annotations;
 using Akka.Configuration;
-using Akka.Util.Reflection;
 using Akka.Dispatch.MessageQueues;
 using Akka.Event;
+using Akka.Util;
+using Akka.Util.Internal;
 
 namespace Akka.Dispatch
 {
@@ -30,17 +34,48 @@ namespace Akka.Dispatch
 
         private readonly DeadLetterMailbox _deadLetterMailbox;
         /// <summary>
-        /// TBD
+        /// Configuration path for the mailbox used when no actor or dispatcher mailbox is selected.
         /// </summary>
         public static readonly string DefaultMailboxId = "akka.actor.default-mailbox";
         /// <summary>
-        /// TBD
+        /// Empty string sentinel indicating that a dispatcher has no mailbox queue requirement.
         /// </summary>
         public static readonly string NoMailboxRequirement = "";
         private readonly Dictionary<Type, string> _mailboxBindings;
         private readonly Config _defaultMailboxConfig;
 
-        private readonly ConcurrentDictionary<string, MailboxType> _mailboxTypeConfigurators = new ConcurrentDictionary<string, MailboxType>();
+        private readonly ConcurrentDictionary<string, MailboxType> _mailboxTypeConfigurators = new();
+
+        // The mailbox-type values that ship inside Akka.dll, constructed directly so the trimmer and the
+        // Native AOT compiler can see the type without looking through Type.GetType.
+        //
+        // Keyed by bare type name; TypeExtensions.ToBuiltInAkkaTypeName normalizes what HOCON carries.
+        private static readonly Dictionary<string, Func<Settings, Config, MailboxType>> BuiltInMailboxTypes =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.Dispatch.UnboundedMailbox"] = static (s, c) => new UnboundedMailbox(s, c),
+                ["Akka.Dispatch.BoundedMailbox"] = static (s, c) => new BoundedMailbox(s, c),
+                ["Akka.Dispatch.UnboundedDequeBasedMailbox"] = static (s, c) => new UnboundedDequeBasedMailbox(s, c),
+                ["Akka.Dispatch.BoundedDequeBasedMailbox"] = static (s, c) => new BoundedDequeBasedMailbox(s, c),
+                ["Akka.Event.LoggerMailboxType"] = static (s, c) => new LoggerMailboxType(s, c)
+            };
+
+        // The message queue semantics interfaces that ship inside Akka.dll: the keys akka.conf lists under
+        // akka.actor.mailbox.requirements, which are also the values a dispatcher's mailbox-requirement can
+        // take. Mapping them here means neither site has to look through Type.GetType.
+        //
+        // Keyed by bare type name; TypeExtensions.ToBuiltInAkkaTypeName normalizes what HOCON carries.
+        private static readonly Dictionary<string, Type> BuiltInMessageQueueSemantics =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.Dispatch.IUnboundedMessageQueueSemantics"] = typeof(IUnboundedMessageQueueSemantics),
+                ["Akka.Dispatch.IBoundedMessageQueueSemantics"] = typeof(IBoundedMessageQueueSemantics),
+                ["Akka.Dispatch.IDequeBasedMessageQueueSemantics"] = typeof(IDequeBasedMessageQueueSemantics),
+                ["Akka.Dispatch.IUnboundedDequeBasedMessageQueueSemantics"] = typeof(IUnboundedDequeBasedMessageQueueSemantics),
+                ["Akka.Dispatch.IBoundedDequeBasedMessageQueueSemantics"] = typeof(IBoundedDequeBasedMessageQueueSemantics),
+                ["Akka.Dispatch.IMultipleConsumerSemantics"] = typeof(IMultipleConsumerSemantics),
+                ["Akka.Event.ILoggerMessageQueueSemantics"] = typeof(ILoggerMessageQueueSemantics)
+            };
 
         private Settings Settings => _system.Settings;
 
@@ -60,35 +95,60 @@ namespace Akka.Dispatch
             _mailboxBindings = new Dictionary<Type, string>();
             foreach (var kvp in requirements)
             {
-                var type = Type.GetType(kvp.Key);
-                if (type == null)
+                // The key is used verbatim everywhere except the table lookup: HOCON trims values but not
+                // keys, so normalizing it before _mailboxBindings.Add below would let two spellings of the
+                // same interface map onto one Type and collide.
+                var requirementName = kvp.Key;
+
+                Type type;
+                if (Util.TypeExtensions.ToBuiltInAkkaTypeName(requirementName) is { } builtInRequirementName &&
+                    BuiltInMessageQueueSemantics.TryGetValue(builtInRequirementName, out var builtIn))
                 {
-                    Warn($"Mailbox Requirement mapping [{kvp.Key}] is not an actual type");
-                    continue;
+                    type = builtIn;
                 }
+                else if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+                {
+                    type = ResolveRequirementMappingType(requirementName);
+                    if (type == null)
+                    {
+                        Warn($"Mailbox Requirement mapping [{requirementName}] is not an actual type");
+                        continue;
+                    }
+                }
+                else
+                {
+                    throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                        $"akka.actor.mailbox.requirements.\"{requirementName}\"", requirementName,
+                        "a built-in message queue semantics interface as the requirement key, or remove the binding"));
+                }
+
                 _mailboxBindings.Add(type, kvp.Value.GetString());
             }
 
             _defaultMailboxConfig = Settings.Config.GetConfig(DefaultMailboxId);
+            _defaultStashCapacity = StashCapacityFromConfig(Dispatchers.DefaultDispatcherId, DefaultMailboxId);
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the mailbox used to immediately forward messages to the system's dead-letters reference.
         /// </summary>
         public DeadLetterMailbox DeadLetterMailbox { get { return _deadLetterMailbox; } }
 
         /// <summary>
         /// Check if this actor class can have a required message queue type.
         /// </summary>
-        /// <param name="actorType">The type to check.</param>
+        /// <param name="actorType">
+        /// The type to check. Annotated with <see cref="DynamicallyAccessedMemberTypes.Interfaces"/> so that trimming
+        /// keeps <see cref="IRequiresMessageQueue{T}"/> on the actor type the caller passes in.
+        /// </param>
         /// <returns><c>true</c> if this actor has a message queue type requirement. <c>false</c> otherwise.</returns>
-        public bool HasRequiredType(Type actorType)
+        public bool HasRequiredType([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type actorType)
         {
-            var interfaces = actorType.GetTypeInfo().GetInterfaces();
+            var interfaces = actorType.GetInterfaces();
             for (int i = 0; i < interfaces.Length; i++)
             {
                 var element = interfaces[i];
-                if (element.GetTypeInfo().IsGenericType && element.GetGenericTypeDefinition() == RequiresMessageQueueGenericType)
+                if (element.IsGenericType && element.GetGenericTypeDefinition() == RequiresMessageQueueGenericType)
                 {
                     return true;
                 }
@@ -100,15 +160,19 @@ namespace Akka.Dispatch
         /// <summary>
         /// Check if this <see cref="MailboxType"/> implements the <see cref="IProducesMessageQueue{TQueue}"/> interface.
         /// </summary>
-        /// <param name="mailboxType">The type of the <see cref="MailboxType"/> to check.</param>
+        /// <param name="mailboxType">
+        /// The type of the <see cref="MailboxType"/> to check. Annotated with
+        /// <see cref="DynamicallyAccessedMemberTypes.Interfaces"/> so that trimming keeps
+        /// <see cref="IProducesMessageQueue{TQueue}"/> on the mailbox type the caller passes in.
+        /// </param>
         /// <returns><c>true</c> if this mailboxtype produces queues. <c>false</c> otherwise.</returns>
-        public bool ProducesMessageQueue(Type mailboxType)
+        public bool ProducesMessageQueue([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type mailboxType)
         {
-            var interfaces = mailboxType.GetTypeInfo().GetInterfaces();
+            var interfaces = mailboxType.GetInterfaces();
             for (int i = 0; i < interfaces.Length; i++)
             {
                 var element = interfaces[i];
-                if (element.GetTypeInfo().IsGenericType && element.GetGenericTypeDefinition() == ProducesMessageQueueGenericType)
+                if (element.IsGenericType && element.GetGenericTypeDefinition() == ProducesMessageQueueGenericType)
                 {
                     return true;
                 }
@@ -169,29 +233,79 @@ namespace Akka.Dispatch
                     var mailboxTypeName = conf.GetString("mailbox-type", null);
                     if (string.IsNullOrEmpty(mailboxTypeName))
                         throw new ConfigurationException($"The setting mailbox-type defined in [{id}] is empty");
-                    var type = Type.GetType(mailboxTypeName);
-                    if (type == null)
-                        throw new ConfigurationException($"Found mailbox-type [{mailboxTypeName}] in configuration for [{id}], but could not find that type in any loaded assemblies.");
-                    var args = new object[] {Settings, conf};
-                    try
+
+                    if (Util.TypeExtensions.ToBuiltInAkkaTypeName(mailboxTypeName) is { } builtInMailboxTypeName &&
+                        BuiltInMailboxTypes.TryGetValue(builtInMailboxTypeName, out var builtIn))
                     {
-                        configurator = (MailboxType) Activator.CreateInstance(type, args);
+                        try
+                        {
+                            configurator = builtIn(Settings, conf);
+                        }
+                        catch (Exception ex)
+                        {
+                            throw CannotInstantiate(mailboxTypeName, id, ex);
+                        }
                     }
-                    catch (Exception ex)
+                    else if (AkkaFeatures.IsDynamicTypeLoadingSupported)
                     {
-                        throw new ArgumentException($"Cannot instantiate MailboxType {type}, defined in [{id}]. Make sure it has a public " +
-                                                     "constructor with [Akka.Actor.Settings, Akka.Configuration.Config] parameters", ex);
+                        configurator = CreateMailboxType(mailboxTypeName, id, Settings, conf);
+                    }
+                    else
+                    {
+                        throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                            $"{id}.mailbox-type", mailboxTypeName, "one of the built-in mailbox types"));
                     }
 
-                    // TODO: check for blocking mailbox with a non-zero pushtimeout and issue a warning
+                    if (!_mailboxNonZeroPushTimeoutWarningIssued)
+                    {
+                        if (configurator is IProducesPushTimeoutSemanticsMailbox m && m.PushTimeout.Ticks > 0L)
+                        {
+                            Warn($"Configured potentially-blocking mailbox [{id}] configured with non-zero PushTimeOut ({m.PushTimeout}), " +
+                                "which can lead to blocking behavior when sending messages to this mailbox. " +
+                                $"Avoid this by setting `{id}.mailbox-push-timeout-time` to `0`.");
+
+                            _mailboxNonZeroPushTimeoutWarningIssued = true;
+                        }
+
+                        // good; nothing to see here, move along, sir.
+                    }
                 }
 
                 // add the new configurator to the mapping, or keep the existing if it was already added
-                _mailboxTypeConfigurators.AddOrUpdate(id, configurator, (s, type) => type);
+                _mailboxTypeConfigurators.AddOrUpdate(id, configurator, (_, type) => type);
             }
 
             return configurator;
         }
+
+        [RequiresUnreferencedCode("Loads a key of [akka.actor.mailbox.requirements] by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static Type ResolveRequirementMappingType(string typeName)
+        {
+            return Type.GetType(typeName);
+        }
+
+        [RequiresUnreferencedCode("Loads the configured [mailbox-type] by name and activates it. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static MailboxType CreateMailboxType(string mailboxTypeName, string id, Settings settings, Config conf)
+        {
+            var mailboxType = Type.GetType(mailboxTypeName)
+                ?? throw new ConfigurationException($"Found mailbox-type [{mailboxTypeName}] in configuration for [{id}], but could not find that type in any loaded assemblies.");
+
+            try
+            {
+                return (MailboxType)Activator.CreateInstance(mailboxType, new object[] { settings, conf });
+            }
+            catch (Exception ex)
+            {
+                throw CannotInstantiate(mailboxType.ToString(), id, ex);
+            }
+        }
+
+        // Both arms of LookupConfigurator report an unconstructable mailbox the same way. What differs is
+        // the name: the built-in arm has only the configured spelling, while the reflection arm has resolved
+        // a Type and reports Type.ToString().
+        private static ArgumentException CannotInstantiate(string mailboxTypeName, string id, Exception inner)
+            => new($"Cannot instantiate MailboxType {mailboxTypeName}, defined in [{id}]. Make sure it has a public " +
+                   "constructor with [Akka.Actor.Settings, Akka.Configuration.Config] parameters", inner);
 
         /// <summary>
         /// INTERNAL API
@@ -208,17 +322,24 @@ namespace Akka.Dispatch
         private static readonly Type RequiresMessageQueueGenericType = typeof (IRequiresMessageQueue<>);
 
         /// <summary>
-        /// TBD
+        /// Returns the <see cref="IMessageQueue"/> type this actor class requires via
+        /// <see cref="IRequiresMessageQueue{T}"/>, or <c>null</c> if it does not require one.
         /// </summary>
-        /// <param name="actorType">TBD</param>
-        /// <returns>TBD</returns>
-        public Type GetRequiredType(Type actorType)
+        /// <param name="actorType">
+        /// The actor type to inspect. Annotated with <see cref="DynamicallyAccessedMemberTypes.Interfaces"/> so that
+        /// trimming keeps <see cref="IRequiresMessageQueue{T}"/> on the actor type the caller passes in.
+        /// </param>
+        /// <returns>
+        /// The required message queue type, or <c>null</c> when <paramref name="actorType"/> does not implement
+        /// <see cref="IRequiresMessageQueue{T}"/>.
+        /// </returns>
+        public Type GetRequiredType([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type actorType)
         {
-            var interfaces = actorType.GetTypeInfo().GetInterfaces();
+            var interfaces = actorType.GetInterfaces();
             for (int i = 0; i < interfaces.Length; i++)
             {
                 var element = interfaces[i];
-                if (element.GetTypeInfo().IsGenericType && element.GetGenericTypeDefinition() == RequiresMessageQueueGenericType)
+                if (element.IsGenericType && element.GetGenericTypeDefinition() == RequiresMessageQueueGenericType)
                 {
                     return element.GetGenericArguments()[0];
                 }
@@ -230,11 +351,11 @@ namespace Akka.Dispatch
         private static readonly Type ProducesMessageQueueGenericType = typeof (IProducesMessageQueue<>);
         private Type GetProducedMessageQueueType(MailboxType mailboxType)
         {
-            var interfaces = mailboxType.GetType().GetTypeInfo().GetInterfaces();
+            var interfaces = mailboxType.GetType().GetInterfaces();
             for (int i = 0; i < interfaces.Length; i++)
             {
                 var element = interfaces[i];
-                if (element.GetTypeInfo().IsGenericType && element.GetGenericTypeDefinition() == ProducesMessageQueueGenericType)
+                if (element.IsGenericType && element.GetGenericTypeDefinition() == ProducesMessageQueueGenericType)
                 {
                     return element.GetGenericArguments()[0];
                 }
@@ -246,18 +367,38 @@ namespace Akka.Dispatch
         private Type GetMailboxRequirement(Config config)
         {
             var mailboxRequirement = config.GetString("mailbox-requirement", null);
-            return mailboxRequirement == null || mailboxRequirement.Equals(NoMailboxRequirement) ? typeof (IMessageQueue) : Type.GetType(mailboxRequirement, true);
+            if (mailboxRequirement == null || mailboxRequirement.Equals(NoMailboxRequirement))
+                return typeof(IMessageQueue);
+
+            if (Util.TypeExtensions.ToBuiltInAkkaTypeName(mailboxRequirement) is { } builtInMailboxRequirementName &&
+                BuiltInMessageQueueSemantics.TryGetValue(builtInMailboxRequirementName, out var requirementType))
+                return requirementType;
+
+            if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+                return ResolveMailboxRequirementType(mailboxRequirement);
+
+            var dispatcherId = config.GetString("id", null);
+            throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                dispatcherId is null ? "mailbox-requirement" : $"{dispatcherId}.mailbox-requirement",
+                mailboxRequirement,
+                "one of the built-in message queue semantics interfaces"));
+        }
+
+        [RequiresUnreferencedCode("Loads the configured [mailbox-requirement] by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static Type ResolveMailboxRequirementType(string typeName)
+        {
+            return Type.GetType(typeName, true);
         }
 
         /// <summary>
-        /// TBD
+        /// Selects and validates a mailbox type using the actor's, deployment's, and dispatcher configuration.
         /// </summary>
-        /// <param name="props">TBD</param>
-        /// <param name="dispatcherConfig">TBD</param>
+        /// <param name="props">The actor properties, including any mailbox override or required queue type.</param>
+        /// <param name="dispatcherConfig">The resolved dispatcher configuration, or <c>null</c> to use empty configuration.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown if the 'mailbox-requirement' in the given <paramref name="dispatcherConfig"/> isn't met.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>A mailbox type whose produced queue satisfies the applicable actor and dispatcher requirements.</returns>
         public MailboxType GetMailboxType(Props props, Config dispatcherConfig)
         {
             if (dispatcherConfig == null)
@@ -300,10 +441,9 @@ namespace Akka.Dispatch
                     return VerifyRequirements(LookupByQueueType(actorRequirement.Value));
                 }
                 catch (Exception)
+                    when (hasMailboxRequirement)
                 {
-                    if (hasMailboxRequirement)
-                        return VerifyRequirements(LookupByQueueType(mailboxRequirement));
-                    throw;
+                    return VerifyRequirements(LookupByQueueType(mailboxRequirement));
                 }
             }
             if (hasMailboxRequirement)
@@ -311,40 +451,52 @@ namespace Akka.Dispatch
             return VerifyRequirements(Lookup(DefaultMailboxId));
         }
 
+        private void Warn(string msg) =>
+            _system.EventStream.Publish(new Warning("mailboxes", GetType(), msg));
+
+        private readonly AtomicReference<ImmutableDictionary<string, int>> _stashCapacityCache =
+            new(ImmutableDictionary<string, int>.Empty);
+
+        private readonly int _defaultStashCapacity;
+
         /// <summary>
-        /// Creates a mailbox from a configuration path.
+        /// INTERNAL API
+        /// <para>
+        /// The capacity of the stash. Configured in the actor's mailbox or dispatcher config.
+        /// </para>
         /// </summary>
-        /// <param name="path">The path.</param>
-        /// <returns>Mailbox.</returns>
-        public Type FromConfig(string path)
+        [InternalApi]
+        public int StashCapacity(string dispatcher, string mailbox)
         {
-            //TODO: this should not exist, its a temp hack because we are not serializing mailbox info when doing remote deploy..
-            if (string.IsNullOrEmpty(path))
+            bool UpdateCache(ImmutableDictionary<string, int> cache, string key, int value)
             {
-                return typeof (UnboundedMailbox);
+                return _stashCapacityCache.CompareAndSet(cache, cache.SetItem(key, value)) ||
+                    UpdateCache(_stashCapacityCache.Value, key, value); // recursive, try again
             }
 
-            var config = _system.Settings.Config.GetConfig(path);
-            if (config.IsNullOrEmpty())
-                throw new ConfigurationException($"Cannot retrieve mailbox type from config: {path} configuration node not found");
+            if (dispatcher == Dispatchers.DefaultDispatcherId && mailbox == DefaultMailboxId)
+                return _defaultStashCapacity;
 
-            var type = config.GetString("mailbox-type", null);
+            var cache = _stashCapacityCache.Value;
+            var key = $"{dispatcher}-{mailbox}";
 
-            var mailboxType = TypeCache.GetType(type);
-            return mailboxType;
-            /*
-mailbox-capacity = 1000
-mailbox-push-timeout-time = 10s
-stash-capacity = -1
-            */
+            if (!cache.TryGetValue(key, out var value))
+            {
+                value = StashCapacityFromConfig(dispatcher, mailbox);
+                UpdateCache(cache, key, value);
+            }
+
+            return value;
         }
 
-        //TODO: stash capacity
-
-        private void Warn(string msg)
+        private int StashCapacityFromConfig(string dispatcher, string mailbox)
         {
-           _system.EventStream.Publish(new Warning("mailboxes", GetType(), msg));
+            var disp = Dispatchers.GetConfig(Settings.Config, dispatcher);
+            var fallback = disp.WithFallback(Settings.Config.GetConfig(DefaultMailboxId));
+            var config = mailbox == DefaultMailboxId
+                ? fallback
+                : Settings.Config.GetConfig(mailbox).WithFallback(fallback);
+            return config.GetInt("stash-capacity");
         }
     }
 }
-

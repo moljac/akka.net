@@ -1,8 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-    <Import Project="..\..\..\common.props" />
 
     <PropertyGroup>
-        <AssemblyTitle>Akka.Cluster.Metrics</AssemblyTitle>
         <Description>
             The member nodes of the cluster can collect system health metrics and publish that to other cluster nodes
             and to the registered subscribers on the system event bus with the help of Cluster Metrics Extension.
@@ -10,6 +8,7 @@
         <TargetFramework>$(NetStandardLibVersion)</TargetFramework>
         <PackageTags>$(AkkaPackageTags);network;cluster;sharding</PackageTags>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <Nullable>enable</Nullable>
     </PropertyGroup>
 
     <ItemGroup>
@@ -21,11 +20,15 @@
     </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Include="System.Diagnostics.Process" Version="4.3.0" />
+<PackageReference Include="Grpc.Tools" Version="$(GrpcToolsVersion)">
+        <PrivateAssets>all</PrivateAssets>
+        <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      </PackageReference>
     </ItemGroup>
 
-    <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-        <DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
-    </PropertyGroup>
+  <ItemGroup>
+    <Protobuf Access="internal" Include="Serialization/Proto/ClusterMetricsMessages.proto" />
+
+  </ItemGroup>
 
 </Project>

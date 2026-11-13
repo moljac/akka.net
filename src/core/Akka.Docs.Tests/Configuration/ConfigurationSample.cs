@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ConfigurationSample.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,8 +12,7 @@
 //using System.Threading.Tasks;
 //using Akka.Configuration;
 //using Xunit;
-//using Xunit.Abstractions;
-//using FluentAssertions;
+////using FluentAssertions;
 
 //namespace DocsExamples.Configuration
 //{
@@ -204,19 +203,5 @@
 //            // </BlockedEnvironmentVariableSample>
 //        }
 
-//        [Fact]
-//        public void UnsolvableSubstitutionWillThrowSample()
-//        {
-//            // <UnsolvableSubstitutionWillThrowSample>
-//            // This substitution will throw an exception because it is a required substitution,
-//            // and we can not resolve it, even when checking for environment variables.
-//            var hoconString = "from_environment = ${MY_ENV_VAR}";
-
-//            Assert.Throws<Exception>(() =>
-//            {
-//                Config config = hoconString;
-//            }).Message.Should().StartWith("Unresolved substitution");
-//            // </UnsolvableSubstitutionWillThrowSample>
-//        }
 //    }
 //}

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="DotNettyBatchWriterSpecs.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -19,7 +19,6 @@ using DotNetty.Transport.Channels.Embedded;
 using FluentAssertions;
 using FluentAssertions.Extensions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Remote.Tests.Transport
 {
@@ -29,7 +28,7 @@ namespace Akka.Remote.Tests.Transport
         {
             public ITestOutputHelper Helper;
 
-            private TaskCompletionSource<Done> _tcs = new TaskCompletionSource<Done>();
+            private TaskCompletionSource<Done> _tcs = new();
 
             public Task Activated => _tcs.Task;
 

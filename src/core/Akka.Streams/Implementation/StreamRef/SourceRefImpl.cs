@@ -1,14 +1,17 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SourceRefImpl.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.Serialization;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Annotations;
+using Akka.Event;
 using Akka.Pattern;
 using Akka.Streams.Actors;
 using Akka.Streams.Dsl;
@@ -16,7 +19,9 @@ using Akka.Streams.Serialization;
 using Akka.Streams.Serialization.Proto.Msg;
 using Akka.Streams.Stage;
 using Akka.Util;
+using Akka.Util.Internal;
 using Google.Protobuf.WellKnownTypes;
+using Debug = System.Diagnostics.Debug;
 using Type = System.Type;
 
 namespace Akka.Streams.Implementation.StreamRef
@@ -27,7 +32,22 @@ namespace Akka.Streams.Implementation.StreamRef
     [InternalApi]
     internal abstract class SourceRefImpl : ISurrogated
     {
+        /// <summary>
+        /// Builds the closed <see cref="SourceRefImpl{T}"/> for a stream-ref element type discovered at
+        /// deserialization time. With <see cref="AkkaFeatures.IsDynamicTypeLoadingSupported"/> off, this fails
+        /// clearly instead of asking Native AOT to construct an arbitrary generic instantiation it never
+        /// compiled ahead of time.
+        /// </summary>
         public static SourceRefImpl Create(Type eventType, IActorRef initialPartnerRef)
+        {
+            if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+                return CreateGeneric(eventType, initialPartnerRef);
+
+            throw new SerializationException(SerializationTools.StreamRefTypeNotSupported(eventType.FullName ?? eventType.Name));
+        }
+
+        [RequiresDynamicCode("Builds a SourceRefImpl<T> for a stream-ref element type discovered at runtime. Native AOT does not guarantee that constructing an arbitrary closed generic type at runtime will work.")]
+        private static SourceRefImpl CreateGeneric(Type eventType, IActorRef initialPartnerRef)
         {
             var destType = typeof(SourceRefImpl<>).MakeGenericType(eventType);
             return (SourceRefImpl)Activator.CreateInstance(destType, initialPartnerRef);
@@ -46,13 +66,20 @@ namespace Akka.Streams.Implementation.StreamRef
     /// <summary>
     /// INTERNAL API:  Implementation class, not intended to be touched directly by end-users.
     /// </summary>
-    [InternalApi]   
+    [InternalApi]
     internal sealed class SourceRefImpl<T> : SourceRefImpl, ISourceRef<T>
     {
-        public SourceRefImpl(IActorRef initialPartnerRef) : base(initialPartnerRef) { }
+        private readonly Lazy<Source<T, NotUsed>> _source;
+
+        public SourceRefImpl(IActorRef initialPartnerRef) : base(initialPartnerRef)
+        {
+            _source = new Lazy<Source<T, NotUsed>>(() =>
+                Dsl.Source.FromGraph(new SourceRefStageImpl<T>(InitialPartnerRef))
+                    .MapMaterializedValue(_ => NotUsed.Instance));
+        }
+
         public override Type EventType => typeof(T);
-        public Source<T, NotUsed> Source =>
-            Dsl.Source.FromGraph(new SourceRefStageImpl<T>(InitialPartnerRef)).MapMaterializedValue(_ => NotUsed.Instance);
+        public Source<T, NotUsed> Source => _source.Value;
 
         public override ISurrogate ToSurrogate(ActorSystem system) => SerializationTools.ToSurrogate(this);
     }
@@ -63,6 +90,7 @@ namespace Akka.Streams.Implementation.StreamRef
     /// If initialPartnerRef is set, then the remote side is already set up.
     /// If it is none, then we are the side creating the ref.
     /// </summary>
+    #nullable enable
     [InternalApi]
     internal sealed class SourceRefStageImpl<TOut> : GraphStageWithMaterializedValue<SourceShape<TOut>, Task<ISinkRef<TOut>>>
     {
@@ -79,21 +107,34 @@ namespace Akka.Streams.Implementation.StreamRef
             private readonly TaskCompletionSource<ISinkRef<TOut>> _promise;
             private readonly Attributes _inheritedAttributes;
 
-            private StreamRefsMaster _streamRefsMaster;
-            private StreamRefSettings _settings;
-            private StreamRefAttributes.SubscriptionTimeout _subscriptionTimeout;
-            private string _stageActorName;
+            private StreamRefsMaster? _streamRefsMaster;
+            private StreamRefSettings? _settings;
+            private StreamRefAttributes.SubscriptionTimeout? _subscriptionTimeout;
+            private StreamRefAttributes.BufferCapacity? _bufferCapacity;
+            private StreamRefAttributes.DemandRedeliveryInterval? _demandRedeliveryInterval;
+            private StreamRefAttributes.FinalTerminationSignalDeadline? _finalTerminationSignalDeadline;
+            private string? _stageActorName;
 
-            private StageActor _stageActor;
-            private IActorRef _partnerRef = null;
+            private StageActor? _stageActor;
+            private IActorRef? _partnerRef;
 
-            private StreamRefsMaster StreamRefsMaster => _streamRefsMaster ?? (_streamRefsMaster = StreamRefsMaster.Get(ActorMaterializerHelper.Downcast(Materializer).System));
-            private StreamRefSettings Settings => _settings ?? (_settings = ActorMaterializerHelper.Downcast(Materializer).Settings.StreamRefSettings);
-            private StreamRefAttributes.SubscriptionTimeout SubscriptionTimeout => _subscriptionTimeout ?? (_subscriptionTimeout =
-                                                                                       _inheritedAttributes.GetAttribute(new StreamRefAttributes.SubscriptionTimeout(Settings.SubscriptionTimeout)));
-            protected override string StageActorName => _stageActorName ?? (_stageActorName = StreamRefsMaster.NextSourceRefName());
+            private StreamRefsMaster StreamRefsMaster => _streamRefsMaster ??= StreamRefsMaster.Get(ActorMaterializerHelper.Downcast(Materializer).System);
+            private StreamRefSettings Settings => _settings ??= ActorMaterializerHelper.Downcast(Materializer).Settings.StreamRefSettings;
+            private StreamRefAttributes.SubscriptionTimeout SubscriptionTimeout => _subscriptionTimeout ??= _inheritedAttributes.GetAttribute(new StreamRefAttributes.SubscriptionTimeout(Settings.SubscriptionTimeout));
+            // Per-stream attributes take precedence over the materializer's StreamRefSettings (as in JVM Akka)
+            private StreamRefAttributes.BufferCapacity BufferCapacity => _bufferCapacity ??= _inheritedAttributes.GetAttribute(new StreamRefAttributes.BufferCapacity(Settings.BufferCapacity));
+            private StreamRefAttributes.DemandRedeliveryInterval DemandRedeliveryInterval => _demandRedeliveryInterval ??= _inheritedAttributes.GetAttribute(new StreamRefAttributes.DemandRedeliveryInterval(Settings.DemandRedeliveryInterval));
+            private StreamRefAttributes.FinalTerminationSignalDeadline FinalTerminationSignalDeadline => _finalTerminationSignalDeadline ??= _inheritedAttributes.GetAttribute(new StreamRefAttributes.FinalTerminationSignalDeadline(Settings.FinalTerminationSignalDeadline));
+            protected override string StageActorName => _stageActorName ??= StreamRefsMaster.NextSourceRefName();
 
-            public IActorRef Self => _stageActor.Ref;
+            public IActorRef Self
+            {
+                get
+                {
+                    Debug.Assert(_stageActor != null, nameof(_stageActor) + " != null");
+                    return _stageActor!.Ref;
+                }
+            }
             public IActorRef PartnerRef
             {
                 get
@@ -109,8 +150,8 @@ namespace Akka.Streams.Implementation.StreamRef
             private long _expectingSeqNr = 0L;
             private long _localCumulativeDemand = 0L;
             private long _localRemainingRequested = 0L;
-            private FixedSizeBuffer<TOut> _receiveBuffer; // initialized in preStart since depends on settings
-            private IRequestStrategy _requestStrategy; // initialized in preStart since depends on receiveBuffer's size
+            private FixedSizeBuffer<TOut>? _receiveBuffer; // initialized in preStart since depends on settings
+            private IRequestStrategy? _requestStrategy; // initialized in preStart since depends on receiveBuffer's size
             #endregion
 
             public Logic(SourceRefStageImpl<TOut> stage, TaskCompletionSource<ISinkRef<TOut>> promise, Attributes inheritedAttributes) : base(stage.Shape)
@@ -124,7 +165,7 @@ namespace Akka.Streams.Implementation.StreamRef
 
             public override void PreStart()
             {
-                _receiveBuffer = new ModuloFixedSizeBuffer<TOut>(Settings.BufferCapacity);
+                _receiveBuffer = new ModuloFixedSizeBuffer<TOut>(BufferCapacity.Capacity);
                 _requestStrategy = new WatermarkRequestStrategy(highWatermark: _receiveBuffer.Capacity);
 
                 _stageActor = GetStageActor(InitialReceive);
@@ -149,17 +190,17 @@ namespace Akka.Streams.Implementation.StreamRef
                 TriggerCumulativeDemand();
             }
 
-            public void OnDownstreamFinish()
-            {
-                CompleteStage();
-            }
+            public void OnDownstreamFinish(Exception cause) => InternalOnDownstreamFinish(cause);
 
             private void TriggerCumulativeDemand()
             {
-                var i = _receiveBuffer.RemainingCapacity - _localRemainingRequested;
+                Debug.Assert(_receiveBuffer != null, nameof(_receiveBuffer) + " != null");
+                Debug.Assert(_requestStrategy != null, nameof(_requestStrategy) + " != null");
+                
+                var i = _receiveBuffer!.RemainingCapacity - _localRemainingRequested;
                 if (_partnerRef != null && i > 0)
                 {
-                    var addDemand = _requestStrategy.RequestDemand((int)(_receiveBuffer.Used + _localRemainingRequested));
+                    var addDemand = _requestStrategy!.RequestDemand((int)(_receiveBuffer.Used + _localRemainingRequested));
 
                     // only if demand has increased we shoot it right away
                     // otherwise it's the same demand level, so it'd be triggered via redelivery anyway
@@ -177,7 +218,7 @@ namespace Akka.Streams.Implementation.StreamRef
             }
 
             private void ScheduleDemandRedelivery() =>
-                ScheduleOnce(DemandRedeliveryTimerKey, Settings.DemandRedeliveryInterval);
+                ScheduleOnce(DemandRedeliveryTimerKey, DemandRedeliveryInterval.Timeout);
 
             protected internal override void OnTimer(object timerKey)
             {
@@ -204,12 +245,14 @@ namespace Akka.Streams.Implementation.StreamRef
 
             private void InitialReceive((IActorRef, object) args)
             {
+                Debug.Assert(_stageActor != null, nameof(_stageActor) + " != null");
+                
                 var sender = args.Item1;
                 var message = args.Item2;
 
                 switch (message)
                 {
-                    case OnSubscribeHandshake handshake:
+                    case OnSubscribeHandshake:
                         CancelTimer(SubscriptionTimeoutKey);
                         ObserveAndValidateSender(sender, "Illegal sender in OnSubscribeHandshake");
                         Log.Debug("[{0}] Received handshake {1} from {2}", StageActorName, message, sender);
@@ -226,14 +269,14 @@ namespace Akka.Streams.Implementation.StreamRef
                         ObserveAndValidateSender(sender, "Illegal sender in RemoteStreamCompleted");
                         ObserveAndValidateSequenceNr(completed.SeqNr, "Illegal sequence nr in RemoteStreamCompleted");
                         Log.Debug("[{0}] The remote stream has completed, completing as well...", StageActorName);
-                        _stageActor.Unwatch(sender);
+                        _stageActor!.Unwatch(sender);
                         _completed = true;
                         TryPush();
                         break;
                     case RemoteStreamFailure failure:
                         ObserveAndValidateSender(sender, "Illegal sender in RemoteStreamFailure");
                         Log.Warning("[{0}] The remote stream has failed, failing (reason: {1})", StageActorName, failure.Message);
-                        _stageActor.Unwatch(sender);
+                        _stageActor!.Unwatch(sender);
                         FailStage(new RemoteStreamRefActorTerminatedException($"Remote stream ({sender.Path}) failed, reason: {failure.Message}"));
                         break;
                     case Terminated terminated:
@@ -241,7 +284,7 @@ namespace Akka.Streams.Implementation.StreamRef
                             // we need to start a delayed shutdown in case we were network partitioned and the final signal complete/fail
                             // will never reach us; so after the given timeout we need to forcefully terminate this side of the stream ref
                             // the other (sending) side terminates by default once it gets a Terminated signal so no special handling is needed there.
-                            ScheduleOnce(TerminationDeadlineTimerKey, Settings.FinalTerminationSignalDeadline);
+                            ScheduleOnce(TerminationDeadlineTimerKey, FinalTerminationSignalDeadline.Timeout);
                         else
                             FailStage(new RemoteStreamRefActorTerminatedException(
                                 $"Received UNEXPECTED Terminated({terminated.ActorRef}) message! This actor was NOT our trusted remote partner, which was: {_partnerRef}. Tearing down."));
@@ -252,15 +295,19 @@ namespace Akka.Streams.Implementation.StreamRef
 
             private void TryPush()
             {
-                if (!_receiveBuffer.IsEmpty && IsAvailable(_stage.Outlet)) Push(_stage.Outlet, _receiveBuffer.Dequeue());
+                Debug.Assert(_receiveBuffer != null, nameof(_receiveBuffer) + " != null");
+                
+                if (!_receiveBuffer!.IsEmpty && IsAvailable(_stage.Outlet)) Push(_stage.Outlet, _receiveBuffer.Dequeue());
                 else if (_receiveBuffer.IsEmpty && _completed) CompleteStage();
             }
 
             private void OnReceiveElement(object payload)
             {
+                Debug.Assert(_receiveBuffer != null, nameof(_receiveBuffer) + " != null");
+                
                 var outlet = _stage.Outlet;
                 _localRemainingRequested--;
-                if (_receiveBuffer.IsEmpty && IsAvailable(outlet))
+                if (_receiveBuffer!.IsEmpty && IsAvailable(outlet))
                     Push(outlet, (TOut)payload);
                 else if (_receiveBuffer.IsFull)
                     throw new IllegalStateException($"Attempted to overflow buffer! Capacity: {_receiveBuffer.Capacity}, incoming element: {payload}, localRemainingRequested: {_localRemainingRequested}, localCumulativeDemand: {_localCumulativeDemand}");
@@ -269,16 +316,18 @@ namespace Akka.Streams.Implementation.StreamRef
             }
 
             /// <summary>
-            /// TBD
+            /// Records the first sender as the stream partner and rejects messages from any other sender.
             /// </summary>
-            /// <exception cref="InvalidPartnerActorException"> Thrown when <paramref name="partner"/> is invalid</exception>
+            /// <exception cref="InvalidPartnerActorException">Thrown when <paramref name="partner"/> is not the established partner.</exception>
             private void ObserveAndValidateSender(IActorRef partner, string failureMessage)
             {
+                Debug.Assert(_stageActor != null, nameof(_stageActor) + " != null");
+                
                 if (_partnerRef == null)
                 {
                     Log.Debug("Received first message from {0}, assuming it to be the remote partner for this stage", partner);
                     _partnerRef = partner;
-                    _stageActor.Watch(partner);
+                    _stageActor!.Watch(partner);
                 }
                 else if (!Equals(_partnerRef, partner))
                 {
@@ -299,21 +348,21 @@ namespace Akka.Streams.Implementation.StreamRef
 
         #endregion
 
-        private readonly IActorRef _initialPartnerRef;
+        private readonly IActorRef? _initialPartnerRef;
 
-        public SourceRefStageImpl(IActorRef initialPartnerRef)
+        public SourceRefStageImpl(IActorRef? initialPartnerRef)
         {
             _initialPartnerRef = initialPartnerRef;
 
             Shape = new SourceShape<TOut>(Outlet);
         }
 
-        public Outlet<TOut> Outlet { get; } = new Outlet<TOut>("SourceRef.out");
+        public Outlet<TOut> Outlet { get; } = new("SourceRef.out");
         public override SourceShape<TOut> Shape { get; }
 
         public override ILogicAndMaterializedValue<Task<ISinkRef<TOut>>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
         {
-            var promise = new TaskCompletionSource<ISinkRef<TOut>>();
+            var promise = TaskEx.NonBlockingTaskCompletionSource<ISinkRef<TOut>>();
             return new LogicAndMaterializedValue<Task<ISinkRef<TOut>>>(new Logic(this, promise, inheritedAttributes), promise.Task);
         }
     }

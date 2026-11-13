@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="BackoffSupervisorBase.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,7 +12,9 @@ using Akka.Event;
 namespace Akka.Pattern
 {
     /// <summary>
-    /// TBD
+    /// Base class for backoff supervisor actors that manage child actor restarts
+    /// with configurable back-off delays. Handles message forwarding to/from the child,
+    /// restart count tracking, and optional final-stop semantics.
     /// </summary>
     public abstract class BackoffSupervisorBase : ActorBase
     {

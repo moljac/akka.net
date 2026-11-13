@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ConfigurationFactory.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -36,9 +36,9 @@ namespace Akka.Configuration
         /// <param name="hocon">A string that contains configuration options to use.</param>
         /// <param name="includeCallback">callback used to resolve includes</param>
         /// <returns>The configuration defined in the supplied HOCON string.</returns>
-        public static Config ParseString(string hocon, Func<string,HoconRoot> includeCallback)
+        public static Config ParseString(string hocon, Func<string, HoconRoot> includeCallback)
         {
-            HoconRoot res = Parser.Parse(hocon, includeCallback);
+            var res = Parser.Parse(hocon, includeCallback);
             return new Config(res);
         }
 
@@ -54,6 +54,7 @@ namespace Akka.Configuration
             return ParseString(hocon, null);
         }
 
+#if NETSTANDARD
         /// <summary>
         /// Loads a configuration defined in the current application's
         /// configuration file, e.g. app.config or web.config
@@ -61,9 +62,13 @@ namespace Akka.Configuration
         /// <returns>The configuration defined in the configuration file.</returns>
         public static Config Load()
         {
-            var section = (AkkaConfigurationSection)System.Configuration.ConfigurationManager.GetSection("akka") ?? new AkkaConfigurationSection();
+
+            var section =
+ (AkkaConfigurationSection)System.Configuration.ConfigurationManager.GetSection("akka") ?? new AkkaConfigurationSection();
             return section.AkkaConfig;
+
         }
+#endif
 
         /// <summary>
         /// Retrieves the default configuration that Akka.NET uses
@@ -72,7 +77,7 @@ namespace Akka.Configuration
         /// <returns>The configuration that contains default values for all options.</returns>
         public static Config Default()
         {
-            return FromResource("Akka.Configuration.Pigeon.conf");
+            return FromResource("Akka.Configuration.akka.conf");
         }
 
         /// <summary>
@@ -83,7 +88,7 @@ namespace Akka.Configuration
         /// <returns>The configuration defined in the current executing assembly.</returns>
         internal static Config FromResource(string resourceName)
         {
-            Assembly assembly = typeof(ConfigurationFactory).GetTypeInfo().Assembly;
+            var assembly = typeof(ConfigurationFactory).Assembly;
 
             return FromResource(resourceName, assembly);
         }
@@ -97,13 +102,10 @@ namespace Akka.Configuration
         /// <returns>The configuration defined in the assembly that contains the instanced object.</returns>
         public static Config FromResource(string resourceName, object instanceInAssembly)
         {
-            var type = instanceInAssembly as Type;
-            if (type != null)
-                return FromResource(resourceName, type.GetTypeInfo().Assembly);
+            if (instanceInAssembly is Type type)
+                return FromResource(resourceName, type.Assembly);
             var assembly = instanceInAssembly as Assembly;
-            if (assembly != null)
-                return FromResource(resourceName, assembly);
-            return FromResource(resourceName, instanceInAssembly.GetType().GetTypeInfo().Assembly);
+            return FromResource(resourceName, assembly != null ? assembly : instanceInAssembly.GetType().Assembly);
         }
 
         /// <summary>
@@ -115,7 +117,7 @@ namespace Akka.Configuration
         /// <returns>The configuration defined in the assembly that contains the type <typeparamref name="TAssembly"/>.</returns>
         public static Config FromResource<TAssembly>(string resourceName)
         {
-            return FromResource(resourceName, typeof(TAssembly).GetTypeInfo().Assembly);
+            return FromResource(resourceName, typeof(TAssembly).Assembly);
         }
 
         /// <summary>
@@ -126,7 +128,7 @@ namespace Akka.Configuration
         /// <returns>The configuration defined in the assembly that contains the given resource.</returns>
         public static Config FromResource(string resourceName, Assembly assembly)
         {
-            using(Stream stream = assembly.GetManifestResourceStream(resourceName))
+            using (Stream stream = assembly.GetManifestResourceStream(resourceName))
             {
                 Debug.Assert(stream != null, "stream != null");
                 using (var reader = new StreamReader(stream))
@@ -151,4 +153,3 @@ namespace Akka.Configuration
         }
     }
 }
-

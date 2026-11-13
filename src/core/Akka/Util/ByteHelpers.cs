@@ -1,14 +1,21 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ByteHelpers.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
-using Akka.IO;
-
 namespace Akka.Util
 {
+    /// <summary>
+    /// Byte ordering for multi-byte integer encoding.
+    /// </summary>
+    public enum ByteOrder
+    {
+        BigEndian,
+        LittleEndian
+    }
+
     public static class ByteHelpers
     {
         public static byte[] PutInt(this byte[] target, int x, int offset = 0, ByteOrder order = ByteOrder.BigEndian)

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="OffsetCompareSpecs.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Xunit;
 
+#nullable enable
 namespace Akka.Persistence.Query.Tests
 {
     public class OffsetCompareSpecs
@@ -44,6 +45,22 @@ namespace Akka.Persistence.Query.Tests
 
             compare1.Should().Throw<InvalidOperationException>();
             compare2.Should().Throw<InvalidOperationException>();
+        }
+
+        [Fact]
+        public void FromEnd_offset_should_throw_on_compare()
+        {
+            // FromEnd is a relative, input-only offset with no position in the stream, so it cannot be
+            // ordered against anything, including another FromEnd.
+            Offset fromEnd = new FromEnd(5);
+
+            Action compareToFromEnd = () => fromEnd.CompareTo(new FromEnd(5));
+            Action compareToSequence = () => fromEnd.CompareTo(new Sequence(1L));
+            Action sequenceCompareToFromEnd = () => new Sequence(1L).CompareTo(fromEnd);
+
+            compareToFromEnd.Should().Throw<InvalidOperationException>();
+            compareToSequence.Should().Throw<InvalidOperationException>();
+            sequenceCompareToFromEnd.Should().Throw<InvalidOperationException>();
         }
     }
 }

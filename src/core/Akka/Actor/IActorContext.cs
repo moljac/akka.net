@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="IActorContext.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,7 +12,7 @@ using Akka.Dispatch;
 namespace Akka.Actor
 {
     /// <summary>
-    /// TBD
+    /// Provides actor reference monitoring operations through death watch.
     /// </summary>
     public interface ICanWatch
     {
@@ -46,7 +46,7 @@ namespace Akka.Actor
     }
 
     /// <summary>
-    /// TBD
+    /// Provides the current actor's reference, lifecycle, child, and message-processing context.
     /// </summary>
     public interface IActorContext : IActorRefFactory, ICanWatch
     {
@@ -133,7 +133,7 @@ namespace Akka.Actor
         /// If this actor has no children, 
         /// an empty collection of <see cref="IActorRef"/> is returned instead.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The direct child actor references of this actor, or an empty sequence when it has no children.</returns>
         IEnumerable<IActorRef> GetChildren();
 
         /// <summary>
@@ -185,4 +185,3 @@ namespace Akka.Actor
         void Stop(IActorRef child);
     }
 }
-

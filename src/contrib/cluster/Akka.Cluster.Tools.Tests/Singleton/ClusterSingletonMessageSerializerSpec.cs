@@ -1,11 +1,12 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterSingletonMessageSerializerSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using Akka.Cluster.Tools.Singleton;
+using Akka.Cluster.Tools.Singleton.Serialization;
 using Akka.Configuration;
 using Akka.Serialization;
 using Akka.TestKit;
@@ -16,8 +17,8 @@ namespace Akka.Cluster.Tools.Tests.Singleton
     public class ClusterSingletonMessageSerializerSpec : AkkaSpec
     {
         public ClusterSingletonMessageSerializerSpec()
-            : base(ConfigurationFactory.ParseString(@"akka.actor.provider = cluster
-                                                      akka.remote.dot-netty.tcp.port = 0").WithFallback(ClusterSingletonManager.DefaultConfig()))
+            : base(ConfigurationFactory.ParseString("akka.actor.provider = cluster")
+                    .WithFallback(ClusterSingleton.DefaultConfig()))
         {
         }
 
@@ -51,7 +52,8 @@ namespace Akka.Cluster.Tools.Tests.Singleton
 
         private T AssertAndReturn<T>(T message)
         {
-            var serializer = (SerializerWithStringManifest)Sys.Serialization.FindSerializerFor(message);
+            var serializer = Sys.Serialization.FindSerializerFor(message);
+            Assert.IsType<ClusterSingletonMessageSerializer>(serializer);
             var serialized = serializer.ToBinary(message);
             return (T)serializer.FromBinary(serialized, serializer.Manifest(message));
         }

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ReplicatorMessageSerializerSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,7 +13,6 @@ using Akka.Configuration;
 using Akka.DistributedData.Internal;
 using Google.Protobuf;
 using Xunit;
-using Xunit.Abstractions;
 using FluentAssertions;
 using Address = Akka.Actor.Address;
 using UniqueAddress = Akka.Cluster.UniqueAddress;
@@ -24,7 +23,7 @@ using System.Linq;
 namespace Akka.DistributedData.Tests.Serialization
 {
     [Collection("DistributedDataSpec")]
-    public class ReplicatorMessageSerializerSpec : TestKit.Xunit2.TestKit
+    public class ReplicatorMessageSerializerSpec : TestKit.Xunit.TestKit
     {
         private static readonly Config BaseConfig = ConfigurationFactory.ParseString(@"
             akka.actor {
@@ -33,8 +32,6 @@ namespace Akka.DistributedData.Tests.Serialization
             akka.remote.dot-netty.tcp.port = 0").WithFallback(DistributedData.DefaultConfig());
 
         private readonly ReplicatorMessageSerializer _serializer;
-
-        private readonly string _protocol;
 
         private readonly UniqueAddress _address1;
         private readonly UniqueAddress _address2;
@@ -48,7 +45,6 @@ namespace Akka.DistributedData.Tests.Serialization
 
             // We dont have Artery implementation
             // _protocol = ((RemoteActorRefProvider) ((ExtendedActorSystem)Sys).Provider).RemoteSettings.Artery.Enabled
-            _protocol = "akka.tcp";
 
             _address1 = new UniqueAddress(new Address("akka.tcp", Sys.Name, "some.host.org", 4711), 1);
             _address2 = new UniqueAddress(new Address("akka.tcp", Sys.Name, "other.host.org", 4711), 2);

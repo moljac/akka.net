@@ -1,14 +1,16 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="PersistenceSnapshotSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using Akka.Actor;
 using Akka.Persistence.Serialization.Proto.Msg;
 using Akka.Serialization;
+using Akka.Util;
 using Google.Protobuf;
 
 namespace Akka.Persistence.Serialization
@@ -20,7 +22,16 @@ namespace Akka.Persistence.Serialization
             IncludeManifest = true;
         }
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// A subclass keeps resolving its own id from HOCON via <see cref="Serializer.Identifier"/>.
+        /// </remarks>
+        public override int Identifier => GetType() == typeof(PersistenceSnapshotSerializer) ? 8 : base.Identifier;
+
         public override bool IncludeManifest { get; }
+
+        // The only manifest FromBinary(byte[], Type) below handles.
+        private static readonly Dictionary<string, Type> ManifestTypes = TypeExtensions.ManifestTable(typeof(Snapshot));
 
         public override byte[] ToBinary(object obj)
         {
@@ -68,6 +79,10 @@ namespace Akka.Persistence.Serialization
 
             throw new ArgumentException($"Unimplemented deserialization of message with type [{type}] in [{GetType()}]");
         }
+
+        /// <summary>Resolves the manifest from <see cref="ManifestTypes"/> so this works without dynamic type loading.</summary>
+        public override object FromBinary(byte[] bytes, string manifest)
+            => ManifestTypes.TryResolveManifestType(manifest, out var type) ? FromBinary(bytes, type!) : base.FromBinary(bytes, manifest);
 
         private Snapshot GetSnapshot(byte[] bytes)
         {

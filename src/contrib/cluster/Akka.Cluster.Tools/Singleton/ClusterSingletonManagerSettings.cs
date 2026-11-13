@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterSingletonManagerSettings.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -27,7 +27,7 @@ namespace Akka.Cluster.Tools.Singleton
         /// <returns>The requested settings.</returns>
         public static ClusterSingletonManagerSettings Create(ActorSystem system)
         {
-            system.Settings.InjectTopLevelFallback(ClusterSingletonManager.DefaultConfig());
+            system.Settings.InjectTopLevelFallback(ClusterSingleton.DefaultConfig());
 
             var config = system.Settings.Config.GetConfig("akka.cluster.singleton");
             if (config.IsNullOrEmpty())
@@ -57,7 +57,8 @@ namespace Akka.Cluster.Tools.Singleton
                 role: RoleOption(config.GetString("role")),
                 removalMargin: TimeSpan.Zero, // defaults to ClusterSettings.DownRemovalMargin
                 handOverRetryInterval: config.GetTimeSpan("hand-over-retry-interval"),
-                leaseSettings: lease);
+                leaseSettings: lease,
+                considerAppVersion: config.GetBoolean("consider-app-version"));
         }
 
         private static string RoleOption(string role)
@@ -91,6 +92,15 @@ namespace Akka.Cluster.Tools.Singleton
         /// LeaseSettings for acquiring before creating the singleton actor
         /// </summary>
         public LeaseUsageSettings LeaseSettings { get; }
+        
+        
+        /// <summary>
+        /// Should <see cref="Member.AppVersion"/> be considered when the cluster singleton instance is being moved to another node.
+        /// When set to false, singleton instance will always be created on oldest member.
+        /// When set to true, singleton instance will be created on the oldest member with the highest <see cref="Member.AppVersion"/> number.
+        /// </summary>
+        [Obsolete("ConsiderAppVersion is not used anymore and will be removed in future versions.")]
+        public bool ConsiderAppVersion { get; }
 
         /// <summary>
         /// Creates a new instance of the <see cref="ClusterSingletonManagerSettings"/>.
@@ -114,9 +124,20 @@ namespace Akka.Cluster.Tools.Singleton
         /// over has started or the previous oldest member is removed from the cluster
         /// (+ <paramref name="removalMargin"/>).
         /// </param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        public ClusterSingletonManagerSettings(string singletonName, string role, TimeSpan removalMargin, TimeSpan handOverRetryInterval)
-            : this(singletonName, role, removalMargin, handOverRetryInterval, null)
+        /// <param name="considerAppVersion">
+        /// Should <see cref="Member.AppVersion"/> be considered when the cluster singleton instance is being moved to another node.
+        /// When set to false, singleton instance will always be created on oldest member.
+        /// When set to true, singleton instance will be created on the oldest member with the highest <see cref="Member.AppVersion"/> number.
+        /// </param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="singletonName"/> is null, empty, or whitespace.</exception>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="removalMargin"/> is negative or <paramref name="handOverRetryInterval"/> is zero or negative.</exception>
+        public ClusterSingletonManagerSettings(
+            string singletonName,
+            string role,
+            TimeSpan removalMargin,
+            TimeSpan handOverRetryInterval,
+            bool considerAppVersion)
+            : this(singletonName, role, removalMargin, handOverRetryInterval, null, considerAppVersion)
         {
         }
 
@@ -143,8 +164,20 @@ namespace Akka.Cluster.Tools.Singleton
         /// (+ <paramref name="removalMargin"/>).
         /// </param>
         /// <param name="leaseSettings">LeaseSettings for acquiring before creating the singleton actor</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        public ClusterSingletonManagerSettings(string singletonName, string role, TimeSpan removalMargin, TimeSpan handOverRetryInterval, LeaseUsageSettings leaseSettings)
+        /// <param name="considerAppVersion">
+        /// Should <see cref="Member.AppVersion"/> be considered when the cluster singleton instance is being moved to another node.
+        /// When set to false, singleton instance will always be created on oldest member.
+        /// When set to true, singleton instance will be created on the oldest member with the highest <see cref="Member.AppVersion"/> number.
+        /// </param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="singletonName"/> is null, empty, or whitespace.</exception>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="removalMargin"/> is negative or <paramref name="handOverRetryInterval"/> is zero or negative.</exception>
+        public ClusterSingletonManagerSettings(
+            string singletonName,
+            string role,
+            TimeSpan removalMargin,
+            TimeSpan handOverRetryInterval,
+            LeaseUsageSettings leaseSettings,
+            bool considerAppVersion)
         {
             if (string.IsNullOrWhiteSpace(singletonName))
                 throw new ArgumentNullException(nameof(singletonName));
@@ -158,13 +191,16 @@ namespace Akka.Cluster.Tools.Singleton
             RemovalMargin = removalMargin;
             HandOverRetryInterval = handOverRetryInterval;
             LeaseSettings = leaseSettings;
+#pragma warning disable CS0618 // Type or member is obsolete
+            ConsiderAppVersion = considerAppVersion;
+#pragma warning restore CS0618 // Type or member is obsolete
         }
 
         /// <summary>
         /// Create a singleton manager with specified singleton name.
         /// </summary>
-        /// <param name="singletonName">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="singletonName">The actor name to use for the child singleton actor.</param>
+        /// <returns>A copy of these settings with the specified singleton actor name.</returns>
         public ClusterSingletonManagerSettings WithSingletonName(string singletonName)
         {
             return Copy(singletonName: singletonName);
@@ -173,8 +209,8 @@ namespace Akka.Cluster.Tools.Singleton
         /// <summary>
         /// Create a singleton manager with specified singleton role.
         /// </summary>
-        /// <param name="role">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="role">The cluster role whose members may host the singleton; null or empty leaves the current role unchanged.</param>
+        /// <returns>A copy of these settings with the role changed when a nonempty role is supplied.</returns>
         public ClusterSingletonManagerSettings WithRole(string role)
         {
             return Copy(role: RoleOption(role));
@@ -183,8 +219,8 @@ namespace Akka.Cluster.Tools.Singleton
         /// <summary>
         /// Create a singleton manager with specified singleton removal margin.
         /// </summary>
-        /// <param name="removalMargin">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="removalMargin">The delay after removal of an old member before creating the singleton on the surviving oldest member.</param>
+        /// <returns>A copy of these settings with the specified removal margin.</returns>
         public ClusterSingletonManagerSettings WithRemovalMargin(TimeSpan removalMargin)
         {
             return Copy(removalMargin: removalMargin);
@@ -193,8 +229,8 @@ namespace Akka.Cluster.Tools.Singleton
         /// <summary>
         /// Create a singleton manager with specified singleton removal margin hand-over retry interval.
         /// </summary>
-        /// <param name="handOverRetryInterval">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="handOverRetryInterval">The interval between retries while requesting hand-over from the previous oldest member.</param>
+        /// <returns>A copy of these settings with the specified hand-over retry interval.</returns>
         public ClusterSingletonManagerSettings WithHandOverRetryInterval(TimeSpan handOverRetryInterval)
         {
             return Copy(handOverRetryInterval: handOverRetryInterval);
@@ -203,22 +239,28 @@ namespace Akka.Cluster.Tools.Singleton
         /// <summary>
         /// Create a singleton manager with specified singleton lease settings.
         /// </summary>
-        /// <param name="leaseSettings">TBD</param>
-        /// <returns></returns>
+        /// <param name="leaseSettings">The lease settings used to acquire a lease before starting the singleton; null leaves the current lease settings unchanged.</param>
+        /// <returns>A copy of these settings with the lease settings changed when non-null settings are supplied.</returns>
         public ClusterSingletonManagerSettings WithLeaseSettings(LeaseUsageSettings leaseSettings)
         {
             return Copy(leaseSettings: leaseSettings);
         }
 
-        private ClusterSingletonManagerSettings Copy(string singletonName = null, Option<string> role = default, TimeSpan? removalMargin = null,
-            TimeSpan? handOverRetryInterval = null, Option<LeaseUsageSettings> leaseSettings = default)
+        private ClusterSingletonManagerSettings Copy(
+            string singletonName = null,
+            Option<string> role = default,
+            TimeSpan? removalMargin = null,
+            TimeSpan? handOverRetryInterval = null,
+            Option<LeaseUsageSettings> leaseSettings = default,
+            bool? considerAppVersion = null)
         {
             return new ClusterSingletonManagerSettings(
                 singletonName: singletonName ?? SingletonName,
                 role: role.HasValue ? role.Value : Role,
                 removalMargin: removalMargin ?? RemovalMargin,
                 handOverRetryInterval: handOverRetryInterval ?? HandOverRetryInterval,
-                leaseSettings: leaseSettings.HasValue ? leaseSettings.Value : LeaseSettings
+                leaseSettings: leaseSettings.HasValue ? leaseSettings.Value : LeaseSettings,
+                considerAppVersion: false
                 );
         }
     }

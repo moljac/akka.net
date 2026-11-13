@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ReplicatorSettings.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,6 +11,7 @@ using Akka.Dispatch;
 using System;
 using System.Collections.Immutable;
 using System.Collections.Generic;
+using Akka.Event;
 
 namespace Akka.DistributedData
 {
@@ -19,8 +20,8 @@ namespace Akka.DistributedData
         /// <summary>
         /// Create settings from the default configuration `akka.cluster.distributed-data`.
         /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="system">The actor system whose <c>akka.cluster.distributed-data</c> configuration is read.</param>
+        /// <returns>Settings populated from the actor system configuration.</returns>
         public static ReplicatorSettings Create(ActorSystem system)
         {
             var config = system.Settings.Config.GetConfig("akka.cluster.distributed-data");
@@ -34,9 +35,10 @@ namespace Akka.DistributedData
         /// Create settings from a configuration with the same layout as
         /// the default configuration `akka.cluster.distributed-data`.
         /// </summary>
-        /// <param name="config">TBD</param>
-        /// <exception cref="ArgumentNullException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="config">A configuration object with the layout of <c>akka.cluster.distributed-data</c>.</param>
+        /// <exception cref="ConfigurationException">The supplied configuration is null or empty.</exception>
+        /// <exception cref="ArgumentException">Durable keys are configured without a store actor class, or the configured store actor class cannot be resolved.</exception>
+        /// <returns>Replicator settings populated from <paramref name="config"/>.</returns>
         public static ReplicatorSettings Create(Config config)
         {
             if (config.IsNullOrEmpty())
@@ -54,7 +56,7 @@ namespace Akka.DistributedData
             {
                 if (string.IsNullOrEmpty(durableStoreTypeName))
                 {
-                    throw new ArgumentException($"`akka.cluster.distributed-data.durable.store-actor-class` must be set when `akka.cluster.distributed-data.durable.keys` have been configured.");
+                    throw new ArgumentException("`akka.cluster.distributed-data.durable.store-actor-class` must be set when `akka.cluster.distributed-data.durable.keys` have been configured.");
                 }
 
                 var durableStoreType = Type.GetType(durableStoreTypeName);
@@ -79,7 +81,8 @@ namespace Akka.DistributedData
                 durablePruningMarkerTimeToLive: durableConfig.GetTimeSpan("pruning-marker-time-to-live", TimeSpan.FromDays(10)),
                 maxDeltaSize: config.GetInt("delta-crdt.max-delta-size", 50),
                 restartReplicatorOnFailure: config.GetBoolean("recreate-on-failure", false),
-                preferOldest: config.GetBoolean("prefer-oldest"));
+                preferOldest: config.GetBoolean("prefer-oldest"),
+                verboseDebugLogging: config.GetBoolean("verbose-debug-logging"));
         }
 
         /// <summary>
@@ -159,70 +162,12 @@ namespace Akka.DistributedData
         /// </summary>
         public bool PreferOldest { get; }
 
-        [Obsolete]
-        public ReplicatorSettings(string role,
-                                  TimeSpan gossipInterval,
-                                  TimeSpan notifySubscribersInterval,
-                                  int maxDeltaElements,
-                                  string dispatcher,
-                                  TimeSpan pruningInterval,
-                                  TimeSpan maxPruningDissemination,
-                                  IImmutableSet<string> durableKeys,
-                                  Props durableStoreProps,
-                                  TimeSpan pruningMarkerTimeToLive,
-                                  TimeSpan durablePruningMarkerTimeToLive,
-                                  int maxDeltaSize)
-            : this(
-                  role,
-                  gossipInterval,
-                  notifySubscribersInterval,
-                  maxDeltaElements,
-                  dispatcher,
-                  pruningInterval,
-                  maxPruningDissemination,
-                  durableKeys,
-                  durableStoreProps,
-                  pruningMarkerTimeToLive,
-                  durablePruningMarkerTimeToLive,
-                  maxDeltaSize,
-                  false
-                 )
-        {
-        }
+        /// <summary>
+        /// Whether verbose debug logging is enabled.
+        /// </summary>
+        public bool VerboseDebugLogging { get; }
 
-        [Obsolete]
-        public ReplicatorSettings(string role,
-            TimeSpan gossipInterval,
-            TimeSpan notifySubscribersInterval,
-            int maxDeltaElements,
-            string dispatcher,
-            TimeSpan pruningInterval,
-            TimeSpan maxPruningDissemination,
-            IImmutableSet<string> durableKeys,
-            Props durableStoreProps,
-            TimeSpan pruningMarkerTimeToLive,
-            TimeSpan durablePruningMarkerTimeToLive,
-            int maxDeltaSize,
-            bool restartReplicatorOnFailure)
-            : this(
-                  role,
-                  gossipInterval,
-                  notifySubscribersInterval,
-                  maxDeltaElements,
-                  dispatcher,
-                  pruningInterval,
-                  maxPruningDissemination,
-                  durableKeys,
-                  durableStoreProps,
-                  pruningMarkerTimeToLive,
-                  durablePruningMarkerTimeToLive,
-                  maxDeltaSize,
-                  false,
-                  false
-                 )
-        {
-        }
-
+        [Obsolete("Use constructor with `verboseDebugLogging` argument. Obsolete since v1.5.0-alpha2")]
         public ReplicatorSettings(string role,
             TimeSpan gossipInterval,
             TimeSpan notifySubscribersInterval,
@@ -236,7 +181,41 @@ namespace Akka.DistributedData
             TimeSpan durablePruningMarkerTimeToLive,
             int maxDeltaSize,
             bool restartReplicatorOnFailure,
-            bool preferOldest)
+            bool preferOldest) : this(
+            role,
+            gossipInterval,
+            notifySubscribersInterval,
+            maxDeltaElements,
+            dispatcher,
+            pruningInterval,
+            maxPruningDissemination,
+            durableKeys,
+            durableStoreProps,
+            pruningMarkerTimeToLive,
+            durablePruningMarkerTimeToLive,
+            maxDeltaSize,
+            restartReplicatorOnFailure,
+            preferOldest,
+            false
+        )
+        {
+        }
+        
+        public ReplicatorSettings(string role,
+            TimeSpan gossipInterval,
+            TimeSpan notifySubscribersInterval,
+            int maxDeltaElements,
+            string dispatcher,
+            TimeSpan pruningInterval,
+            TimeSpan maxPruningDissemination,
+            IImmutableSet<string> durableKeys,
+            Props durableStoreProps,
+            TimeSpan pruningMarkerTimeToLive,
+            TimeSpan durablePruningMarkerTimeToLive,
+            int maxDeltaSize,
+            bool restartReplicatorOnFailure,
+            bool preferOldest,
+            bool verboseDebugLogging)
         {
             Role = role;
             GossipInterval = gossipInterval;
@@ -252,6 +231,7 @@ namespace Akka.DistributedData
             MaxDeltaSize = maxDeltaSize;
             RestartReplicatorOnFailure = restartReplicatorOnFailure;
             PreferOldest = preferOldest;
+            VerboseDebugLogging = verboseDebugLogging;
         }
 
         private ReplicatorSettings Copy(string role = null,
@@ -267,7 +247,8 @@ namespace Akka.DistributedData
             TimeSpan? durablePruningMarkerTimeToLive = null,
             int? maxDeltaSize = null,
             bool? restartReplicatorOnFailure = null,
-            bool? preferOldest = null)
+            bool? preferOldest = null,
+            bool? verboseDebugLogging = null)
         {
             return new ReplicatorSettings(
                 role: role ?? this.Role,
@@ -283,7 +264,8 @@ namespace Akka.DistributedData
                 durablePruningMarkerTimeToLive: durablePruningMarkerTimeToLive ?? this.DurablePruningMarkerTimeToLive,
                 maxDeltaSize: maxDeltaSize ?? this.MaxDeltaSize,
                 restartReplicatorOnFailure: restartReplicatorOnFailure ?? this.RestartReplicatorOnFailure,
-                preferOldest: preferOldest ?? this.PreferOldest);
+                preferOldest: preferOldest ?? this.PreferOldest,
+                verboseDebugLogging: verboseDebugLogging ?? this.VerboseDebugLogging);
         }
 
         public ReplicatorSettings WithRole(string role) => Copy(role: role);
@@ -302,5 +284,7 @@ namespace Akka.DistributedData
             Copy(restartReplicatorOnFailure: restart);
         public ReplicatorSettings WithPreferOldest(bool preferOldest) =>
             Copy(preferOldest: preferOldest);
+        public ReplicatorSettings WithVerboseDebugLogging(bool verboseDebugLogging) =>
+            Copy(verboseDebugLogging: verboseDebugLogging);
     }
 }

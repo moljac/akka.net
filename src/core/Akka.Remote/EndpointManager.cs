@@ -1,20 +1,20 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="EndpointManager.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
-
+#pragma warning disable AK1004
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Dispatch;
+using Akka.Remote.Transport.DotNetty;
 using Akka.Event;
 using Akka.Remote.Transport;
 using Akka.Util.Internal;
@@ -24,7 +24,7 @@ namespace Akka.Remote
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    internal class EndpointManager : ReceiveActor, IRequiresMessageQueue<IUnboundedMessageQueueSemantics>
+    internal sealed class EndpointManager : ReceiveActor, IRequiresMessageQueue<IUnboundedMessageQueueSemantics>
     {
 
         #region Policy definitions
@@ -51,11 +51,11 @@ namespace Akka.Remote
         public sealed class Pass : EndpointPolicy
         {
             /// <summary>
-            /// TBD
+            /// Creates a policy for an active endpoint that accepts inbound associations.
             /// </summary>
-            /// <param name="endpoint">TBD</param>
-            /// <param name="uid">TBD</param>
-            public Pass(IActorRef endpoint, int? uid)
+            /// <param name="endpoint">The endpoint actor associated with the remote node.</param>
+            /// <param name="uid">The remote system UID confirmed by the endpoint, if known.</param>
+            public Pass(IActorRef endpoint, long? uid)
                 : base(false)
             {
                 Uid = uid;
@@ -70,7 +70,7 @@ namespace Akka.Remote
             /// <summary>
             /// The endpoint UID, if it's currently known
             /// </summary>
-            public int? Uid { get; }
+            public long? Uid { get; }
         }
 
         /// <summary>
@@ -93,14 +93,14 @@ namespace Akka.Remote
         /// </summary>
         public sealed class Quarantined : EndpointPolicy
         {
-            public Quarantined(int uid, Deadline deadline)
+            public Quarantined(long uid, Deadline deadline)
                 : base(true)
             {
                 Uid = uid;
                 Deadline = deadline;
             }
 
-            public int Uid { get; }
+            public long Uid { get; }
 
             public Deadline Deadline { get; }
         }
@@ -115,48 +115,48 @@ namespace Akka.Remote
         public abstract class RemotingCommand : INoSerializationVerificationNeeded { }
 
         /// <summary>
-        /// TBD
+        /// Requests that the endpoint manager bind its configured transports.
         /// </summary>
         public sealed class Listen : RemotingCommand
         {
             /// <summary>
-            /// TBD
+            /// Creates a request to listen on the configured transports.
             /// </summary>
-            /// <param name="addressesPromise">TBD</param>
+            /// <param name="addressesPromise">Completes with the bound protocol and address pairs, or with a bind failure.</param>
             public Listen(TaskCompletionSource<IList<ProtocolTransportAddressPair>> addressesPromise)
             {
                 AddressesPromise = addressesPromise;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the promise completed with the listening transport addresses.
             /// </summary>
             public TaskCompletionSource<IList<ProtocolTransportAddressPair>> AddressesPromise { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Signals that transport startup has completed.
         /// </summary>
         public sealed class StartupFinished : RemotingCommand { }
 
         /// <summary>
-        /// TBD
+        /// Requests endpoint flushing followed by transport shutdown and reports whether all endpoints and transports completed successfully. A false result or fault can indicate an incomplete flush or shutdown.
         /// </summary>
         public sealed class ShutdownAndFlush : RemotingCommand { }
 
         /// <summary>
-        /// TBD
+        /// Carries a message to a remote actor through the endpoint manager.
         /// </summary>
         public sealed class Send : RemotingCommand, IHasSequenceNumber
         {
             /// <summary>
-            /// TBD
+            /// Creates an outbound message request with an optional reliable-delivery sequence number.
             /// </summary>
-            /// <param name="message">TBD</param>
-            /// <param name="recipient">TBD</param>
-            /// <param name="senderOption">TBD</param>
-            /// <param name="seqOpt">TBD</param>
-            public Send(object message, RemoteActorRef recipient, IActorRef senderOption = null, SeqNo seqOpt = null)
+            /// <param name="message">The message to send.</param>
+            /// <param name="recipient">The remote actor reference that receives the message.</param>
+            /// <param name="senderOption">The sender actor reference, if available.</param>
+            /// <param name="seqOpt">The sequence number for reliable system-message delivery, or <c>null</c> for ordinary delivery.</param>
+            public Send(object message, RemoteActorRef recipient, IActorRef senderOption = null, SeqNo? seqOpt = null)
             {
                 Recipient = recipient;
                 SenderOption = senderOption;
@@ -165,7 +165,7 @@ namespace Akka.Remote
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the message to send.
             /// </summary>
             public object Message { get; private set; }
 
@@ -175,106 +175,101 @@ namespace Akka.Remote
             public IActorRef SenderOption { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Gets the remote actor reference that receives the message.
             /// </summary>
             public RemoteActorRef Recipient { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Returns a string identifying the sender and recipient of the remote message.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>A string containing the sender and recipient references.</returns>
             public override string ToString()
             {
                 return string.Format("Remote message {0} -> {1}", SenderOption, Recipient);
             }
 
-            private readonly SeqNo _seq;
+            private readonly SeqNo? _seq;
 
             /// <summary>
-            /// TBD
+            /// The optional sequence number for reliable delivery. Null when reliable delivery is not used.
             /// </summary>
-            public SeqNo Seq
-            {
-                get
-                {
-                    return _seq;
-                }
-            }
+            public SeqNo? Seq => _seq;
+
+            /// <inheritdoc/>
+            SeqNo IHasSequenceNumber.Seq => _seq!.Value;
 
             /// <summary>
-            /// TBD
+            /// Creates a copy of this Send with the specified sequence number.
             /// </summary>
-            /// <param name="opt">TBD</param>
-            /// <returns>TBD</returns>
-            public Send Copy(SeqNo opt)
+            public Send Copy(SeqNo? opt)
             {
                 return new Send(Message, Recipient, SenderOption, opt);
             }
         }
 
         /// <summary>
-        /// TBD
+        /// Requests that an association to a remote address and optional UID be quarantined.
         /// </summary>
         public sealed class Quarantine : RemotingCommand
         {
             /// <summary>
-            /// TBD
+            /// Creates a quarantine request for a remote system.
             /// </summary>
-            /// <param name="remoteAddress">TBD</param>
-            /// <param name="uid">TBD</param>
-            public Quarantine(Address remoteAddress, int? uid)
+            /// <param name="remoteAddress">The address of the remote system.</param>
+            /// <param name="uid">The remote system UID to quarantine, or <c>null</c> when it is unknown.</param>
+            public Quarantine(Address remoteAddress, long? uid)
             {
                 Uid = uid;
                 RemoteAddress = remoteAddress;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the address of the remote system to quarantine.
             /// </summary>
             public Address RemoteAddress { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Gets the UID of the remote system to quarantine, if known.
             /// </summary>
-            public int? Uid { get; private set; }
+            public long? Uid { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Requests that a management command be sent to the underlying transport.
         /// </summary>
         public sealed class ManagementCommand : RemotingCommand
         {
             /// <summary>
-            /// TBD
+            /// Creates a request carrying a transport management command.
             /// </summary>
-            /// <param name="cmd">TBD</param>
+            /// <param name="cmd">The command to pass to the transport.</param>
             public ManagementCommand(object cmd)
             {
                 Cmd = cmd;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the transport management command.
             /// </summary>
             public object Cmd { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Reports whether a transport management command was handled.
         /// </summary>
         public sealed class ManagementCommandAck
         {
             /// <summary>
-            /// TBD
+            /// Creates an acknowledgement for a transport management command.
             /// </summary>
-            /// <param name="status">TBD</param>
+            /// <param name="status"><c>true</c> if the transport handled the command; otherwise, <c>false</c>.</param>
             public ManagementCommandAck(bool status)
             {
                 Status = status;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets whether the transport handled the command.
             /// </summary>
             public bool Status { get; private set; }
         }
@@ -284,20 +279,20 @@ namespace Akka.Remote
         #region Messages internal to EndpointManager
 
         /// <summary>
-        /// TBD
+        /// Requests that expired endpoint policy entries be pruned.
         /// </summary>
         public sealed class Prune : INoSerializationVerificationNeeded { }
 
         /// <summary>
-        /// TBD
+        /// Contains the outcome of binding the configured transports.
         /// </summary>
         public sealed class ListensResult : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a result containing listening addresses and association-listener promises.
             /// </summary>
-            /// <param name="addressesPromise">TBD</param>
-            /// <param name="results">TBD</param>
+            /// <param name="addressesPromise">The promise to complete with the final bound address pairs.</param>
+            /// <param name="results">The address pairs and promises for their association event listeners.</param>
             public ListensResult(TaskCompletionSource<IList<ProtocolTransportAddressPair>> addressesPromise, List<(ProtocolTransportAddressPair, TaskCompletionSource<IAssociationEventListener>)> results)
             {
                 Results = results;
@@ -305,27 +300,27 @@ namespace Akka.Remote
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the promise completed with the final listening address pairs.
             /// </summary>
             public TaskCompletionSource<IList<ProtocolTransportAddressPair>> AddressesPromise { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Gets the address pairs and association-listener promises returned by transport binding.
             /// </summary>
             public IList<(ProtocolTransportAddressPair, TaskCompletionSource<IAssociationEventListener>)> Results
             { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Contains the failure that occurred while binding the configured transports.
         /// </summary>
         public sealed class ListensFailure : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a result describing a transport bind failure.
             /// </summary>
-            /// <param name="addressesPromise">TBD</param>
-            /// <param name="cause">TBD</param>
+            /// <param name="addressesPromise">The promise that should receive the bind failure.</param>
+            /// <param name="cause">The exception raised while binding a transport.</param>
             public ListensFailure(TaskCompletionSource<IList<ProtocolTransportAddressPair>> addressesPromise, Exception cause)
             {
                 Cause = cause;
@@ -333,12 +328,12 @@ namespace Akka.Remote
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the promise that receives the bind failure.
             /// </summary>
             public TaskCompletionSource<IList<ProtocolTransportAddressPair>> AddressesPromise { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Gets the exception raised while binding a transport.
             /// </summary>
             public Exception Cause { get; private set; }
         }
@@ -349,10 +344,10 @@ namespace Akka.Remote
         public sealed class Link
         {
             /// <summary>
-            /// TBD
+            /// Creates a key for receive-buffer state associated with a local and remote address pair.
             /// </summary>
-            /// <param name="localAddress">TBD</param>
-            /// <param name="remoteAddress">TBD</param>
+            /// <param name="localAddress">The local address of the association.</param>
+            /// <param name="remoteAddress">The remote address of the association.</param>
             public Link(Address localAddress, Address remoteAddress)
             {
                 RemoteAddress = remoteAddress;
@@ -360,12 +355,12 @@ namespace Akka.Remote
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the local address in this association key.
             /// </summary>
             public Address LocalAddress { get; }
 
             /// <summary>
-            /// TBD
+            /// Gets the remote address in this association key.
             /// </summary>
             public Address RemoteAddress { get; }
 
@@ -374,7 +369,7 @@ namespace Akka.Remote
             /// <see cref="AckedReceiveBuffer{T}"/> data for each <see cref="Link"/> individually, since the HashCode
             /// is what Dictionary types use internally for equality checking by default.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>A hash code derived from both association addresses.</returns>
             public override int GetHashCode()
             {
                 unchecked
@@ -395,28 +390,28 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Stores receive-buffer state for a remote system incarnation.
         /// </summary>
         public sealed class ResendState : IEquatable<ResendState>
         {
             /// <summary>
-            /// TBD
+            /// Creates receive-buffer state for a remote UID.
             /// </summary>
-            /// <param name="uid">TBD</param>
-            /// <param name="buffer">TBD</param>
-            public ResendState(int uid, AckedReceiveBuffer<Message> buffer)
+            /// <param name="uid">The UID of the remote system that sent the buffered messages.</param>
+            /// <param name="buffer">The receive buffer tracking message sequence and acknowledgement state.</param>
+            public ResendState(long uid, AckedReceiveBuffer<Message> buffer)
             {
                 Buffer = buffer;
                 Uid = uid;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the UID associated with the receive buffer.
             /// </summary>
-            public int Uid { get; private set; }
+            public long Uid { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Gets the buffer of received messages and acknowledgement state.
             /// </summary>
             public AckedReceiveBuffer<Message> Buffer { get; private set; }
 
@@ -436,7 +431,7 @@ namespace Akka.Remote
             {
                 unchecked
                 {
-                    return (Uid * 397) ^ Buffer.GetHashCode();
+                    return (Uid.GetHashCode() * 397) ^ Buffer.GetHashCode();
                 }
             }
         }
@@ -462,10 +457,10 @@ namespace Akka.Remote
         /// Mapping between addresses and endpoint actors. If passive connections are turned off, incoming connections
         /// will not be part of this map!
         /// </summary>
-        private readonly EndpointRegistry _endpoints = new EndpointRegistry();
+        private readonly EndpointRegistry _endpoints = new();
         private readonly RemoteSettings _settings;
         private readonly Config _conf;
-        private readonly AtomicCounterLong _endpointId = new AtomicCounterLong(0L);
+        private readonly AtomicCounterLong _endpointId = new(0L);
         private readonly ILoggingAdapter _log;
         private readonly EventPublisher _eventPublisher;
 
@@ -477,10 +472,9 @@ namespace Akka.Remote
         /// <summary>
         /// Mapping between transports and the local addresses they listen to
         /// </summary>
-        private Dictionary<Address, AkkaProtocolTransport> _transportMapping =
-            new Dictionary<Address, AkkaProtocolTransport>();
+        private Dictionary<Address, AkkaProtocolTransport> _transportMapping = new();
 
-        private readonly ConcurrentDictionary<Link, ResendState> _receiveBuffers = new ConcurrentDictionary<Link, ResendState>();
+        private readonly ConcurrentDictionary<Link, ResendState> _receiveBuffers = new();
 
         private bool RetryGateEnabled => _settings.RetryGateClosedFor > TimeSpan.Zero;
 
@@ -511,16 +505,15 @@ namespace Akka.Remote
             }
         }
 
-        private Dictionary<IActorRef, AkkaProtocolHandle> _pendingReadHandoffs = new Dictionary<IActorRef, AkkaProtocolHandle>();
-        private Dictionary<IActorRef, List<InboundAssociation>> _stashedInbound = new Dictionary<IActorRef, List<InboundAssociation>>();
+        private Dictionary<IActorRef, AkkaProtocolHandle> _pendingReadHandoffs = new();
+        private Dictionary<IActorRef, List<InboundAssociation>> _stashedInbound = new();
 
 
         private void HandleStashedInbound(IActorRef endpoint, bool writerIsIdle)
         {
-            var stashed = _stashedInbound.GetOrElse(endpoint, new List<InboundAssociation>());
-            _stashedInbound.Remove(endpoint);
-            foreach (var ia in stashed)
-                HandleInboundAssociation(ia, writerIsIdle);
+            if (_stashedInbound.Remove(endpoint, out var value))
+                foreach (var ia in value)
+                    HandleInboundAssociation(ia, writerIsIdle);
         }
 
         private void KeepQuarantinedOr(Address remoteAddress, Action body)
@@ -551,14 +544,14 @@ namespace Akka.Remote
                 {
                     switch (e)
                     {
-                        case HopelessAssociation h when h.Uid != null:
-                            _log.Error(e.InnerException ?? e, "Association to [{0}] with UID [{1}] is irrecoverably failed. Quarantining address.", h.RemoteAddress, h.Uid);
+                        case HopelessAssociation { Uid: not null }:
+                            _log.Error(e.InnerException ?? e, "Association to [{0}] with UID [{1}] is irrecoverably failed. Quarantining address.", e.RemoteAddress, e.Uid);
                             if (_settings.QuarantineDuration.HasValue && _settings.QuarantineDuration != TimeSpan.MaxValue)
                             {
                                 // have a finite quarantine duration specified in settings.
                                 // If we don't have one specified, don't bother quarantining - it's disabled.
-                                _endpoints.MarkAsQuarantined(h.RemoteAddress, h.Uid.Value, Deadline.Now + _settings.QuarantineDuration);
-                                _eventPublisher.NotifyListeners(new QuarantinedEvent(h.RemoteAddress, h.Uid.Value));
+                                _endpoints.MarkAsQuarantined(e.RemoteAddress, e.Uid.Value, Deadline.Now + _settings.QuarantineDuration);
+                                _eventPublisher.NotifyListeners(new QuarantinedEvent(e.RemoteAddress, e.Uid.Value));
                             }
 
                             return Directive.Stop;
@@ -599,7 +592,7 @@ namespace Akka.Remote
                     case ActorInitializationException i when i.InnerException is HopelessAssociation h2:
                         return Hopeless(h2);
                     default:
-                        if (ex is EndpointDisassociatedException || ex is EndpointAssociationException) { } //no logging
+                        if (ex is EndpointDisassociatedException or EndpointAssociationException) { } //no logging
                         else { _log.Error(ex, ex.Message); }
                         _endpoints.MarkAsFailed(Sender, Deadline.Now + _settings.RetryGateClosedFor);
                         return Directive.Stop;
@@ -689,9 +682,9 @@ namespace Akka.Remote
 
             Receive<InboundAssociation>(
                 ia => Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(10), Self, ia, Self));
-            Receive<ManagementCommand>(mc => Sender.Tell(new ManagementCommandAck(status: false)));
-            Receive<StartupFinished>(sf => Become(Accepting));
-            Receive<ShutdownAndFlush>(sf =>
+            Receive<ManagementCommand>(_ => Sender.Tell(new ManagementCommandAck(status: false)));
+            Receive<StartupFinished>(_ => Become(Accepting));
+            Receive<ShutdownAndFlush>(_ =>
              {
                  Sender.Tell(true);
                  Context.Stop(Self);
@@ -702,7 +695,7 @@ namespace Akka.Remote
         /// Message-processing behavior when the <see cref="EndpointManager"/> is able to accept
         /// inbound association requests.
         /// </summary>
-        protected void Accepting()
+        private void Accepting()
         {
             Receive<ManagementCommand>(mc =>
                 {
@@ -755,7 +748,7 @@ namespace Akka.Remote
                         //the quarantine uid has lost the race with some failure, do nothing
                     }
                 }
-                else if (policy.Item1 is Quarantined && policy.Item2 != null && policy.Item1.AsInstanceOf<Quarantined>().Uid == policy.Item2.Value)
+                else if (policy.Item1 is Quarantined quarantined && policy.Item2 != null && quarantined.Uid == policy.Item2.Value)
                 {
                     // the UID to be quarantined already exists, do nothing
                 }
@@ -791,7 +784,9 @@ namespace Akka.Remote
                     // Side-effecting here
                     if (drop)
                     {
+#pragma warning disable CS0618
                         x.Value.Disassociate();
+#pragma warning restore CS0618
                         Context.Stop(x.Key);
                     }
                     return !drop;
@@ -805,7 +800,9 @@ namespace Akka.Remote
                         var handle = assoc.Association.AsInstanceOf<AkkaProtocolHandle>();
                         var drop = MatchesQuarantine(handle);
                         if (drop)
+#pragma warning disable CS0618
                             handle.Disassociate();
+#pragma warning restore CS0618
                         return !drop;
                     }).ToList();
                     return new KeyValuePair<IActorRef, List<InboundAssociation>>(x.Key, associations);
@@ -816,9 +813,6 @@ namespace Akka.Remote
             Receive<Send>(send =>
             {
                 var recipientAddress = send.Recipient.Path.Address;
-                IActorRef CreateAndRegisterWritingEndpoint() => _endpoints.RegisterWritableEndpoint(recipientAddress, 
-                    CreateEndpoint(recipientAddress, send.Recipient.LocalAddressToUse, _transportMapping[send.Recipient.LocalAddressToUse], 
-                        _settings, writing: true, handleOption: null), uid: null);
 
                 // pattern match won't throw a NullReferenceException if one is returned by WritableEndpointWithPolicyFor
                 switch (_endpoints.WritableEndpointWithPolicyFor(recipientAddress))
@@ -839,6 +833,12 @@ namespace Akka.Remote
                         CreateAndRegisterWritingEndpoint().Tell(send);
                         break;
                 }
+
+                return;
+
+                IActorRef CreateAndRegisterWritingEndpoint() => _endpoints.RegisterWritableEndpoint(recipientAddress, 
+                    CreateEndpoint(recipientAddress, send.Recipient.LocalAddressToUse, _transportMapping[send.Recipient.LocalAddressToUse], 
+                        _settings, writing: true, handleOption: null), uid: null);
             });
             Receive<InboundAssociation>(ia => HandleInboundAssociation(ia, false));
             Receive<EndpointWriter.StoppedReading>(endpoint => AcceptPendingReader(endpoint.Writer));
@@ -874,12 +874,12 @@ namespace Akka.Remote
                         break;
                 }
             });
-            Receive<ReliableDeliverySupervisor.Idle>(idle =>
+            Receive<ReliableDeliverySupervisor.Idle>(_ =>
             {
                 HandleStashedInbound(Sender, writerIsIdle: true);
             });
-            Receive<Prune>(prune => _endpoints.Prune());
-            Receive<ShutdownAndFlush>(shutdown =>
+            Receive<Prune>(_ => _endpoints.Prune());
+            Receive<ShutdownAndFlush>(_ =>
             {
                 //Shutdown all endpoints and signal to Sender when ready (and whether all endpoints were shutdown gracefully)
                 var sender = Sender;
@@ -892,8 +892,7 @@ namespace Akka.Remote
                         {
                             if (result.IsFaulted || result.IsCanceled)
                             {
-                                if (result.Exception != null)
-                                    result.Exception.Handle(e => true);
+                                result.Exception?.Handle(_ => true);
                                 return false;
                             }
                             return result.Result.All(x => x);
@@ -905,7 +904,7 @@ namespace Akka.Remote
                               if (result.IsFaulted || result.IsCanceled)
                               {
                                   if (result.Exception != null)
-                                      result.Exception.Handle(e => true);
+                                      result.Exception.Handle(_ => true);
                                   return false;
                               }
                               return result.Result.All(x => x) && tr.Result;
@@ -924,14 +923,14 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Handles messages while the endpoint manager is shutting down and flushing transports.
         /// </summary>
-        protected void Flushing()
+        private void Flushing()
         {
             Receive<Send>(send => Context.System.DeadLetters.Tell(send));
             Receive<InboundAssociation>(
                      ia => ia.Association.AsInstanceOf<AkkaProtocolHandle>().Disassociate(DisassociateInfo.Shutdown));
-            Receive<Terminated>(terminated => { }); // why should we care now?
+            Receive<Terminated>(_ => { }); // why should we care now?
         }
 
         #endregion

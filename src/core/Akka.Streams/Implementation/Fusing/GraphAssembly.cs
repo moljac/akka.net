@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="GraphAssembly.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,6 +13,7 @@ using Akka.Pattern;
 using Akka.Streams.Stage;
 using static Akka.Streams.Implementation.Fusing.GraphInterpreter;
 
+#nullable enable
 namespace Akka.Streams.Implementation.Fusing
 {
     /// <summary>
@@ -54,13 +55,13 @@ namespace Akka.Streams.Implementation.Fusing
     public sealed class GraphAssembly
     {
         /// <summary>
-        /// TBD
+        /// Creates an assembly for exposed graph ports, marking the missing outlet owner for each exposed input and the missing inlet owner for each exposed output as the boundary.
         /// </summary>
-        /// <param name="inlets">TBD</param>
-        /// <param name="outlets">TBD</param>
-        /// <param name="stages">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="inlets">The graph's exposed input ports.</param>
+        /// <param name="outlets">The graph's exposed output ports.</param>
+        /// <param name="stages">The graph stages in the order used by the interpreter.</param>
+        /// <exception cref="ArgumentException">Thrown when the graph has no inlet and no outlet.</exception>
+        /// <returns>An assembly whose connection slots represent the exposed ports and graph boundary.</returns>
         public static GraphAssembly Create(IList<Inlet> inlets, IList<Outlet> outlets, IList<IGraphStageWithMaterializedValue<Shape, object>> stages)
         {
             // add the contents of an iterator to an array starting at idx
@@ -94,41 +95,41 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// The graph stages instantiated by the interpreter when this assembly is materialized.
         /// </summary>
         public readonly IGraphStageWithMaterializedValue<Shape, object>[] Stages;
         /// <summary>
-        /// TBD
+        /// The attributes associated with each stage in <see cref="Stages"/>.
         /// </summary>
         public readonly Attributes[] OriginalAttributes;
         /// <summary>
-        /// TBD
+        /// The inlet stored in each connection slot, or null when that side is exposed to the graph boundary.
         /// </summary>
         public readonly Inlet[] Inlets;
         /// <summary>
-        /// TBD
+        /// The owning stage index for each inlet slot, or <see cref="GraphInterpreter.Boundary"/> for an exposed side.
         /// </summary>
         public readonly int[] InletOwners;
         /// <summary>
-        /// TBD
+        /// The outlet stored in each connection slot, or null when that side is exposed to the graph boundary.
         /// </summary>
         public readonly Outlet[] Outlets;
         /// <summary>
-        /// TBD
+        /// The owning stage index for each outlet slot, or <see cref="GraphInterpreter.Boundary"/> for an exposed side.
         /// </summary>
         public readonly int[] OutletOwners;
 
         /// <summary>
-        /// TBD
+        /// Creates an assembly from its stage, port, owner, and attribute arrays.
         /// </summary>
-        /// <param name="stages">TBD</param>
-        /// <param name="originalAttributes">TBD</param>
-        /// <param name="inlets">TBD</param>
-        /// <param name="inletOwners">TBD</param>
-        /// <param name="outlets">TBD</param>
-        /// <param name="outletOwners">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="stages">The graph stages in interpreter order.</param>
+        /// <param name="originalAttributes">The attributes associated with each stage.</param>
+        /// <param name="inlets">The inlet assigned to each connection slot, or null for an exposed side.</param>
+        /// <param name="inletOwners">The owner stage index for each inlet slot, or the boundary marker.</param>
+        /// <param name="outlets">The outlet assigned to each connection slot, or null for an exposed side.</param>
+        /// <param name="outletOwners">The owner stage index for each outlet slot, or the boundary marker.</param>
+        /// <exception cref="ArgumentException">Thrown when the inlet, inlet-owner, outlet, and outlet-owner arrays have different lengths.</exception>
+        /// <returns>A graph assembly containing the supplied arrays.</returns>
         public GraphAssembly(IGraphStageWithMaterializedValue<Shape, object>[] stages, Attributes[] originalAttributes, Inlet[] inlets, int[] inletOwners, Outlet[] outlets, int[] outletOwners)
         {
             if (inlets.Length != inletOwners.Length)
@@ -147,7 +148,7 @@ namespace Akka.Streams.Implementation.Fusing
         }
 
         /// <summary>
-        /// TBD
+        /// The number of connection slots represented by the inlet and outlet arrays.
         /// </summary>
         public int ConnectionCount => Inlets.Length;
 
@@ -161,17 +162,19 @@ namespace Akka.Streams.Implementation.Fusing
         /// <para/> - array of the logics
         /// <para/> - materialized value
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <param name="copiedModules">TBD</param>
-        /// <param name="materializedValues">TBD</param>
-        /// <param name="register">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">The attributes inherited by each stage during logic creation.</param>
+        /// <param name="copiedModules">The copied module corresponding to each stage.</param>
+        /// <param name="materializedValues">The map updated with each module's materialized value.</param>
+        /// <param name="register">The callback that registers copied materialized-value sources.</param>
+        /// <param name="materializer">The materializer in use, made available to stages that build an eager materialized value.</param>
+        /// <exception cref="ArgumentException">Thrown when an inlet or outlet already has a port ID different from its index in the current stage shape.</exception>
+        /// <returns>The connection table and created stage logics.</returns>
         public (Connection[], GraphStageLogic[]) Materialize(
             Attributes inheritedAttributes,
             IModule[] copiedModules,
             IDictionary<IModule, object> materializedValues,
-            Action<IMaterializedValueSource> register)
+            Action<IMaterializedValueSource> register,
+            IMaterializer? materializer = null)
         {
             var logics = new GraphStageLogic[Stages.Length];
             for (var i = 0; i < Stages.Length; i++)
@@ -202,14 +205,17 @@ namespace Akka.Streams.Implementation.Fusing
                 }
 
                 var stage = Stages[i];
-                if (stage is IMaterializedValueSource)
+                if (stage is IMaterializedValueSource source)
                 {
-                    var copy = ((IMaterializedValueSource) stage).CopySource();
+                    var copy = source.CopySource();
                     register(copy);
                     stage = (IGraphStageWithMaterializedValue<Shape, object>)copy;
                 }
 
-                var logicAndMaterialized = stage.CreateLogicAndMaterializedValue(inheritedAttributes.And(OriginalAttributes[i]));
+                var stageAttributes = inheritedAttributes.And(OriginalAttributes[i]);
+                var logicAndMaterialized = stage is IMaterializerAwareStage eagerStage
+                    ? eagerStage.CreateLogicAndMaterializedValue(stageAttributes, materializer)
+                    : stage.CreateLogicAndMaterializedValue(stageAttributes);
                 materializedValues[copiedModules[i]] = logicAndMaterialized.MaterializedValue;
                 logics[i] = logicAndMaterialized.Logic;
             }
@@ -249,15 +255,25 @@ namespace Akka.Streams.Implementation.Fusing
 
                     logic.PortToConn[outlet.Id + inCount] = connection;
                 }
+
+                if (inlet != null && outlet != null &&
+                    InletOwners[i] != Boundary && OutletOwners[i] != Boundary)
+                {
+                    // Select from the stages' actual ports, not an exposed or recast graph shape.
+                    // Actor boundaries have an erased outlet and must retain their object path.
+                    var actualInlet = Stages[InletOwners[i]].Shape.Inlets[inlet.Id];
+                    var actualOutlet = Stages[OutletOwners[i]].Shape.Outlets[outlet.Id];
+                    connection.Storage = actualInlet.CreateElementSlot(actualOutlet);
+                }
             }
 
             return (connections, logics);
         }
 
         /// <summary>
-        /// TBD
+        /// Returns a diagnostic representation of the stages, attributes, ports, and owner tables.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>A string containing the graph assembly's stages and connection arrays.</returns>
         public override string ToString()
         {
             return "GraphAssembly\n  " +

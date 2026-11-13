@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Snapshot.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -20,34 +20,34 @@ namespace Akka.Persistence.Serialization
     public sealed class Snapshot
     {
         /// <summary>
-        /// TBD
+        /// Initializes a snapshot data wrapper.
         /// </summary>
-        /// <param name="data">TBD</param>
+        /// <param name="data">Snapshot data to wrap.</param>
         public Snapshot(object data)
         {
             Data = data;
         }
 
         /// <summary>
-        /// TBD
+        /// Snapshot data wrapped by this object.
         /// </summary>
         public object Data { get; private set; }
 
-        /// <inheritdoc/>
+       
         private bool Equals(Snapshot other)
         {
             return Equals(Data, other.Data);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj)) return false;
             if (ReferenceEquals(this, obj)) return true;
-            return obj is Snapshot && Equals((Snapshot)obj);
+            return obj is Snapshot snapshot && Equals(snapshot);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Data != null ? Data.GetHashCode() : 0);

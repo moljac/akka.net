@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="UdpSender.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -43,7 +43,7 @@ namespace Akka.IO
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the UDP extension instance used for socket configuration and resource management.
         /// </summary>
         protected override UdpExt Udp => _udp;
 
@@ -58,19 +58,13 @@ namespace Akka.IO
             Context.Become(SendHandlers);
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <inheritdoc/>
         protected override bool Receive(object message)
         {
             throw new NotSupportedException();
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
+        /// <inheritdoc/>
         protected override void PostStop()
         {
             _log.Debug("Closing Socket after being stopped");

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="PersistenceMessageSerializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -25,7 +25,16 @@ namespace Akka.Persistence.Serialization
         {
         }
 
+        /// <inheritdoc />
+        public override int Identifier => 7;
+
         public override bool IncludeManifest { get; } = true;
+
+        // Every manifest FromBinary(byte[], Type) below handles, except the open generic
+        // PersistentFSM.PersistentFSMSnapshot<>, which stays on base.FromBinary.
+        private static readonly Dictionary<string, Type> ManifestTypes = Akka.Util.TypeExtensions.ManifestTable(
+            typeof(Persistent), typeof(IPersistentRepresentation), typeof(AtomicWrite),
+            typeof(AtLeastOnceDeliverySnapshot), typeof(PersistentFSM.StateChangeEvent));
 
         public override byte[] ToBinary(object obj)
         {
@@ -33,7 +42,7 @@ namespace Akka.Persistence.Serialization
             if (obj is AtomicWrite aw) return GetAtomicWrite(aw).ToByteArray();
             if (obj is AtLeastOnceDeliverySnapshot snap) return GetAtLeastOnceDeliverySnapshot(snap).ToByteArray();
             if (obj is PersistentFSM.StateChangeEvent stateEvent) return GetStateChangeEvent(stateEvent).ToByteArray();
-            if (obj.GetType().GetTypeInfo().IsGenericType 
+            if (obj.GetType().IsGenericType
                 && obj.GetType().GetGenericTypeDefinition() == typeof(PersistentFSM.PersistentFSMSnapshot<>)) return GetPersistentFSMSnapshot(obj).ToByteArray();
 
             throw new ArgumentException($"Can't serialize object of type [{obj.GetType()}] in [{GetType()}]");
@@ -156,11 +165,15 @@ namespace Akka.Persistence.Serialization
             if (type == typeof(AtomicWrite)) return GetAtomicWrite(bytes);
             if (type == typeof(AtLeastOnceDeliverySnapshot)) return GetAtLeastOnceDeliverySnapshot(bytes);
             if (type == typeof(PersistentFSM.StateChangeEvent)) return GetStateChangeEvent(bytes);
-            if (type.GetTypeInfo().IsGenericType
+            if (type.IsGenericType
                 && type.GetGenericTypeDefinition() == typeof(PersistentFSM.PersistentFSMSnapshot<>)) return GetPersistentFSMSnapshot(type, bytes);
 
             throw new SerializationException($"Unimplemented deserialization of message with type [{type}] in [{GetType()}]");
         }
+
+        /// <summary>Resolves the manifest from <see cref="ManifestTypes"/> so this works without dynamic type loading.</summary>
+        public override object FromBinary(byte[] bytes, string manifest)
+            => ManifestTypes.TryResolveManifestType(manifest, out var type) ? FromBinary(bytes, type!) : base.FromBinary(bytes, manifest);
 
         private IPersistentRepresentation GetPersistentRepresentation(PersistentMessage message)
         {

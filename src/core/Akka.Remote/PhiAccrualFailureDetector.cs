@@ -1,12 +1,11 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="PhiAccrualFailureDetector.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
@@ -38,9 +37,9 @@ namespace Akka.Remote
     {
         private readonly double _threshold;
         private readonly int _maxSampleSize;
-        private TimeSpan _minStdDeviation;
-        private TimeSpan _acceptableHeartbeatPause;
-        private TimeSpan _firstHeartbeatEstimate;
+        private readonly TimeSpan _minStdDeviation;
+        private readonly TimeSpan _acceptableHeartbeatPause;
+        private readonly TimeSpan _firstHeartbeatEstimate;
         private readonly Clock _clock;
 
         /// <summary>
@@ -69,7 +68,7 @@ namespace Akka.Remote
             _minStdDeviation = minStdDeviation;
             _acceptableHeartbeatPause = acceptableHeartbeatPause;
             _firstHeartbeatEstimate = firstHeartbeatEstimate;
-            state = new State(FirstHeartBeat, null);
+            _state = new AtomicReference<AccrualState>(new AccrualState(FirstHeartBeat, null));
         }
 
         /// <summary>
@@ -90,7 +89,7 @@ namespace Akka.Remote
             _minStdDeviation = config.GetTimeSpan("min-std-deviation", null);
             _acceptableHeartbeatPause = config.GetTimeSpan("acceptable-heartbeat-pause", null);
             _firstHeartbeatEstimate = config.GetTimeSpan("heartbeat-interval", null);
-            state = new State(FirstHeartBeat, null);
+            _state = new AtomicReference<AccrualState>(new AccrualState(FirstHeartBeat, null));
             EventStream = ev ?? Option<EventStream>.None;
         }
 
@@ -128,40 +127,40 @@ namespace Akka.Remote
         /// <summary>
         /// Uses volatile memory and immutability for lockless concurrency.
         /// </summary>
-        internal class State
+        internal sealed class AccrualState
         {
             /// <summary>
-            /// TBD
+            /// Creates a detector state from heartbeat history and the last heartbeat time.
             /// </summary>
-            /// <param name="history">TBD</param>
-            /// <param name="timeStamp">TBD</param>
-            public State(HeartbeatHistory history, long? timeStamp)
+            /// <param name="history">The recorded heartbeat interval statistics.</param>
+            /// <param name="timeStamp">The time of the most recent heartbeat, or <c>null</c> before monitoring starts.</param>
+            public AccrualState(HeartbeatHistory history, long? timeStamp)
             {
                 TimeStamp = timeStamp;
                 History = history;
             }
 
             /// <summary>
-            /// TBD
+            /// Gets the heartbeat interval history used to estimate failure suspicion.
             /// </summary>
             public HeartbeatHistory History { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Gets the time of the most recent heartbeat, or <c>null</c> if none has been received.
             /// </summary>
             public long? TimeStamp { get; private set; }
         }
 
-        private AtomicReference<State> _state;
+        private readonly AtomicReference<AccrualState> _state;
 
-        internal State state
+        internal AccrualState State
         {
-            get { return _state; }
-            set { _state = value; }
+            get { return _state.Value; }
+            set { _state.Value = value; }
         }
 
         /// <summary>
-        /// TBD
+        /// Gets whether the latest heartbeat history and elapsed time keep the suspicion level below the configured threshold.
         /// </summary>
         public override bool IsAvailable
         {
@@ -169,20 +168,20 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Gets whether at least one heartbeat has been received for the monitored resource.
         /// </summary>
         public override bool IsMonitoring
         {
-            get { return state.TimeStamp.HasValue; }
+            get { return State.TimeStamp.HasValue; }
         }
 
         /// <summary>
-        /// TBD
+        /// Records a heartbeat and updates the inter-arrival history used to estimate failure suspicion.
         /// </summary>
         public override void HeartBeat()
         {
             var timestamp = _clock();
-            var oldState = state;
+            var oldState = State;
             HeartbeatHistory newHistory;
 
             if (!oldState.TimeStamp.HasValue)
@@ -208,7 +207,7 @@ namespace Akka.Remote
                 else newHistory = oldState.History;
             }
 
-            var newState = new State(newHistory, timestamp);
+            var newState = new AccrualState(newHistory, timestamp);
 
             //if we won the race then update else try again
             if(!_state.CompareAndSet(oldState, newState)) HeartBeat();
@@ -222,7 +221,7 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Gets the current phi suspicion score using the detector's clock.
         /// </summary>
         internal double CurrentPhi
         {
@@ -230,13 +229,13 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Calculates the phi suspicion score at a given time from the latest heartbeat history.
         /// </summary>
-        /// <param name="timestamp">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="timestamp">The current time in the units returned by the configured clock.</param>
+        /// <returns>The calculated phi suspicion score; zero when no heartbeat has been recorded.</returns>
         internal double Phi(long timestamp)
         {
-            var oldState = state;
+            var oldState = State;
             var oldTimestamp = oldState.TimeStamp;
 
             if (!oldTimestamp.HasValue)
@@ -263,10 +262,10 @@ namespace Akka.Remote
         ///  Error is 0.00014 at +- 3.16
         /// The calculated value is equivalent to -log10(1 - CDF(y))
         /// </summary>
-        /// <param name="timeDiff">TBD</param>
-        /// <param name="mean">TBD</param>
-        /// <param name="stdDeviation">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="timeDiff">Elapsed time since the last heartbeat.</param>
+        /// <param name="mean">The expected heartbeat interval, including the accepted pause.</param>
+        /// <param name="stdDeviation">The standard deviation of observed heartbeat intervals.</param>
+        /// <returns>The phi suspicion score derived from the normal-distribution approximation.</returns>
         internal double Phi(long timeDiff, double mean, double stdDeviation)
         {
             var y = (timeDiff - mean)/stdDeviation;

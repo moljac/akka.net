@@ -1,12 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="StartupWithOneThreadSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Actor.Dsl;
 using Akka.Configuration;
@@ -25,12 +26,13 @@ namespace Akka.Cluster.Tests
             akka.actor.default-dispatcher.dedicated-thread-pool.thread-count = 1
             akka.actor.provider = ""Akka.Cluster.ClusterActorRefProvider, Akka.Cluster""
             akka.remote.dot-netty.tcp.port = 0
+            akka.cluster.downing-provider-class = ""Akka.Cluster.SBR.SplitBrainResolverProvider, Akka.Cluster""
+            akka.cluster.split-brain-resolver.active-strategy = keep-majority
         ");
 
         private long _startTime;
 
-        public StartupWithOneThreadSpec() : base(Configuration)
-        {
+        public StartupWithOneThreadSpec(ITestOutputHelper output) : base(Configuration, output) {
             _startTime = MonotonicClock.GetTicks();
         }
 
@@ -53,7 +55,7 @@ namespace Akka.Cluster.Tests
         }
 
         [Fact]
-        public void A_cluster_must_startup_with_one_dispatcher_thread()
+        public async Task A_cluster_must_startup_with_one_dispatcher_thread()
         {
             // This test failed before fixing https://github.com/akkadotnet/akka.net/issues/1959 when adding a sleep before the
             // Await of GetClusterCoreRef in the Cluster extension constructor.
@@ -75,6 +77,11 @@ namespace Akka.Cluster.Tests
             ExpectMsg("hello");
             ExpectMsg("hello");
             ExpectMsg("hello");
+            
+            // perform a self-join
+            var cts = new CancellationTokenSource(TimeSpan.FromSeconds((3)));
+            var selfAddress = cluster.SelfAddress;
+            await cluster.JoinSeedNodesAsync(new[] { selfAddress }, cts.Token);
         }
     }
 }

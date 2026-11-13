@@ -1,18 +1,19 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AsyncRecovery.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 
 namespace Akka.Persistence.Journal
 {
     /// <summary>
-    /// TBD
+    /// Provides asynchronous journal recovery operations.
     /// </summary>
     public interface IAsyncRecovery
     {
@@ -24,7 +25,7 @@ namespace Akka.Persistence.Journal
         /// could not be replayed.
         /// 
         /// The <paramref name="toSequenceNr"/> is the lowest of what was returned by
-        /// <see cref="ReadHighestSequenceNrAsync"/> and what the user specified as recovery
+        /// <see cref="ReadHighestSequenceNrAsync(string, long, CancellationToken)"/> and what the user specified as recovery
         /// <see cref="Recovery"/> parameter.
         /// This does imply that this call is always preceded by reading the highest sequence number
         /// for the given <paramref name="persistenceId"/>.
@@ -41,7 +42,7 @@ namespace Akka.Persistence.Journal
         /// <param name="toSequenceNr">Inclusive sequence number where replay should end</param>
         /// <param name="max">Maximum number of messages to be replayed</param>
         /// <param name="recoveryCallback">Called to replay a message, may be called from any thread.</param>
-        /// <returns>TBD</returns>
+        /// <returns>A task that completes when replay finishes or fails if replay cannot complete.</returns>
         Task ReplayMessagesAsync(IActorContext context, string persistenceId, long fromSequenceNr, long toSequenceNr, long max, Action<IPersistentRepresentation> recoveryCallback);
 
         /// <summary>
@@ -62,7 +63,8 @@ namespace Akka.Persistence.Journal
         /// <param name="fromSequenceNr">Hint where to start searching for the highest sequence number.
         /// When a persistent actor is recovering this <paramref name="fromSequenceNr"/> will the sequence
         /// number of the used snapshot, or `0L` if no snapshot is used.</param>
-        /// <returns>TBD</returns>
-        Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr);
+        /// <param name="cancellationToken"><see cref="CancellationToken"/> used to signal cancelled recovery operation</param>
+        /// <returns>A task containing the highest stored sequence number.</returns>
+        Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr, CancellationToken cancellationToken);
     }
 }

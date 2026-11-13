@@ -157,13 +157,13 @@ Wrap an actor extending ``ActorPublisher`` as a source.
 
 ### ActorRef
 
-Materialize an ``IActorRef``, sending messages to it will emit them on the stream. The actor contain
+Materialize an ``IActorRef``, sending messages to it will emit them on the stream. The actor contains
 a buffer but since communication is one way, there is no back pressure. Handling overflow is done by either dropping
-elements or failing the stream, the strategy is chosen by the user.
+elements or failing the stream; the strategy is chosen by the user.
 
-**emits** when there is demand and there are messages in the buffer or a message is sent to the actorref
+**emits** when there is demand and there are messages in the buffer or a message is sent to the ``IActorRef``
 
-**completes** when the actorref is sent ``Akka.Actor.Status.Success`` or ``PoisonPill``
+**completes** when the ``IActorRef`` is sent ``Akka.Actor.Status.Success``
 
 ### PreMaterialize
 
@@ -231,6 +231,13 @@ Combine the elements of multiple streams into a stream of sequences using a comb
 
 **completes** when any upstream completes
 
+### Setup
+
+Defer the creation of a `Source` until materialization and access `ActorMaterializer` and `Attributes`.
+
+Typically used when access to materializer is needed to run a different stream during the construction of a source/flow.
+Can also be used to access the underlying `ActorSystem` from `ActorMaterializer`.
+
 ## Sink Stages
 
 These built-in sinks are available from ``Akka.Stream.DSL.Sink``:
@@ -295,11 +302,11 @@ if more element are emitted the sink will cancel the stream
 
 **cancels** If too many values are collected
 
-### Foreach
+### ForEach
 
 Invoke a given procedure for each element received. Note that it is not safe to mutate shared state from the procedure.
 
-The sink materializes into a  ``Task`` which completes when the
+The sink materializes into a  ``Task<Done>`` which completes when the
 stream completes, or fails if the stream fails.
 
 Note that it is not safe to mutate state from the procedure.
@@ -308,9 +315,19 @@ Note that it is not safe to mutate state from the procedure.
 
 **backpressures** when the previous procedure invocation has not yet completed
 
-### ForeachParallel
+### ForEachASync
 
-Like ``Foreach`` but allows up to ``parallellism`` procedure calls to happen in parallel.
+Invoke a given procedure asynchronously for each element received. Note that if shared state is mutated from the procedure that must be done in a thread-safe way.
+
+The sink materializes into a ``Task<Done>`` which completes when the stream completes, or fails if the stream fails.
+
+**cancels** when a ``Task`` fails
+
+**backpressures** when the number of ``Task``s reaches the configured parallelism
+
+### ForEachParallel
+
+Like ``ForEach`` but allows up to ``parallellism`` procedure calls to happen in parallel.
 
 **cancels** never
 
@@ -448,6 +465,18 @@ are emitted from the source
 
 The ``Stream`` will no longer be writable when the ``Source`` has been canceled from its downstream, and
 closing the ``Stream`` will complete the ``Source``.
+
+### LazyInitAsync
+
+Creates a real ``Sink`` upon receiving the first element. Internal sink will not be created if there are no elements, because of completion or error.
+
+* If upstream completes before an element was received then the ``Task`` is completed with ``None``.
+* If upstream fails before an element was received, ``sinkFactory`` throws an exception, or materialization of the internal sink fails then the ``Task`` is completed with the exception.
+* Otherwise the ``Task`` is completed with the materialized value of the internal sink.
+
+**cancels** never
+
+**backpressures** when initialized and when created sink backpressures
 
 ## File IO Sinks and Sources
 
@@ -593,6 +622,13 @@ Just like `Scan` but receiving a function that results in a `Task` to the next v
 
 **completes** when upstream completes and the last `Task` is resolved
 
+### Setup
+
+Defer the creation of a `Flow` until materialization and access `ActorMaterializer` and `Attributes`.
+
+Typically used when access to materializer is needed to run a different stream during the construction of a source/flow.
+Can also be used to access the underlying `ActorSystem` from `ActorMaterializer`.
+
 ### Aggregate
 
 Start with current value ``zero`` and then apply the current and next value to the given function, when upstream
@@ -655,6 +691,24 @@ Skip elements as long as a predicate function return true for the element
 
 **completes** when upstream completes
 
+### ReuseLatest
+
+Re-use the most recently emitted element downstream.
+
+> [!NOTE]
+> `ReuseLatest` is typically used in combination with fan-in stages such as `Zip` - please see "[Reusing Values Downstream](xref:streams-buffers#reusing-values-downstream)"
+
+**emits** as long as one element has been emitted from upstream, that element will be emitted downstream
+whenever the `ReuseLatest` stage is pulled. If a new value is emitted from upstream, that value will be pushed and will replace the previous value.
+
+**backpressures** when downstream backpressures.
+
+**completes** when upstream completes
+
+`ReuseLatest` Sample:
+
+[!code-csharp[ReuseLatest](../../../src/core/Akka.Streams.Tests/Dsl/ReuseLatestSpec.cs?name=RepeatPrevious)]
+
 ### Recover
 
 Allow sending of one last element downstream when a failure has happened upstream.
@@ -697,7 +751,7 @@ This stage can recover the failure signal, but not the skipped elements, which w
 
 ### SelectError
 
-While similar to `Recover` this stage can be used to transform an error signal to a different one *without* logging
+While similar to `Recover` this stage can be used to transform an error signal to a different one _without_ logging
 it as an error in the process. So in that sense it is NOT exactly equivalent to ``Recover(e -> throw e2)`` since recover
 would log the `e2` error.
 
@@ -733,6 +787,17 @@ a function has to be provided to calculate the individual cost of each element.
 
 **completes** when upstream completes
 
+### Valve
+
+Materializes into a Task with an [`IValveSwitch`](xref:Akka.Streams.Dsl.IValveSwitch) which provides a method that will pause or resume elements being emitted from the stream.
+
+As long as the valve is closed it will backpressure.
+
+> [!NOTE]
+> Closing the valve could result in one element being buffered inside the stage, and if the stream completes or fails while being closed, that element may be lost.
+
+[!code-csharp[Valve](../../../src/core/Akka.Streams.Tests/Dsl/ValveSpec.cs?name=OpenValve)]
+
 ### DivertTo
 
 Each upstream element will either be diverted to the given sink, or the downstream consumer according to the predicate function applied to the element.
@@ -756,6 +821,22 @@ If the wire-tap ``Sink`` backpressures, elements that would've been sent to it w
 **completes** when upstream completes
 
 **cancels** when downstream cancels
+
+### LazyInitAsync
+
+Creates a real ``Flow`` upon receiving the first element by calling relevant flowFactory given as an argument. Internal flow will not be created if there are no elements, because of completion or error. The materialized value of the ``Flow`` will be the materialized value of the created internal flow.
+
+The materialized value of the Flow is a ``Task<Option<TMat>>`` that is completed with ```TMat``` when the internal flow gets materialized or with ``None`` when there where no elements. If the flow materialization (including the call of the ``flowFactory``) fails then the future is completed with a failure.
+
+Adheres to the ``ActorAttributes.SupervisionStrategy`` attribute.
+
+**emits** when the internal flow is successfully created and it emits
+
+**backpressures** when the internal flow is successfully created and it backpressures
+
+**completes** when upstream completes and all elements have been emitted from the internal flow
+
+**completes** when upstream completes and all futures have been completed and all elements have been emitted
 
 ## Asynchronous Processing Stages
 
@@ -815,12 +896,23 @@ Skip elements until a timeout has fired
 
 ### GroupedWithin
 
-Chunk up the stream into groups of elements received within a time window, or limited by the given number of elements,
-whichever happens first.
+Chunk up this stream into groups of elements received within a time window, or limited by the number of the elements, whatever happens first. Empty groups will not be emitted if no elements are received from upstream. The last group before end-of-stream will contain the buffered elements since the previously emitted group.
 
-**emits** when the configured time elapses since the last group has been emitted
+**emits** when the configured time elapses since the last group has been emitted, but not if no elements has been grouped (i.e: no empty groups), or when limit has been reached.
 
-**backpressures** when the group has been assembled (the duration elapsed) and downstream backpressures
+**backpressures** when downstream backpressures, and there are n+1 buffered elements
+
+**completes** when upstream completes
+
+### GroupedWeightedWithin
+
+Chunk up this stream into groups of elements received within a time window, or limited by the weight of the elements, whatever happens first. Empty groups will not be emitted if no elements are received from upstream.
+The last group before end-of-stream will contain the buffered elements since the previously emitted group.
+
+**emits** when the configured time elapses since the last group has been emitted,
+but not if no elements has been grouped (i.e: no empty groups), or when weight limit has been reached.
+
+**backpressures** downstream backpressures, and buffered group (+ pending element) weighs more than `maxWeight`
 
 **completes** when upstream completes
 
@@ -972,7 +1064,17 @@ and returns a pair containing a strict sequence of the taken element and a strea
 
 ### GroupBy
 
-De-multiplex the incoming stream into separate output streams.
+This operation demultiplexes the incoming stream into separate output streams, one for each element key. The
+key is computed for each element using the given function. When a new key is encountered for the first time
+a new substream is opened and subsequently fed with all elements belonging to that key.
+
+<!-- markdownlint-disable MD028 -->
+> [!NOTE]
+> If `allowClosedSubstreamRecreation` is set to `true` substream completion and incoming elements are subject to race-conditions. If elements arrive for a stream that is in the process of closing these elements might get lost.
+
+> [!WARNING]
+> If `allowClosedSubstreamRecreation` is set to `false` (default behavior) the stage keeps track of all keys of streams that have already been closed. If you expect an infinite number of keys this can cause memory issues. Elements belonging to those keys are drained directly and not send to the substream.
+<!-- markdownlint-enable MD028 -->
 
 **emits** an element for which the grouping function returns a group that has not yet been created. Emits the new group
 there is an element pending for a group whose substream backpressures

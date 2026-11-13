@@ -1,13 +1,15 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorSystemImpl.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +18,7 @@ using Akka.Dispatch;
 using Akka.Dispatch.SysMsg;
 using Akka.Event;
 using System.Reflection;
+using System.Text;
 using Akka.Actor.Setup;
 using Akka.Serialization;
 using Akka.Util;
@@ -35,7 +38,7 @@ namespace Akka.Actor.Internal
     public class ActorSystemImpl : ExtendedActorSystem, ISupportSerializationConfigReload
     {
         private IActorRef _logDeadLetterListener;
-        private readonly ConcurrentDictionary<Type, Lazy<object>> _extensions = new ConcurrentDictionary<Type, Lazy<object>>();
+        private readonly ConcurrentDictionary<Type, Lazy<object>> _extensions = new();
 
         private ILoggingAdapter _log;
         private IActorRefProvider _provider;
@@ -68,6 +71,7 @@ namespace Akka.Actor.Internal
         /// <param name="name">The name given to the actor system.</param>
         /// <param name="config">The configuration used to configure the actor system.</param>
         /// <param name="setup">The <see cref="ActorSystemSetup"/> used to help programmatically bootstrap the actor system.</param>
+        /// <param name="guardianProps">Optional - the props from the /user guardian actor.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown if the given <paramref name="name"/> is an invalid name for an actor system.
         ///  Note that the name must contain only word characters (i.e. [a-zA-Z0-9] plus non-leading '-').
@@ -137,6 +141,7 @@ namespace Akka.Actor.Internal
         public override ILoggingAdapter Log { get { return _log; } }
 
         /// <inheritdoc cref="ActorSystem"/>
+
         public override ActorProducerPipelineResolver ActorPipelineResolver { get { return _actorProducerPipelineResolver; } }
 
         /// <inheritdoc cref="ActorSystem"/>
@@ -181,7 +186,7 @@ namespace Akka.Actor.Internal
         /// This exception is thrown when deployment, dispatcher or mailbox configuration is incorrect.
         /// </exception>
         /// <returns>A reference to the underlying actor.</returns>
-        public override IActorRef SystemActorOf<TActor>(string name = null)
+        public override IActorRef SystemActorOf<[DynamicallyAccessedMembers(Props.ActorTypeMembers)] TActor>(string name = null)
         {
             return _provider.SystemGuardian.Cell.AttachChild(Props.Create<TActor>(), true, name);
         }
@@ -199,7 +204,7 @@ namespace Akka.Actor.Internal
         public override void Abort()
         {
             Aborting = true;
-            Terminate();
+            FinalTerminate(); // Skip CoordinatedShutdown check and aggressively shutdown the ActorSystem
         }
 
         /// <summary>Starts this system</summary>
@@ -207,9 +212,6 @@ namespace Akka.Actor.Internal
         {
             try
             {
-                // Force TermInfoDriver to initialize in order to protect us from the issue seen in #2432
-                typeof(Console).GetProperty("BackgroundColor").GetValue(null); // HACK: Only needed for MONO
-
                 RegisterOnTermination(StopScheduler);
                 _provider.Init(this);
                 LoadExtensions();
@@ -279,10 +281,41 @@ namespace Akka.Actor.Internal
             return ActorRefFactoryShared.ActorSelection(actorPath, this, _provider.RootGuardian);
         }
 
+        // The akka.scheduler.implementation values that ship inside Akka.dll, constructed directly so that
+        // neither the trimmer nor the Native AOT compiler has to see through a Type.GetType call.
+        //
+        // Keyed by bare type name; TypeExtensions.ToBuiltInAkkaTypeName normalizes what HOCON carries.
+        private static readonly Dictionary<string, Func<Config, ILoggingAdapter, IScheduler>> BuiltInSchedulers =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.Actor.HashedWheelTimerScheduler"] = static (config, log) => new HashedWheelTimerScheduler(config, log)
+            };
+
         private void ConfigureScheduler()
         {
-            var schedulerType = Type.GetType(_settings.SchedulerClass, true);
-            _scheduler = (IScheduler) Activator.CreateInstance(schedulerType, _settings.Config, Log);
+            var schedulerClass = _settings.SchedulerClass;
+            // fully qualified: this file also imports System.Reflection, which has its own TypeExtensions
+            if (Util.TypeExtensions.ToBuiltInAkkaTypeName(schedulerClass) is { } builtInSchedulerName &&
+                BuiltInSchedulers.TryGetValue(builtInSchedulerName, out var factory))
+            {
+                _scheduler = factory(_settings.Config, Log);
+            }
+            else if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+            {
+                _scheduler = CreateScheduler(schedulerClass, _settings.Config, Log);
+            }
+            else
+            {
+                throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                    "akka.scheduler.implementation", schedulerClass, "one of the built-in schedulers"));
+            }
+        }
+
+        [RequiresUnreferencedCode("Loads the [akka.scheduler.implementation] type by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static IScheduler CreateScheduler(string schedulerClass, Config config, ILoggingAdapter log)
+        {
+            var schedulerType = Type.GetType(schedulerClass, true);
+            return (IScheduler)Activator.CreateInstance(schedulerType, config, log);
         }
 
         private void StopScheduler()
@@ -291,13 +324,99 @@ namespace Akka.Actor.Internal
             sched?.Dispose();
         }
 
+#nullable enable
+        // Akka's own extensions that akka.extensions commonly names: bare type name -> the assembly it must name, and a
+        // factory passing its own literal so the trimmer keeps that type. Nothing is probed unless a row matches.
+        private static readonly Dictionary<string, (string Assembly, Func<IExtensionId?> Create)> FirstPartyExtensions =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.DistributedData.DistributedDataProvider"] = ("Akka.DistributedData",
+                    static () => CreateFirstPartyExtension("Akka.DistributedData.DistributedDataProvider, Akka.DistributedData")),
+                ["Akka.Cluster.Tools.PublishSubscribe.DistributedPubSubExtensionProvider"] = ("Akka.Cluster.Tools",
+                    static () => CreateFirstPartyExtension("Akka.Cluster.Tools.PublishSubscribe.DistributedPubSubExtensionProvider, Akka.Cluster.Tools")),
+                ["Akka.Cluster.Tools.Client.ClusterClientReceptionistExtensionProvider"] = ("Akka.Cluster.Tools",
+                    static () => CreateFirstPartyExtension("Akka.Cluster.Tools.Client.ClusterClientReceptionistExtensionProvider, Akka.Cluster.Tools")),
+                ["Akka.Cluster.Metrics.ClusterMetricsExtensionProvider"] = ("Akka.Cluster.Metrics",
+                    static () => CreateFirstPartyExtension("Akka.Cluster.Metrics.ClusterMetricsExtensionProvider, Akka.Cluster.Metrics")),
+            };
+
+        /// <summary>
+        /// The first-party extension <paramref name="extensionFqn"/> names, or <c>null</c> when it names none or its
+        /// assembly is absent. Type name and assembly must both match; the assembly identity is ignored.
+        /// </summary>
+        internal static IExtensionId? TryCreateFirstPartyExtension(string extensionFqn)
+            => Util.TypeExtensions.TrySplitTypeName(extensionFqn, out var name, out var assembly) &&
+               FirstPartyExtensions.TryGetValue(name, out var row) &&
+               string.Equals(assembly, row.Assembly, StringComparison.OrdinalIgnoreCase)
+                ? row.Create()
+                : null;
+
+        /// <summary>
+        /// True when <paramref name="extensionFqn"/> names a row in <see cref="FirstPartyExtensions"/>,
+        /// regardless of whether its assembly actually loads. Lets <see cref="LoadExtensions"/> tell "not a
+        /// name Akka.NET knows" apart from "a name Akka.NET knows, but its module isn't referenced" - #8648
+        /// treats the latter as absent, not not-built-in, and logs and skips it the same way in either
+        /// <see cref="AkkaFeatures.IsDynamicTypeLoadingSupported"/> state.
+        /// </summary>
+        internal static bool IsFirstPartyExtensionName(string extensionFqn)
+            => Util.TypeExtensions.TrySplitTypeName(extensionFqn, out var name, out var assembly) &&
+               FirstPartyExtensions.TryGetValue(name, out var row) &&
+               string.Equals(assembly, row.Assembly, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Pass a literal: the annotation lets the trimmer keep that type and its constructor.</summary>
+        private static IExtensionId? CreateFirstPartyExtension(
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] string typeName)
+        {
+            Type? type;
+            try
+            {
+                type = Type.GetType(typeName);
+            }
+            catch (Exception e) when (e is System.IO.FileLoadException or BadImageFormatException or TypeLoadException)
+            {
+                return null; // an assembly that will not load counts as absent
+            }
+
+            return type is null ? null : (IExtensionId?)Activator.CreateInstance(type);
+        }
+#nullable restore
+
         private void LoadExtensions()
         {
-            var extensions = new List<IExtensionId>();
+            // Setup ids go first; one also named in HOCON registers once, since RegisterExtension keys by type
+            var extensions = new List<IExtensionId>(_settings.Setup.Get<ExtensionsSetup>()
+                .Select(s => s.ExtensionIds).GetOrElse(Array.Empty<IExtensionId>()));
             foreach(var extensionFqn in _settings.Config.GetStringList("akka.extensions", new string[] { }))
             {
-                var extensionType = Type.GetType(extensionFqn);
-                if(extensionType == null || !typeof(IExtensionId).IsAssignableFrom(extensionType) || extensionType.GetTypeInfo().IsAbstract || !extensionType.GetTypeInfo().IsClass)
+                try
+                {
+                    if (TryCreateFirstPartyExtension(extensionFqn) is { } firstParty)
+                    {
+                        extensions.Add(firstParty);
+                        continue;
+                    }
+                }
+                catch(Exception ex)
+                {
+                    _log.Error(ex, "While trying to load extension [{0}], skipping...", extensionFqn);
+                    continue;
+                }
+
+                if (IsFirstPartyExtensionName(extensionFqn))
+                {
+                    // A first-party name whose assembly is not deployed with this application counts as
+                    // absent (#8648), not "not built in" - log and skip it the same way in either switch
+                    // state, instead of falling into the switch-off throw below.
+                    _log.Error("[{0}] is not an 'ExtensionId', skipping...", extensionFqn);
+                    continue;
+                }
+
+                if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                    throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                        "akka.extensions", extensionFqn, "an IExtensionId registered through ExtensionsSetup"));
+
+                var extensionType = ResolveExtensionType(extensionFqn);
+                if(extensionType == null || !typeof(IExtensionId).IsAssignableFrom(extensionType) || extensionType.IsAbstract || !extensionType.IsClass)
                 {
                     _log.Error("[{0}] is not an 'ExtensionId', skipping...", extensionFqn);
                     continue;
@@ -318,6 +437,9 @@ namespace Akka.Actor.Internal
             ConfigureExtensions(extensions);
         }
 
+        [RequiresUnreferencedCode("Loads an [akka.extensions] entry by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static Type ResolveExtensionType(string extensionFqn) => Type.GetType(extensionFqn);
+
         private void ConfigureExtensions(IEnumerable<IExtensionId> extensionIdProviders)
         {
             foreach(var extensionId in extensionIdProviders)
@@ -335,7 +457,7 @@ namespace Akka.Actor.Internal
         {
             if (extension == null) return null;
 
-            _extensions.GetOrAdd(extension.ExtensionType, t => new Lazy<object>(() => extension.CreateExtension(this), LazyThreadSafetyMode.ExecutionAndPublication));
+            _extensions.GetOrAdd(extension.ExtensionType, _ => new Lazy<object>(() => extension.CreateExtension(this), LazyThreadSafetyMode.ExecutionAndPublication));
 
             return extension.Get(this);
         }
@@ -443,11 +565,41 @@ namespace Akka.Actor.Internal
         {
             try
             {
-                Type providerType = Type.GetType(_settings.ProviderClass);
-                global::System.Diagnostics.Debug.Assert(providerType != null, "providerType != null");
-                var provider =
-                    (IActorRefProvider) Activator.CreateInstance(providerType, _name, _settings, _eventStream);
-                _provider = provider;
+                // The two built-in out-of-process providers are resolved from compile-time constant type
+                // names so the trimmer / Native AOT compiler can see which type each call site loads and
+                // keep it. A custom provider is named only at runtime and stays fully dynamic; Settings
+                // already rejected it at construction time when dynamic type loading is off, but this site
+                // guards independently too, since the trim analyzer has no way to know that.
+                if (_settings.ProviderSelectionType is ProviderSelection.Local)
+                {
+                    _provider = new LocalActorRefProvider(_name, _settings, _eventStream);
+                }
+                else if (_settings.ProviderSelectionType is ProviderSelection.Remote)
+                {
+                    _provider = CreateProvider(
+                        ProviderSelection.RemoteActorRefProvider,
+                        "akka.actor.provider = remote, but Akka.Remote is not referenced by this application.",
+                        _name, _settings, _eventStream);
+                }
+                else if (_settings.ProviderSelectionType is ProviderSelection.Cluster)
+                {
+                    _provider = CreateProvider(
+                        ProviderSelection.ClusterActorRefProvider,
+                        "akka.actor.provider = cluster, but Akka.Cluster is not referenced by this application.",
+                        _name, _settings, _eventStream);
+                }
+                else if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+                {
+                    _provider = CreateCustomProvider(
+                        _settings.ProviderClass,
+                        $"Could not resolve provider type [{_settings.ProviderClass}]. Ensure the type name is fully qualified.",
+                        _name, _settings, _eventStream);
+                }
+                else
+                {
+                    throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                        "akka.actor.provider", _settings.ProviderClass, "one of the built-in providers (local, remote, cluster)"));
+                }
             }
             catch (Exception)
             {
@@ -460,9 +612,55 @@ namespace Akka.Actor.Internal
             }
         }
 
+        /// <summary>
+        /// Resolves an <see cref="IActorRefProvider"/> from its type name and constructs it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="typeName"/> carries <see cref="DynamicallyAccessedMembersAttribute"/>, which is what
+        /// makes this trimmer-safe: the trimmer treats a <see cref="string"/> parameter annotated that way as a
+        /// type name, so a call site passing a compile-time constant - the <see cref="ProviderSelection"/>
+        /// constants for the built-in providers - has its type resolved statically and kept, along with the public
+        /// constructor this method invokes. The annotation flows into <see cref="Type.GetType(string)"/> here, so
+        /// neither that call nor the <see cref="Activator.CreateInstance(Type, object[])"/> below needs the
+        /// constant inlined in this method. A call site that passes a string only known at runtime cannot be
+        /// analyzed and warns there instead, which is the honest answer for a provider named only in HOCON.
+        /// </remarks>
+        private static IActorRefProvider CreateProvider(
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] string typeName,
+            string notResolvedMessage,
+            string name,
+            Settings settings,
+            EventStream eventStream)
+        {
+            var providerType = Type.GetType(typeName);
+            if (providerType is null)
+                throw new ConfigurationException(notResolvedMessage);
+
+            return (IActorRefProvider)Activator.CreateInstance(providerType, name, settings, eventStream);
+        }
+
+        /// <summary>
+        /// Resolves a custom <c>akka.actor.provider</c> from its type name and constructs it. Kept separate
+        /// from <see cref="CreateProvider"/>, whose <c>typeName</c> parameter carries
+        /// <see cref="DynamicallyAccessedMembersAttribute"/>: a custom provider's name comes from
+        /// <see cref="Settings.ProviderClass"/>, which has no such annotation, so passing it through that
+        /// parameter would warn IL2072 regardless of this method being reachable only while dynamic type
+        /// loading is on. Marking this method itself lets the guard at its only call site do its job.
+        /// </summary>
+        [RequiresUnreferencedCode("Loads a custom [akka.actor.provider] by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static IActorRefProvider CreateCustomProvider(
+            string typeName, string notResolvedMessage, string name, Settings settings, EventStream eventStream)
+        {
+            var providerType = Type.GetType(typeName);
+            if (providerType is null)
+                throw new ConfigurationException(notResolvedMessage);
+
+            return (IActorRefProvider)Activator.CreateInstance(providerType, name, settings, eventStream);
+        }
+
         private void ConfigureLoggers()
         {
-            _log = new BusLogging(_eventStream, "ActorSystem(" + _name + ")", GetType(), new DefaultLogMessageFormatter());
+            _log = new BusLogging(_eventStream, "ActorSystem(" + _name + ")", GetType(), _settings.LogFormatter);
         }
 
         private void ConfigureDispatchers()
@@ -480,7 +678,9 @@ namespace Akka.Actor.Internal
         private void ConfigureActorProducerPipeline()
         {
             // we push Log in lazy manner since it may not be configured at point of pipeline initialization
+
             _actorProducerPipelineResolver = new ActorProducerPipelineResolver(() => Log);
+
         }
 
         private void ConfigureTerminationCallbacks()
@@ -525,20 +725,19 @@ namespace Akka.Actor.Internal
         {
             if(Settings.CoordinatedShutdownRunByActorSystemTerminate)
             {
-                CoordinatedShutdown.Get(this).Run(CoordinatedShutdown.ActorSystemTerminateReason.Instance);
-            } else
-            {
-                FinalTerminate();
+                return CoordinatedShutdown.Get(this)
+                    .Run(CoordinatedShutdown.ActorSystemTerminateReason.Instance);
             }
-            return WhenTerminated;
+            return FinalTerminate();
         }
 
-        internal override void FinalTerminate()
+        internal override Task FinalTerminate()
         {
             Log.Debug("System shutdown initiated");
             if (!Settings.LogDeadLettersDuringShutdown && _logDeadLetterListener != null)
                 Stop(_logDeadLetterListener);
             _provider.Guardian.Stop();
+            return WhenTerminated;
         }
 
         /// <summary>
@@ -568,6 +767,78 @@ namespace Akka.Actor.Internal
         public override string ToString()
         {
             return LookupRoot.Path.Root.Address.ToString();
+        }
+
+        public override string PrintTree()
+        {
+            string PrintNode(IActorRef node, string indent)
+            {
+                var sb = new StringBuilder();
+                if (node is ActorRefWithCell wc)
+                {
+                    const string space = " ";
+                    var cell = wc.Underlying;
+                    sb.Append(string.IsNullOrEmpty(indent) ? "-> " : indent.Remove(indent.Length-1) + "L-> ")
+                        .Append($"{node.Path.Name} {Logging.SimpleName(node)} ");
+                    
+                    if (cell is ActorCell real)
+                    {
+                        var realActor = real.Actor;
+                        sb.Append(realActor is null ? "null" : realActor.GetType().ToString())
+                            .Append($" status={real.Mailbox.CurrentStatus()}");
+                    }
+                    else
+                    {
+                        sb.Append(Logging.SimpleName(cell));
+                    }
+                    sb.Append(space);
+
+                    switch (cell.ChildrenContainer)
+                    {
+                        case TerminatingChildrenContainer t:
+                            var toDie = t.ToDie.ToList();
+                            toDie.Sort();
+                            var reason = t.Reason;
+                            sb.Append($"Terminating({reason})")
+                                .Append($"\n{indent}   |    toDie: ")
+                                .Append(string.Join($"\n{indent}   |           ", toDie));
+                            break;
+                        case TerminatedChildrenContainer x:
+                            sb.Append(x);
+                            break;
+                        case EmptyChildrenContainer x:
+                            sb.Append(x);
+                            break;
+                        case NormalChildrenContainer n:
+                            sb.Append($"{n.Children.Count} children");
+                            break;
+                        case var x:
+                            sb.Append(Logging.SimpleName(x));
+                            break;
+                    }
+
+                    if (cell.ChildrenContainer.Children.Count > 0)
+                    {
+                        sb.Append("\n");
+
+                        var children = cell.ChildrenContainer.Children.ToList();
+                        children.Sort();
+                        var childStrings = children.Select((t, i) => i == 0
+                            ? PrintNode(t, $"{indent}   |")
+                            : PrintNode(t, $"{indent}    "));
+
+                        sb.Append(string.Join("\n", childStrings));
+                    }
+                }
+                else
+                {
+                    sb.Append($"{indent}{node.Path.Name} {Logging.SimpleName(node)}");
+                }
+
+                return sb.ToString();
+            }
+
+            return PrintNode(LookupRoot, "");
         }
     }
 
@@ -623,4 +894,3 @@ namespace Akka.Actor.Internal
         public Task TerminationTask { get { return _atomicRef.Value ?? _terminationTask; } }
     }
 }
-

@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LogEvent.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Diagnostics;
+using System.Text;
 using System.Threading;
 using Akka.Actor;
 
@@ -46,10 +47,18 @@ namespace Akka.Event
         /// <summary>
         /// Initializes a new instance of the <see cref="LogEvent" /> class.
         /// </summary>
+        /// <remarks>
+        /// Captures <see cref="Activity.Current"/> trace context at creation time.
+        /// This enables log correlation with distributed traces even after the log event
+        /// crosses actor mailbox boundaries (where <see cref="Activity.Current"/> would be lost).
+        /// </remarks>
         protected LogEvent()
         {
             Timestamp = DateTime.UtcNow;
             Thread = Thread.CurrentThread;
+
+            // Capture Activity.Current context NOW (before mailbox crossing)
+            ActivityContext = Activity.Current?.Context;
         }
 
         /// <summary>
@@ -68,6 +77,16 @@ namespace Akka.Event
         public Thread Thread { get; private set; }
 
         /// <summary>
+        /// The trace context from <see cref="Activity.Current"/> captured at log event creation time.
+        /// </summary>
+        /// <remarks>
+        /// This value is captured before the log event crosses actor mailbox boundaries,
+        /// enabling trace correlation with OpenTelemetry and other distributed tracing systems.
+        /// Will be <c>null</c> if no <see cref="Activity"/> was active when the log event was created.
+        /// </remarks>
+        public ActivityContext? ActivityContext { get; private set; }
+
+        /// <summary>
         /// The source that generated this event.
         /// </summary>
         public string LogSource { get; protected set; }
@@ -82,6 +101,13 @@ namespace Akka.Event
         /// </summary>
         public object Message { get; protected set; }
 
+        internal LogContextProperties ContextProperties { get; private set; }
+
+        internal void SetContextProperties(LogContextProperties contextProperties)
+        {
+            ContextProperties = contextProperties;
+        }
+
         /// <summary>
         /// Retrieves the <see cref="Akka.Event.LogLevel" /> used to classify this event.
         /// </summary>
@@ -89,16 +115,40 @@ namespace Akka.Event
         public abstract LogLevel LogLevel();
 
         /// <summary>
-        /// Returns a <see cref="System.String" /> that represents this LogEvent.
+        /// Returns a <see cref="string" /> that represents this LogEvent.
         /// </summary>
-        /// <returns>A <see cref="System.String" /> that represents this LogEvent.</returns>
+        /// <returns>A <see cref="string" /> that represents this LogEvent.</returns>
         public override string ToString()
         {
-            if(Cause == null)
-                return
-                    $"[{LogLevel().PrettyNameFor()}][{Timestamp}][Thread {Thread.ManagedThreadId.ToString().PadLeft(4, '0')}][{LogSource}] {Message}";
-            return
-                $"[{LogLevel().PrettyNameFor()}][{Timestamp}][Thread {Thread.ManagedThreadId.ToString().PadLeft(4, '0')}][{LogSource}] {Message}{Environment.NewLine}Cause: {Cause}";
+            var contextSegments = !ContextProperties.IsEmpty
+                ? FormatContextSegments(ContextProperties)
+                : string.Empty;
+
+            return Cause == null
+                ? $"[{LogLevel().PrettyNameFor()}][{Timestamp:MM/dd/yyyy HH:mm:ss.fffK}][Thread {Thread.ManagedThreadId:0000}][{LogSource}]{contextSegments} {Message}"
+                : $"[{LogLevel().PrettyNameFor()}][{Timestamp:MM/dd/yyyy HH:mm:ss.fffK}][Thread {Thread.ManagedThreadId:0000}][{LogSource}]{contextSegments} {Message}{Environment.NewLine}Cause: {Cause}";
+        }
+
+        private static string FormatContextSegments(LogContextProperties context)
+        {
+            var sb = new StringBuilder(context.Count * 8);
+            for (var i = 0; i < context.Count; i++)
+            {
+                var property = context[i];
+                sb.Append('[').Append(property.Key);
+                if (property.Value != null)
+                {
+                    sb.Append('=').Append(property.Value);
+                }
+                else
+                {
+                    sb.Append("=null");
+                }
+
+                sb.Append(']');
+            }
+
+            return sb.ToString();
         }
     }
 }

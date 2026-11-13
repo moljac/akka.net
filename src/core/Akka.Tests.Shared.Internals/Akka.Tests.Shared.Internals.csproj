@@ -1,24 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-  <Import Project="..\..\common.props" />
   <PropertyGroup>
-    <TargetFrameworks>$(NetStandardLibVersion)</TargetFrameworks>
+    <TargetFramework>$(NetStandardLibVersion)</TargetFramework>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\contrib\testkits\Akka.TestKit.Xunit2\Akka.TestKit.Xunit2.csproj" />
-  </ItemGroup>
-
-  <ItemGroup Condition=" '$(TargetFramework)' == '$(NetStandardLibVersion)' ">
-    <PackageReference Include="System.Diagnostics.StackTrace" Version="4.3.0" />
+    <ProjectReference Include="..\Akka.Coordination\Akka.Coordination.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FsCheck.Xunit" Version="$(FsCheckVersion)" />
-    <PackageReference Include="Fsharp.Core" Version="6.0.1" />
+    <PackageReference Include="Fsharp.Core" Version="$(FsharpVersion)" />
   </ItemGroup>
-
-  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-    <DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
-  </PropertyGroup>
 
 </Project>

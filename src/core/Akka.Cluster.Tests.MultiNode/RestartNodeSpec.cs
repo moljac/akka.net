@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RestartNodeSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,6 +15,7 @@ using Akka.Actor;
 using Akka.Actor.Dsl;
 using Akka.Cluster.TestKit;
 using Akka.Configuration;
+using Akka.MultiNode.TestAdapter;
 using Akka.Remote.TestKit;
 using Xunit;
 
@@ -60,7 +61,11 @@ namespace Akka.Cluster.Tests.MultiNode
         {
             _config = config;
             _secondSystem = new Lazy<ActorSystem>(() => ActorSystem.Create(Sys.Name, Sys.Settings.Config));
-            _secondRestartedSystem = new Lazy<ActorSystem>(() => ActorSystem.Create(Sys.Name, ConfigurationFactory.ParseString("akka.remote.dot-netty.tcp.port=" + _secondUniqueAddress.Address.Port)
+            // Pin the restarted system to the SAME wire address for BOTH transports - under
+            // AKKA_MNTR_TRANSPORT=artery the classic dot-netty key is inert and the fresh
+            // system would bind a random artery canonical.port instead.
+            _secondRestartedSystem = new Lazy<ActorSystem>(() => ActorSystem.Create(Sys.Name, ConfigurationFactory.ParseString("akka.remote.dot-netty.tcp.port=" + _secondUniqueAddress.Address.Port
+                    + "\nakka.remote.artery.canonical.port=" + _secondUniqueAddress.Address.Port)
                 .WithFallback(Sys.Settings.Config)));
         }
 
@@ -82,7 +87,7 @@ namespace Akka.Cluster.Tests.MultiNode
                     _replyTo.Tell(Done.Instance);
                 });
 
-                Receive<Terminated>(t => { });
+                Receive<Terminated>(_ => { });
             }
         }
 

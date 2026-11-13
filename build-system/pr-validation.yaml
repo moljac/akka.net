@@ -11,7 +11,7 @@ trigger:
 pr:
   autoCancel: true # indicates whether additional pushes to a PR should cancel in-progress runs for the same PR. Defaults to true
   branches:
-    include: [dev, v1.*, master, feature/*] # branch names which will trigger a build
+    include: [dev, v1.*, master, feature/*, fix/*, perf/*] # target branch names which will trigger a build
 
 name: $(Year:yyyy).$(Month).$(DayOfMonth)$(Rev:.r)
 
@@ -19,25 +19,26 @@ jobs:
   - job: DocsSpellcheck
     displayName: "Docs: Spellcheck"
     pool:
-      vmImage: ubuntu-20.04
+      vmImage: ubuntu-latest
     steps:
       - checkout: self # self represents the repo where the initial Pipelines YAML file was found
         clean: false # whether to fetch clean each time
         submodules: recursive # set to 'true' for a single level of submodules or 'recursive' to get submodules of submodules
       - task: NodeTool@0
         inputs:
-          versionSpec: "12.x"
+          versionSpec: "16.x"
       - task: Npm@1
         inputs:
           command: "custom"
-          customCommand: "install -g cspell"
+          customCommand: "install -g cspell@6.12.0"
       - task: CmdLine@2
         inputs:
           script: 'cspell --config ./docs/cSpell.json "docs/**/*.md"'
+
   - job: DocsMarkdownLinting
     displayName: "Docs: Markdown Linting"
     pool:
-      vmImage: ubuntu-20.04
+      vmImage: ubuntu-latest
     steps:
       - checkout: self # self represents the repo where the initial Pipelines YAML file was found
         clean: false # whether to fetch clean each time
@@ -48,132 +49,486 @@ jobs:
       - task: Npm@1
         inputs:
           command: "custom"
-          customCommand: "install -g markdownlint-cli markdownlint-rule-titlecase"
+          customCommand: "install -g markdownlint-cli@0.31.0 markdownlint-rule-titlecase@0.1.0"
       - task: CmdLine@2
         inputs:
           script: 'markdownlint "docs/**/*.md" --rules "markdownlint-rule-titlecase"'
-  - job: WindowsBuild
-    displayName: Windows Build
+
+  - job: SlopwatchAnalysis
+    displayName: "Slopwatch: LLM Code Quality Check"
     pool:
-      vmImage: windows-2019
-      demands: Cmd
+      vmImage: ubuntu-latest
     steps:
-      - checkout: self # self represents the repo where the initial Pipelines YAML file was found
-        clean: false # whether to fetch clean each time
-        submodules: recursive # set to 'true' for a single level of submodules or 'recursive' to get submodules of submodules
-        persistCredentials: true
+      - checkout: self
+        clean: false
+        submodules: recursive
       - task: UseDotNet@2
-        displayName: "Use .NET 6 SDK 6.0.100"
+        displayName: 'Use .NET'
         inputs:
-          version: 6.0.100
+          packageType: 'sdk'
+          useGlobalJson: true
+      - script: dotnet tool restore
+        displayName: 'Restore .NET Tools'
+      - script: dotnet slopwatch analyze -d . --fail-on error --stats
+        displayName: 'Run Slopwatch Analysis'
+  # Native AOT canary. Two publishes of src/aot/Akka.AOT.App, because they prove different things
+  # and neither is sufficient alone. See #7246 and src/aot/Akka.AOT.App/README.md.
+  #
+  #   1. UNROOTED publish + RUN. This is the real-application proof: ILC sees only what the app's
+  #      entry point actually reaches, trims everything else, and then the binary has to boot two
+  #      local ActorSystems and print '[canary] OK'. It is the only step that can catch a type that
+  #      got trimmed away and is needed at runtime - rooting the assembly would keep that type alive
+  #      and mask exactly the bug this job exists to find. Its warning list is NOT compared against
+  #      the baseline; it is a subset of the rooted one and would just be a second, weaker gate.
+  #
+  #   2. ROOTED publish (-p:RootAkka=true adds a TrimmerRootAssembly for Akka). ILC analyses every
+  #      path in the library instead of the handful the two toy actors reach, so this is the honest
+  #      warning count for core, and this is the log the baseline check reads. The rooted publish
+  #      can see sites the unrooted one never reaches, which is where later AOT work happens, so
+  #      gating on the unrooted list alone would leave that work unwatched.
+  #
+  # Deliberately NOT a template job: the shared templates start with a full `dotnet build -c
+  # Release` of the solution and end with test-result publishing, neither of which this lane needs.
+  # `dotnet publish` of the canary builds the one project it references (src/core/Akka) and nothing
+  # else, which is the whole point - a broken AOT surface should be reported in a couple of minutes,
+  # not behind a solution build.
+  #
+  # No incrementalist scoping either: almost any change in core can move the AOT warning surface, so
+  # the cheap and honest thing is to run it every time.
+  #
+  # Linux only, on purpose. ILC's analysis warnings come from IL, not from the host, so a second OS
+  # would re-report the same list for twice the agent minutes. Windows/macOS lanes can be added if a
+  # platform-specific AOT problem ever actually shows up.
+  #
+  # Blocking from day one (no continueOnError, unlike the new MNTR lanes): this job has no timing,
+  # ports or cluster formation in it. It publishes, runs one process, and compares two sorted lists
+  # of strings. If it goes red, something really did change.
+  - job: AotCanary
+    displayName: "AOT canaries (Linux)"
+    timeoutInMinutes: 60
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
+        clean: false
+        submodules: recursive
+
       - task: UseDotNet@2
-        displayName: "Use .NET Core Runtime 3.1.10"
+        displayName: 'Use .NET'
         inputs:
-          packageType: runtime
-          version: 3.1.10
-      - task: BatchScript@1
-        displayName: Windows Build
-        inputs:
-          filename: build.cmd
-          arguments: "buildRelease incremental" # Run an incremental build
-        continueOnError: true
-        condition: eq( variables['Agent.OS'], 'Windows_NT' )
-      - task: CopyFiles@2
-        displayName: "Copy Build Output"
-        inputs:
-          sourceFolder: bin
-          contents: "*"
-          targetFolder: $(Build.ArtifactStagingDirectory)
-          continueOnError: boolean # 'true' if future steps should run even if this step fails; defaults to 'false'
+          packageType: 'sdk'
+          useGlobalJson: true
+
+      # Both publishes start from a cold intermediate directory. A warm obj/ lets MSBuild skip
+      # native compilation entirely, which emits no IL warnings at all - the checker now fails on
+      # that rather than reporting a clean run, but it is cheaper to not create the situation.
+      - bash: |
+          rm -rf src/aot/Akka.AOT.App/bin src/aot/Akka.AOT.App/obj
+        displayName: 'Clean the canary intermediate output'
+
+      # -o keeps the published binary at a path this file can name without hardcoding a target
+      # framework or a RID directory - the AOT lane in the abandoned #7903 pinned net8.0 into the
+      # path and rotted the moment the repo moved on.
+      #
+      # PublishAot is switched on by the -r flag, which the canary's csproj keys off; passing
+      # -p:PublishAot=true instead would make it a global property and hand it to Akka.csproj too,
+      # turning core's trim analysis warnings into errors under the repo-wide TreatWarningsAsErrors.
+      # The csproj also sets IlcTreatWarningsAsErrors=false itself, so the warnings we are here to
+      # read do not fail the publish.
+      - bash: |
+          set -o pipefail
+          dotnet publish src/aot/Akka.AOT.App -r linux-x64 -c Release \
+            -p:TrimmerSingleWarn=false \
+            -o "$(Agent.TempDirectory)/aot-publish" 2>&1 | tee "$(Agent.TempDirectory)/aot-publish.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The unrooted publish of the AOT canary failed with exit code $rc."
+            exit 1
+          fi
+        displayName: 'Publish the AOT canary (unrooted)'
+
+      # A silent exit 0 is not a pass. Core logs-and-continues when a configured type name fails to
+      # resolve, so the canary's own log watchdog and its positive assertions are what make the run
+      # meaningful - and they announce themselves with '[canary] OK'. Grepping for that string is
+      # how this job refuses to be fooled by an ActorSystem that came up with no serializers.
+      - bash: |
+          set -o pipefail
+          "$(Agent.TempDirectory)/aot-publish/Akka.AOT.App" 2>&1 | tee "$(Agent.TempDirectory)/aot-run.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The AOT canary exited with code $rc."
+            exit 1
+          fi
+          if ! grep -qF '[canary] OK' "$(Agent.TempDirectory)/aot-run.log"; then
+            echo "##vso[task.logissue type=error]The AOT canary exited 0 but never printed '[canary] OK'."
+            exit 1
+          fi
+          echo "AOT canary: exit code 0 and '[canary] OK' on stdout."
+        displayName: 'Run the AOT canary'
+
+      # Separate -o and log, so the rooted output never overwrites the binary the run step proved.
+      - bash: |
+          set -o pipefail
+          dotnet publish src/aot/Akka.AOT.App -r linux-x64 -c Release \
+            -p:TrimmerSingleWarn=false -p:RootAkka=true \
+            -o "$(Agent.TempDirectory)/aot-publish-rooted" 2>&1 | tee "$(Agent.TempDirectory)/aot-publish-rooted.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The rooted publish of the AOT canary failed with exit code $rc."
+            exit 1
+          fi
+        displayName: 'Publish the AOT canary (rooted, for the warning baseline)'
+
+      # Fails on any IL2xxx/IL3xxx warning from src/core/Akka/ that is not in the baseline, prints a
+      # notice (without failing) for baseline entries that are no longer emitted, and fails if it
+      # found nothing in scope at all while the baseline is non-empty. A .NET 10 file-based app, so
+      # it needs no project of its own and runs on the SDK installed above.
+      - bash: |
+          dotnet run scripts/CheckAotWarnings.cs -- \
+            --log "$(Agent.TempDirectory)/aot-publish-rooted.log" \
+            --baseline src/aot/Akka.AOT.App/aot-warnings.baseline.txt \
+            --repo-root "$(Build.SourcesDirectory)"
+        displayName: 'Compare AOT warnings against the baseline'
+
+      # Proves the red path still works, on every run, for the price of one process start: a
+      # committed three-line log holding one warning that is deliberately not in the baseline must
+      # make the checker exit non-zero. Without this, a checker that silently stopped matching
+      # anything would look identical to a clean build.
+      - bash: |
+          if dotnet run scripts/CheckAotWarnings.cs -- \
+               --log src/aot/Akka.AOT.App/testdata/one-new-warning.publish-log.txt \
+               --baseline src/aot/Akka.AOT.App/aot-warnings.baseline.txt \
+               --repo-root "$(Build.SourcesDirectory)" > "$(Agent.TempDirectory)/aot-selftest.log" 2>&1; then
+            echo "##vso[task.logissue type=error]Self-test FAILED: the checker accepted a log containing a warning that is not in the baseline."
+            cat "$(Agent.TempDirectory)/aot-selftest.log"
+            exit 1
+          fi
+          echo "Self-test passed: the checker rejects an unbaselined warning."
+        displayName: 'Self-test the warning checker rejects a new warning'
+
+      # --- Akka.Hosting canary (src/aot/Akka.Hosting.AOT.App): same job, runs after the core canary ---
+      - bash: |
+          rm -rf src/aot/Akka.Hosting.AOT.App/bin src/aot/Akka.Hosting.AOT.App/obj
+        displayName: 'Clean the Hosting canary intermediate output'
+
+      # One publish serves both steps below: the run proves the real-application boot, and the same
+      # log is what the warning check reads. TrimmerSingleWarn is set in the csproj, not repeated
+      # here.
+      - bash: |
+          set -o pipefail
+          dotnet publish src/aot/Akka.Hosting.AOT.App -r linux-x64 -c Release \
+            -o "$(Agent.TempDirectory)/hosting-aot-publish" 2>&1 | tee "$(Agent.TempDirectory)/hosting-aot-publish.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The publish of the Hosting AOT canary failed with exit code $rc."
+            exit 1
+          fi
+        displayName: 'Publish the Hosting AOT canary'
+
+      # Same reasoning as AotCanary's run step: exit 0 alone is not proof. The canary's own
+      # WatchdogLoggerProvider and positive assertions are what make '[canary-hosting] OK'
+      # meaningful. timeout guards against a hang instead of burning the job's full 45 minutes.
+      - bash: |
+          set -o pipefail
+          timeout 300 "$(Agent.TempDirectory)/hosting-aot-publish/Akka.Hosting.AOT.App" 2>&1 | tee "$(Agent.TempDirectory)/hosting-aot-run.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -eq 124 ]; then
+            echo "##vso[task.logissue type=error]The Hosting AOT canary did not exit within 300s."
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The Hosting AOT canary exited with code $rc."
+            exit 1
+          fi
+          if ! grep -qF '[canary-hosting] OK' "$(Agent.TempDirectory)/hosting-aot-run.log"; then
+            echo "##vso[task.logissue type=error]The Hosting AOT canary exited 0 but never printed '[canary-hosting] OK'."
+            exit 1
+          fi
+          echo "Hosting AOT canary: exit code 0 and '[canary-hosting] OK' on stdout."
+        displayName: 'Run the Hosting AOT canary'
+
+      # Fails on any IL2xxx/IL3xxx warning from src/contrib/hosting/, src/contrib/dependencyinjection/
+      # or src/core/Akka.Streams/ that is not in this canary's own baseline. src/core/Akka/ is
+      # deliberately left out of --scope: AotCanary's baseline already watches it, and gating on it
+      # here too would just be two baselines to update for the same warning.
+      - bash: |
+          dotnet run scripts/CheckAotWarnings.cs -- \
+            --log "$(Agent.TempDirectory)/hosting-aot-publish.log" \
+            --baseline src/aot/Akka.Hosting.AOT.App/aot-warnings.baseline.txt \
+            --scope "src/contrib/hosting/,src/contrib/dependencyinjection/,src/core/Akka.Streams/" \
+            --repo-root "$(Build.SourcesDirectory)"
+        displayName: 'Compare Hosting AOT warnings against the baseline'
+
+      # --- Persistence canary (src/aot/Akka.Persistence.AOT.App): same job, runs after the Hosting canary ---
+      - bash: |
+          rm -rf src/aot/Akka.Persistence.AOT.App/bin src/aot/Akka.Persistence.AOT.App/obj
+        displayName: 'Clean the Persistence canary intermediate output'
+
+      # One publish serves both steps below: the run proves persist, recover, snapshot and query with
+      # everything registered in code, and the same log is what the warning check reads.
+      - bash: |
+          set -o pipefail
+          dotnet publish src/aot/Akka.Persistence.AOT.App -r linux-x64 -c Release \
+            -o "$(Agent.TempDirectory)/persistence-aot-publish" 2>&1 | tee "$(Agent.TempDirectory)/persistence-aot-publish.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The publish of the Persistence AOT canary failed with exit code $rc."
+            exit 1
+          fi
+        displayName: 'Publish the Persistence AOT canary'
+
+      # Same reasoning as the Hosting canary's run step: exit 0 alone is not proof. The canary's log
+      # watchdog and its assertions are what make '[canary-persistence] OK' meaningful.
+      - bash: |
+          set -o pipefail
+          timeout 300 "$(Agent.TempDirectory)/persistence-aot-publish/Akka.Persistence.AOT.App" 2>&1 | tee "$(Agent.TempDirectory)/persistence-aot-run.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -eq 124 ]; then
+            echo "##vso[task.logissue type=error]The Persistence AOT canary did not exit within 300s."
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The Persistence AOT canary exited with code $rc."
+            exit 1
+          fi
+          if ! grep -qF '[canary-persistence] OK' "$(Agent.TempDirectory)/persistence-aot-run.log"; then
+            echo "##vso[task.logissue type=error]The Persistence AOT canary exited 0 but never printed '[canary-persistence] OK'."
+            exit 1
+          fi
+          echo "Persistence AOT canary: exit code 0 and '[canary-persistence] OK' on stdout."
+        displayName: 'Run the Persistence AOT canary'
+
+      # Fails on any IL2xxx/IL3xxx warning from the persistence core, PersistenceQuery, the in-memory
+      # read journal, Akka.Persistence.Hosting or Akka.Streams that is not in this canary's own baseline.
+      # src/core/Akka/ is left out of --scope because AotCanary's baseline already watches it.
+      - bash: |
+          dotnet run scripts/CheckAotWarnings.cs -- \
+            --log "$(Agent.TempDirectory)/persistence-aot-publish.log" \
+            --baseline src/aot/Akka.Persistence.AOT.App/aot-warnings.baseline.txt \
+            --scope "src/core/Akka.Persistence/,src/core/Akka.Persistence.Query/,src/contrib/persistence/Akka.Persistence.Query.InMemory/,src/contrib/hosting/Akka.Persistence.Hosting/,src/core/Akka.Streams/" \
+            --repo-root "$(Build.SourcesDirectory)"
+        displayName: 'Compare Persistence AOT warnings against the baseline'
+
+      # --- SQLite persistence canary (src/aot/Akka.Persistence.Embedded.AOT.App): same job, runs after the Persistence canary ---
+      - bash: |
+          rm -rf src/aot/Akka.Persistence.Embedded.AOT.App/bin src/aot/Akka.Persistence.Embedded.AOT.App/obj
+        displayName: 'Clean the SQLite canary intermediate output'
+
+      - bash: |
+          set -o pipefail
+          dotnet publish src/aot/Akka.Persistence.Embedded.AOT.App -r linux-x64 -c Release \
+            -o "$(Agent.TempDirectory)/sqlite-aot-publish" 2>&1 | tee "$(Agent.TempDirectory)/sqlite-aot-publish.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The publish of the SQLite AOT canary failed with exit code $rc."
+            exit 1
+          fi
+          if [ ! -f "$(Agent.TempDirectory)/sqlite-aot-publish/libe_sqlite3.so" ]; then
+            echo "##vso[task.logissue type=error]libe_sqlite3.so was not published next to the canary."
+            exit 1
+          fi
+        displayName: 'Publish the SQLite AOT canary'
+
+      # The canary's log watchdog and its assertions are what make '[canary-sqlite] OK' meaningful.
+      - bash: |
+          set -o pipefail
+          timeout 300 "$(Agent.TempDirectory)/sqlite-aot-publish/Akka.Persistence.Embedded.AOT.App" 2>&1 | tee "$(Agent.TempDirectory)/sqlite-aot-run.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -eq 124 ]; then
+            echo "##vso[task.logissue type=error]The SQLite AOT canary did not exit within 300s."
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "##vso[task.logissue type=error]The SQLite AOT canary exited with code $rc."
+            exit 1
+          fi
+          if ! grep -qF '[canary-sqlite] OK' "$(Agent.TempDirectory)/sqlite-aot-run.log"; then
+            echo "##vso[task.logissue type=error]The SQLite AOT canary exited 0 but never printed '[canary-sqlite] OK'."
+            exit 1
+          fi
+          echo "SQLite AOT canary: exit code 0 and '[canary-sqlite] OK' on stdout."
+        displayName: 'Run the SQLite AOT canary'
+
+      # Zero warnings from the plugin, its Hosting package and Akka.Streams is the bar; the baseline holds only a header.
+      - bash: |
+          dotnet run scripts/CheckAotWarnings.cs -- \
+            --log "$(Agent.TempDirectory)/sqlite-aot-publish.log" \
+            --baseline src/aot/Akka.Persistence.Embedded.AOT.App/aot-warnings.baseline.txt \
+            --scope "src/contrib/persistence/Akka.Persistence.Embedded/,src/contrib/hosting/Akka.Persistence.Embedded.Hosting/,src/core/Akka.Streams/" \
+            --repo-root "$(Build.SourcesDirectory)"
+        displayName: 'Compare SQLite AOT warnings against the baseline'
+
+      # Both publish logs and the run log, so a failure can be diagnosed from the artifact without
+      # re-running the job. always() because the interesting case is the one where a step above
+      # failed.
       - task: PublishBuildArtifacts@1
+        displayName: 'Publish the AOT logs'
+        condition: always()
         inputs:
-          pathtoPublish: $(Build.ArtifactStagingDirectory)
-          artifactName: "incrementalistOutput-$(Build.BuildId)"
-      - script: "echo 1>&2"
-        failOnStderr: true
-        displayName: "If above is partially succeeded, then fail"
-        condition: eq(variables['Agent.JobStatus'], 'SucceededWithIssues')
+          pathtoPublish: '$(Agent.TempDirectory)'
+          contents: '*.log'
+          artifactName: 'aot_canary_logs-$(Build.BuildId)'
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: "netfx_tests_windows"
-      displayName: ".NET Framework Unit Tests (Windows)"
-      vmImage: "windows-2019"
-      scriptFileName: build.cmd
-      scriptArgs: runTests incremental
+      name: "docfx_test"
+      displayName: "DocFX warning check"
+      vmImage: "windows-latest"
+      command: |
+        dotnet docfx metadata ./docs/docfx.json --warningsAsErrors
+        dotnet docfx build ./docs/docfx.json --warningsAsErrors
       outputDirectory: "TestResults"
-      artifactName: "netfx_tests_windows-$(Build.BuildId)"
-
+      artifactName: "docfx_test-$(Build.BuildId)"
+      run_if: eq(variables['Build.Reason'], 'PullRequest')
+      
+  # --blame-hang: if one test runs 15m with no test starting or finishing, vstest
+  # takes a full dump of the testhost, kills it, and records the hung test in
+  # Sequence_*.xml and the .trx. Incrementalist's 20m timeout only stops waiting
+  # on `dotnet test`; it never kills it, so blame still fires after that and
+  # writes into TestResults, which the artifact steps below upload. A hang that
+  # starts late in the last project to run can still end with the job, undumped.
   - template: azure-pipeline.template.yaml
     parameters:
-      name: "net_core_tests_windows"
-      displayName: ".NET Core Unit Tests (Windows)"
-      vmImage: "windows-2019"
-      scriptFileName: build.cmd
-      scriptArgs: runTestsNetCore incremental
+      name: "net_tests_windows"
+      displayName: ".NET Unit Tests (Windows)"
+      vmImage: "windows-latest"
+      command: "dotnet incrementalist run --config .incrementalist/testsOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults --blame-hang --blame-hang-timeout 15m --blame-hang-dump-type full"
       outputDirectory: "TestResults"
-      artifactName: "net_core_tests_windows-$(Build.BuildId)"
+      artifactName: "net_tests_windows-$(Build.BuildId)"
 
+  # See the --blame-hang comment on net_tests_windows above.
   - template: azure-pipeline.template.yaml
     parameters:
-      name: "net_core_tests_linux"
-      displayName: ".NET Core Unit Tests (Linux)"
-      vmImage: "ubuntu-18.04"
-      scriptFileName: "./build.sh"
-      scriptArgs: runTestsNetCore incremental
+      name: "net_tests_linux"
+      displayName: ".NET Unit Tests (Linux)"
+      vmImage: "ubuntu-latest"
+      command: "dotnet incrementalist run --config .incrementalist/testsOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults --blame-hang --blame-hang-timeout 15m --blame-hang-dump-type full"
       outputDirectory: "TestResults"
-      artifactName: "net_core_tests_linux-$(Build.BuildId)"
+      artifactName: "net_tests_linux-$(Build.BuildId)"
 
+  # Akka.Reminders runs in its own lane, on Linux only.
+  #
+  # Akka.Reminders.Migration.Tests starts MsSqlContainer and PostgreSqlContainer
+  # unconditionally, so it needs a Docker host. Linux agents have one; the Windows
+  # agents do not. Reminders is therefore excluded from testsOnly.json (which both
+  # the Windows and Linux unit lanes share) and scoped here instead.
+  #
+  # Incrementalist still scopes this to changed projects, so the lane costs nothing
+  # on PRs that do not touch src/contrib/reminders. Running it separately also keeps
+  # container startup and teardown out of the main unit lanes, where a container
+  # flake would otherwise look like a core Akka failure.
   - template: azure-pipeline.template.yaml
     parameters:
-      name: "net_5_tests_windows"
-      displayName: ".NET 5 Unit Tests (Windows)"
-      vmImage: "windows-2019"
-      scriptFileName: build.cmd
-      scriptArgs: runTestsNet incremental
+      name: "net_tests_reminders_linux"
+      displayName: ".NET Unit Tests (Reminders, Linux)"
+      vmImage: "ubuntu-latest"
+      command: "dotnet incrementalist run --config .incrementalist/remindersOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults --blame-hang --blame-hang-timeout 15m --blame-hang-dump-type full"
       outputDirectory: "TestResults"
-      artifactName: "net_5_tests_windows-$(Build.BuildId)"
-
-  - template: azure-pipeline.template.yaml
-    parameters:
-      name: "net_5_tests_linux"
-      displayName: ".NET 5 Unit Tests (Linux)"
-      vmImage: "ubuntu-18.04"
-      scriptFileName: "./build.sh"
-      scriptArgs: runTestsNet incremental
-      outputDirectory: "TestResults"
-      artifactName: "net_5_tests_linux-$(Build.BuildId)"
+      artifactName: "net_tests_reminders_linux-$(Build.BuildId)"
+      timeoutInMinutes: 60
 
   - template: azure-pipeline.mntr-template.yaml
     parameters:
-      name: "net_core_mntr_windows"
-      displayName: ".NET Core Multi-Node Tests (Windows)"
-      vmImage: "windows-2019"
-      scriptFileName: "build.cmd"
-      scriptArgs: MultiNodeTestsNetCore incremental
+      name: "net_mntr_windows"
+      displayName: ".NET Multi-Node Tests (Windows)"
+      vmImage: "windows-latest"
+      command: "dotnet incrementalist run --config .incrementalist/mutliNodeOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults/multinode"
       outputDirectory: "TestResults"
-      artifactName: "net_core_mntr_windows-$(Build.BuildId)"
+      artifactName: "net_mntr_windows-$(Build.BuildId)"
       mntrFailuresDir: 'TestResults\\multinode'
-      mntrFailuresArtifactName: "net_core_mntr_FAILED_windows-$(Build.BuildId)"
+      mntrFailuresArtifactName: "net_7_mntr_FAILED_windows-$(Build.BuildId)"
+      env:
+        # 2-vCPU hosted agents can't comfortably run StressSpec's 10-node default; 7 is the
+        # smallest count StressSpecConfig.BuildConfig can still fit (see its doc comment).
+        MNTR_STRESSSPEC_NODECOUNT: "7"
 
+  # First-ever Linux MNTR lane: same suite, same incrementalist scoping and
+  # command as "net_mntr_windows" above, on ubuntu-latest (matching the Linux
+  # unit-test job). NON-BLOCKING initially (continueOnError: true at the job
+  # level) because this lane has never run before -- same
+  # promote-to-blocking-after-sustained-green path as the Artery job below.
   - template: azure-pipeline.mntr-template.yaml
     parameters:
-      name: "net_5_mntr_windows"
-      displayName: ".NET 5 Multi-Node Tests (Windows)"
-      vmImage: "windows-2019"
-      scriptFileName: "build.cmd"
-      scriptArgs: MultiNodeTestsNet incremental
+      name: "net_mntr_linux"
+      displayName: ".NET Multi-Node Tests (Linux)"
+      vmImage: "ubuntu-latest"
+      command: "dotnet incrementalist run --config .incrementalist/mutliNodeOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults/multinode"
       outputDirectory: "TestResults"
-      artifactName: "net_5_mntr_windows-$(Build.BuildId)"
+      artifactName: "net_mntr_linux-$(Build.BuildId)"
+      mntrFailuresDir: 'TestResults/multinode'
+      mntrFailuresArtifactName: "net_mntr_FAILED_linux-$(Build.BuildId)"
+      continueOnError: true
+      env:
+        # 2-vCPU hosted agents can't comfortably run StressSpec's 10-node default; 7 is the
+        # smallest count StressSpecConfig.BuildConfig can still fit (see its doc comment).
+        MNTR_STRESSSPEC_NODECOUNT: "7"
+
+  # Independent, parallel, NON-BLOCKING Artery MNTR stage. Runs the exact same
+  # incrementally-scoped multi-node suite as "net_mntr_windows" above, but
+  # re-points the transport at Artery via AKKA_MNTR_TRANSPORT=artery, which
+  # MultiNodeConfig.Config layers in as a low-priority fallback config tier
+  # (see src/core/Akka.Remote.TestKit/MultiNodeSpec.cs). Purpose: track
+  # Artery's own MNTR green-rate as a ship-confidence metric, independent of
+  # classic DotNetty, without gating PR validation on it.
+  #
+  # Non-blocking: continueOnError: true is set at the job level (in
+  # azure-pipeline.mntr-template.yaml), not just on the test step. The job
+  # still runs and reports its own pass/fail per PR (visible in the Checks
+  # list), but it can never fail PR validation as a whole.
+  #
+  # Failure injection runs for real in this lane: AKKA_MNTR_TRANSPORT=artery
+  # also enables akka.remote.artery.advanced.test-mode (see
+  # src/core/Akka.Remote.TestKit/MultiNodeSpec.cs), which supports
+  # TestConductor Blackhole/PassThrough. Rate throttles are not supported by
+  # test-mode, so throttle-using specs (e.g. TestConductorSpec) stay pinned to
+  # classic remoting and fail fast on the RequireTestConductorTransport()
+  # check in src/core/Akka.Remote.TestKit/Conductor.cs. Treat everything else
+  # failing in this lane as a real Artery finding. If this lane ever needs a
+  # different test-project set than the classic job, the clean lever is a
+  # dedicated incrementalist config file (.incrementalist/mutliNodeOnly.json
+  # is the sanctioned mechanism for dictating which test projects run in CI).
+  - template: azure-pipeline.mntr-template.yaml
+    parameters:
+      name: "net_mntr_windows_artery"
+      displayName: ".NET Multi-Node Tests (Windows, Artery)"
+      vmImage: "windows-latest"
+      command: "dotnet incrementalist run --config .incrementalist/mutliNodeOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults/multinode"
+      outputDirectory: "TestResults"
+      artifactName: "net_mntr_windows_artery-$(Build.BuildId)"
       mntrFailuresDir: 'TestResults\\multinode'
-      mntrFailuresArtifactName: "net_5_mntr_FAILED_windows-$(Build.BuildId)"
+      mntrFailuresArtifactName: "net_mntr_artery_FAILED_windows-$(Build.BuildId)"
+      continueOnError: true
+      env:
+        AKKA_MNTR_TRANSPORT: artery
+        # 2-vCPU hosted agents can't comfortably run StressSpec's 10-node default; 7 is the
+        # smallest count StressSpecConfig.BuildConfig can still fit (see its doc comment).
+        MNTR_STRESSSPEC_NODECOUNT: "7"
+
+  # Fourth lane, completing the classic/Artery x Windows/Linux MNTR matrix
+  # (only classic Windows is blocking). Same rationale and known/accepted
+  # noise as the Windows Artery lane above.
+  - template: azure-pipeline.mntr-template.yaml
+    parameters:
+      name: "net_mntr_linux_artery"
+      displayName: ".NET Multi-Node Tests (Linux, Artery)"
+      vmImage: "ubuntu-latest"
+      command: "dotnet incrementalist run --config .incrementalist/mutliNodeOnly.json --branch $(IncrementalistBaseBranch) -- test -c Release --no-build --framework net10.0 --logger:trx --results-directory TestResults/multinode"
+      outputDirectory: "TestResults"
+      artifactName: "net_mntr_linux_artery-$(Build.BuildId)"
+      mntrFailuresDir: 'TestResults/multinode'
+      mntrFailuresArtifactName: "net_mntr_artery_FAILED_linux-$(Build.BuildId)"
+      continueOnError: true
+      env:
+        AKKA_MNTR_TRANSPORT: artery
+        # 2-vCPU hosted agents can't comfortably run StressSpec's 10-node default; 7 is the
+        # smallest count StressSpecConfig.BuildConfig can still fit (see its doc comment).
+        MNTR_STRESSSPEC_NODECOUNT: "7"
 
   - template: azure-pipeline.template.yaml
     parameters:
       name: "nuget_pack"
       displayName: "NuGet Pack"
-      vmImage: "windows-2019"
-      scriptFileName: build.cmd
-      scriptArgs: CreateNuget nugetprerelease=dev incremental
+      vmImage: "windows-latest"
+      command: "dotnet pack -c Release -o bin/nuget"
       outputDirectory: "bin/nuget"
       artifactName: "nuget_pack-$(Build.BuildId)"

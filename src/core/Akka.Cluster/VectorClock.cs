@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="VectorClock.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -141,13 +141,13 @@ namespace Akka.Cluster
                 }               
             }
 
-            /// <inheritdoc/>
+           
             public override int GetHashCode()
             {
                 return _computedHashValue;
             }
 
-            /// <inheritdoc/>
+           
             public override bool Equals(object obj)
             {
                 var that = obj as Node;
@@ -155,13 +155,13 @@ namespace Akka.Cluster
                 return _value.Equals(that._value);
             }
 
-            /// <inheritdoc/>
+           
             public override string ToString()
             {
                 return _value;
             }
 
-            /// <inheritdoc/>
+           
             public int CompareTo(Node other)
             {
                 return Comparer<String>.Default.Compare(_value, other._value);
@@ -174,11 +174,11 @@ namespace Akka.Cluster
         internal static class Timestamp
         {
             /// <summary>
-            /// TBD
+            /// The initial timestamp used when a node has no entry in the vector clock.
             /// </summary>
             public static readonly long Zero = 0L;
             /// <summary>
-            /// TBD
+            /// Sentinel timestamp used when comparing a node absent from one clock.
             /// </summary>
             public static readonly long EndMarker = long.MinValue;
         }
@@ -206,7 +206,7 @@ namespace Akka.Cluster
             Concurrent,
             //TODO: Ideally this would be private, change to override of compare?
             /// <summary>
-            /// TBD
+            /// Requests a complete comparison rather than stopping once a particular ordering is established.
             /// </summary>
             FullOrder
         }
@@ -322,7 +322,9 @@ namespace Akka.Cluster
         /// <returns><c>true</c> if both vector clocks are equal; otherwise <c>false</c></returns>
         public static bool operator ==(VectorClock left, VectorClock right)
         {
-            if (ReferenceEquals(left, null))
+            if (ReferenceEquals(left, right))
+                return true;
+            if (ReferenceEquals(left, null) || ReferenceEquals(right, null))
                 return false;
 
             return left.IsSameAs(right);
@@ -336,10 +338,7 @@ namespace Akka.Cluster
         /// <returns><c>true</c> if both vector clocks are not equal; otherwise <c>false</c></returns>
         public static bool operator !=(VectorClock left, VectorClock right)
         {
-            if (ReferenceEquals(left, null))
-                return false;
-
-            return left.IsConcurrentWith(right);
+            return !(left == right);
         }
 
         private static readonly (Node, long) CmpEndMarker = (Node.Create("endmarker"), Timestamp.EndMarker);
@@ -436,7 +435,7 @@ namespace Akka.Cluster
         /// </ol>
         /// </summary>
         /// <param name="that">The vector clock used to compare against.</param>
-        /// <returns>TBD</returns>
+        /// <returns>The relation of this clock to <paramref name="that"/>: before, after, same, or concurrent.</returns>
         public Ordering CompareTo(VectorClock that)
         {
             return CompareOnlyTo(that, Ordering.FullOrder);
@@ -476,7 +475,7 @@ namespace Akka.Cluster
             return this;
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             var versions = _versions.Select(p => p.Key + "->" + p.Value);
@@ -484,4 +483,3 @@ namespace Akka.Cluster
         }
     }
 }
-

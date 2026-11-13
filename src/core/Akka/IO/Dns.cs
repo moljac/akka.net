@@ -1,13 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Dns.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -15,30 +16,31 @@ using System.Runtime.ExceptionServices;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Routing;
+using Akka.Util;
 
 namespace Akka.IO
 {
     /// <summary>
-    /// TBD
+    /// Base class for DNS resolution backends.
     /// </summary>
     public abstract class DnsBase
     {
         /// <summary>
-        /// TBD
+        /// Returns a cached DNS resolution for the given name, or null if not cached.
         /// </summary>
-        /// <param name="name">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="name">The DNS name to look up in the cache.</param>
+        /// <returns>The cached DNS resolution, or null if not found.</returns>
         public virtual Dns.Resolved Cached(string name)
         {
             return null;
         }
         /// <summary>
-        /// TBD
+        /// Attempts to resolve the DNS name, using the cache if possible, otherwise triggers a DNS query.
         /// </summary>
-        /// <param name="name">TBD</param>
-        /// <param name="system">TBD</param>
-        /// <param name="sender">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="name">The DNS name to resolve.</param>
+        /// <param name="system">The actor system to use for resolution.</param>
+        /// <param name="sender">The actor requesting the resolution.</param>
+        /// <returns>The resolved DNS entry, or null if not cached.</returns>
         public virtual Dns.Resolved Resolve(string name, ActorSystem system, IActorRef sender)
         {
             var ret = Cached(name);
@@ -49,30 +51,30 @@ namespace Akka.IO
     }
 
     /// <summary>
-    /// TBD
+    /// Extension for DNS resolution support in Akka.NET.
     /// </summary>
     public class Dns : ExtensionIdProvider<DnsExt>
     {
         /// <summary>
-        /// TBD
+        /// The singleton instance of the Dns extension.
         /// </summary>
-        public static readonly Dns Instance = new Dns();
+        public static readonly Dns Instance = new();
 
         /// <summary>
-        /// TBD
+        /// Base class for DNS-related commands.
         /// </summary>
         public abstract class Command : INoSerializationVerificationNeeded
         { }
 
         /// <summary>
-        /// TBD
+        /// Command to resolve a DNS name.
         /// </summary>
         public class Resolve : Command, IConsistentHashable
         {
             /// <summary>
-            /// TBD
+            /// Creates a new DNS resolve command for the given name.
             /// </summary>
-            /// <param name="name">TBD</param>
+            /// <param name="name">The DNS name to resolve.</param>
             public Resolve(string name)
             {
                 Name = name;
@@ -80,17 +82,17 @@ namespace Akka.IO
             }
 
             /// <summary>
-            /// TBD
+            /// The consistent hash key for this command (the DNS name).
             /// </summary>
             public object ConsistentHashKey { get; private set; }
             /// <summary>
-            /// TBD
+            /// The DNS name to resolve.
             /// </summary>
             public string Name { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Result of a DNS resolution.
         /// </summary>
         public class Resolved : Command
         {
@@ -102,11 +104,11 @@ namespace Akka.IO
             }
             
             /// <summary>
-            /// TBD
+            /// Creates a new resolved DNS entry.
             /// </summary>
-            /// <param name="name">TBD</param>
-            /// <param name="ipv4">TBD</param>
-            /// <param name="ipv6">TBD</param>
+            /// <param name="name">The DNS name that was resolved.</param>
+            /// <param name="ipv4">The resolved IPv4 addresses.</param>
+            /// <param name="ipv6">The resolved IPv6 addresses.</param>
             public Resolved(string name, IEnumerable<IPAddress> ipv4, IEnumerable<IPAddress> ipv6)
             {
                 Name = name;
@@ -121,20 +123,20 @@ namespace Akka.IO
             public Exception Exception { get; }
 
             /// <summary>
-            /// TBD
+            /// The DNS name that was resolved.
             /// </summary>
             public string Name { get; }
             /// <summary>
-            /// TBD
+            /// The resolved IPv4 addresses.
             /// </summary>
             public IEnumerable<IPAddress> Ipv4 { get; }
             /// <summary>
-            /// TBD
+            /// The resolved IPv6 addresses.
             /// </summary>
             public IEnumerable<IPAddress> Ipv6 { get; }
 
             /// <summary>
-            /// TBD
+            /// The first resolved address, or throws if resolution failed.
             /// </summary>
             public IPAddress Addr
             {
@@ -150,11 +152,11 @@ namespace Akka.IO
             }
 
             /// <summary>
-            /// TBD
+            /// Creates a new resolved DNS entry from a set of addresses.
             /// </summary>
-            /// <param name="name">TBD</param>
-            /// <param name="addresses">TBD</param>
-            /// <returns>TBD</returns>
+            /// <param name="name">The DNS name that was resolved.</param>
+            /// <param name="addresses">The resolved addresses.</param>
+            /// <returns>A new <see cref="Resolved"/> instance.</returns>
             public static Resolved Create(string name, IEnumerable<IPAddress> addresses)
             {
                 /*
@@ -171,33 +173,29 @@ namespace Akka.IO
         }
 
         /// <summary>
-        /// TBD
+        /// Returns a cached DNS resolution for the given name, or null if not cached.
         /// </summary>
-        /// <param name="name">TBD</param>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="name">The DNS name to look up in the cache.</param>
+        /// <param name="system">The actor system to use for resolution.</param>
+        /// <returns>The cached DNS resolution, or null if not found.</returns>
         public static Resolved Cached(string name, ActorSystem system)
         {
             return Instance.Apply(system).Cache.Cached(name);
         }
 
         /// <summary>
-        /// TBD
+        /// Attempts to resolve the DNS name, using the cache if possible, otherwise triggers a DNS query.
         /// </summary>
-        /// <param name="name">TBD</param>
-        /// <param name="system">TBD</param>
-        /// <param name="sender">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="name">The DNS name to resolve.</param>
+        /// <param name="system">The actor system to use for resolution.</param>
+        /// <param name="sender">The actor requesting the resolution.</param>
+        /// <returns>The resolved DNS entry, or null if not cached.</returns>
         public static Resolved ResolveName(string name, ActorSystem system, IActorRef sender)
         {
             return Instance.Apply(system).Cache.Resolve(name, system, sender);
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="system">TBD</param>
-        /// <returns>TBD</returns>
+        /// <inheritdoc/>
         public override DnsExt CreateExtension(ExtendedActorSystem system)
         {
             return new DnsExt(system);
@@ -205,19 +203,26 @@ namespace Akka.IO
     }
 
     /// <summary>
-    /// TBD
+    /// The Akka.IO DNS extension that manages DNS resolution settings, caching, and the DNS manager actor.
     /// </summary>
     public class DnsExt : IOExtension
     {
+        /// <summary>The built-in <c>provider-object</c> names, keyed by bare type name (see <see cref="Akka.Util.TypeExtensions.ToBuiltInAkkaTypeName"/>).</summary>
+        private static readonly Dictionary<string, Func<IDnsProvider>> BuiltInDnsProviders =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.IO.InetAddressDnsProvider"] = static () => new InetAddressDnsProvider()
+            };
+
         /// <summary>
-        /// TBD
+        /// Configuration settings for the DNS extension.
         /// </summary>
         public class DnsSettings
         {
             /// <summary>
-            /// TBD
+            /// Creates a new <see cref="DnsSettings"/> instance from the provided configuration.
             /// </summary>
-            /// <param name="config">TBD</param>
+            /// <param name="config">The HOCON configuration for the DNS extension.</param>
             public DnsSettings(Config config)
             {
                 if (config.IsNullOrEmpty())
@@ -230,19 +235,19 @@ namespace Akka.IO
             }
 
             /// <summary>
-            /// TBD
+            /// The dispatcher to use for DNS resolution actors.
             /// </summary>
             public string Dispatcher { get; private set; }
             /// <summary>
-            /// TBD
+            /// The name of the configured DNS resolver.
             /// </summary>
             public string Resolver { get; private set; }
             /// <summary>
-            /// TBD
+            /// The HOCON configuration section for the selected resolver.
             /// </summary>
             public Config ResolverConfig { get; private set; }
             /// <summary>
-            /// TBD
+            /// The fully qualified type name of the <see cref="IDnsProvider"/> implementation.
             /// </summary>
             public string ProviderObjectName { get; private set; }
         }
@@ -251,9 +256,9 @@ namespace Akka.IO
         private IActorRef _manager;
 
         /// <summary>
-        /// TBD
+        /// Initializes the DNS extension for the specified actor system, loading settings and creating the DNS provider.
         /// </summary>
-        /// <param name="system">TBD</param>
+        /// <param name="system">The actor system this extension is being created for.</param>
         public DnsExt(ExtendedActorSystem system)
         {
             _system = system;
@@ -263,43 +268,80 @@ namespace Akka.IO
                 throw ConfigurationException.NullOrEmptyConfig<DnsSettings>("akka.io.dns");
 
             Settings = new DnsSettings(config);
-            //TODO: system.dynamicAccess.getClassFor[DnsProvider](Settings.ProviderObjectName).get.newInstance()
-            Provider = (IDnsProvider) Activator.CreateInstance(Type.GetType(Settings.ProviderObjectName));
+            Provider = ResolveProvider(Settings);
             Cache = Provider.Cache;
         }
 
-        /// <summary>
-        /// TBD
-        /// </summary>
+        /// <summary>Resolves <paramref name="settings"/>' <c>provider-object</c> into an <see cref="IDnsProvider"/>.</summary>
+        private static IDnsProvider ResolveProvider(DnsSettings settings)
+        {
+            if (Akka.Util.TypeExtensions.ToBuiltInAkkaTypeName(settings.ProviderObjectName) is { } builtInName &&
+                BuiltInDnsProviders.TryGetValue(builtInName, out var providerFactory))
+                return providerFactory();
+
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw new ConfigurationException(AkkaFeatures.NotBuiltIn(
+                    $"akka.io.dns.{settings.Resolver}.provider-object", settings.ProviderObjectName,
+                    "the built-in InetAddressDnsProvider"));
+
+            return CreateProviderFromTypeName(settings.ProviderObjectName);
+        }
+
+        [RequiresUnreferencedCode("Loads the [akka.io.dns.<resolver>.provider-object] type by name. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private static IDnsProvider CreateProviderFromTypeName(string providerObjectName)
+        {
+            var dnsProviderType = Type.GetType(providerObjectName);
+            if (dnsProviderType is null)
+                throw new ConfigurationException(
+                    $"Could not resolve DNS provider type [{providerObjectName}]. Ensure the type name is fully qualified.");
+            return (IDnsProvider)Activator.CreateInstance(dnsProviderType);
+        }
+
+        /// <inheritdoc/>
         public override IActorRef Manager
         {
             get
             {
-                return _manager = _manager ?? _system.SystemActorOf(Props.Create(() => new SimpleDnsManager(this))
-                                                                         .WithDeploy(Deploy.Local)
-                                                                         .WithDispatcher(Settings.Dispatcher));
+                if (_manager is not null)
+                    return _manager;
+
+                // Switch check first: with the switch off it is a constant, so the trimmer can drop the
+                // reflection branch. A custom provider can only exist with the switch on.
+                _manager = !AkkaFeatures.IsDynamicTypeLoadingSupported || Provider.GetType() == typeof(InetAddressDnsProvider)
+                    ? _system.SystemActorOf(Props.Create(() => new SimpleDnsManager(this))
+                        .WithDeploy(Deploy.Local)
+                        .WithDispatcher(Settings.Dispatcher))
+                    : CreateCustomManager();
+
+                return _manager;
             }
         }
 
+        [RequiresUnreferencedCode("Instantiates the custom IDnsProvider.ManagerClass named by [akka.io.dns.<resolver>.provider-object]. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private IActorRef CreateCustomManager()
+            => _system.SystemActorOf(Props.Create(Provider.ManagerClass, this)
+                .WithDeploy(Deploy.Local)
+                .WithDispatcher(Settings.Dispatcher));
+
         /// <summary>
-        /// TBD
+        /// Returns the DNS manager actor reference.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The DNS manager <see cref="IActorRef"/>.</returns>
         public IActorRef GetResolver()
         {
             return _manager;
         }
 
         /// <summary>
-        /// TBD
+        /// The DNS configuration settings.
         /// </summary>
         public DnsSettings Settings { get; private set; }
         /// <summary>
-        /// TBD
+        /// The DNS cache used for storing and retrieving resolved DNS entries.
         /// </summary>
         public DnsBase Cache { get; private set; }
         /// <summary>
-        /// TBD
+        /// The DNS provider that supplies the resolver actor and cache implementations.
         /// </summary>
         public IDnsProvider Provider { get; private set; }
     }

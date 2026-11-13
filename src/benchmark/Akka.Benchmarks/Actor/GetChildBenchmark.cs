@@ -1,9 +1,9 @@
-﻿// //-----------------------------------------------------------------------
-// // <copyright file="GetChildBenchmark.cs" company="Akka.NET Project">
-// //     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-// //     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
-// // </copyright>
-// //-----------------------------------------------------------------------
+﻿//-----------------------------------------------------------------------
+// <copyright file="GetChildBenchmark.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
@@ -12,8 +12,8 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Benchmarks.Configurations;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Engines;
 using FluentAssertions;
+using static Akka.Benchmarks.Configurations.BenchmarkCategories;
 
 namespace Akka.Benchmarks.Actor
 {
@@ -93,17 +93,17 @@ namespace Akka.Benchmarks.Actor
         private ActorSystem _system;
         private IActorRef _parentActor;
 
-        private ActorWithChild.Get _getMessage = new ActorWithChild.Get("food");
-        private ActorWithChild.Create _createMessage = new ActorWithChild.Create("food");
+        private readonly ActorWithChild.Get _getMessage = new("food");
+        private readonly ActorWithChild.Create _createMessage = new("food");
 
         private IActorContext _cell;
         private RepointableActorRef _repointableActorRef;
         private LocalActorRef _localActorRef;
         private VirtualPathContainer _virtualPathContainer;
 
-        private List<string> _rpChildQueryPath = new List<string>() { "food", "ood", "od" };
-        private List<string> _lclChildQueryPath = new List<string>() { "ood", "od", "d" };
-        private List<string> _virtualPathContainerQueryPath = new List<string>() { "foo" };
+        private readonly List<string> _rpChildQueryPath = ["food", "ood", "od"];
+        private readonly List<string> _lclChildQueryPath = ["ood", "od", "d"];
+        private readonly List<string> _virtualPathContainerQueryPath = ["foo"];
         
         [GlobalSetup]
         public async Task Setup()
@@ -127,24 +127,28 @@ namespace Akka.Benchmarks.Actor
         }
 
         [Benchmark]
+        [BenchmarkCategory(MicroBenchmark, AkkaActorBenchmark)]
         public void ResolveChild()
         {
             _cell.Child(_getMessage.Name);
         }
         
         [Benchmark]
+        [BenchmarkCategory(MicroBenchmark, AkkaActorBenchmark)]
         public void Resolve3DeepChildRepointableActorRef()
         {
             _repointableActorRef.GetChild(_rpChildQueryPath);
         }
         
         [Benchmark]
+        [BenchmarkCategory(MicroBenchmark, AkkaActorBenchmark)]
         public void Resolve3DeepChildLocalActorRef()
         {
             _localActorRef.GetChild(_lclChildQueryPath);
         }
         
         [Benchmark]
+        [BenchmarkCategory(MicroBenchmark, AkkaActorBenchmark)]
         public void ResolveVirtualPathContainer()
         {
             _virtualPathContainer.GetChild(_virtualPathContainerQueryPath);

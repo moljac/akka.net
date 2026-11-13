@@ -1,16 +1,15 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="GraphInterpreterPortsSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
-using Akka.Streams.TestKit.Tests;
+using Akka.Streams.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 using Cancel = Akka.Streams.Tests.Implementation.Fusing.GraphInterpreterSpecKit.TestSetup.Cancel;
 using OnComplete = Akka.Streams.Tests.Implementation.Fusing.GraphInterpreterSpecKit.TestSetup.OnComplete;
 using OnError = Akka.Streams.Tests.Implementation.Fusing.GraphInterpreterSpecKit.TestSetup.OnError;
@@ -29,7 +28,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
         private Action step;
         private Action clearEvents;
 
-        public GraphInterpreterPortsSpec(ITestOutputHelper output = null) : base(output)
+        public GraphInterpreterPortsSpec(ITestOutputHelper output) : base(output)
         {
         }
 
@@ -514,7 +513,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
 
             stepAll();
 
-            lastEvents().Should().BeEquivalentTo(new Cancel(outlet));
+            lastEvents().Should().BeEquivalentTo(new Cancel(outlet, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance));
             outlet.IsAvailable().Should().Be(false);
             outlet.IsClosed().Should().Be(true);
             inlet.IsAvailable().Should().Be(false);
@@ -581,7 +580,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
 
             stepAll();
 
-            lastEvents().Should().BeEquivalentTo(new Cancel(outlet));
+            lastEvents().Should().BeEquivalentTo(new Cancel(outlet, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance));
             outlet.IsAvailable().Should().Be(false);
             outlet.IsClosed().Should().Be(true);
             inlet.IsAvailable().Should().Be(false);
@@ -647,7 +646,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
 
             stepAll();
 
-            lastEvents().Should().BeEquivalentTo(new Cancel(outlet));
+            lastEvents().Should().BeEquivalentTo(new Cancel(outlet, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance));
             outlet.IsAvailable().Should().Be(false);
             outlet.IsClosed().Should().Be(true);
             inlet.IsAvailable().Should().Be(false);
@@ -716,7 +715,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
 
             stepAll();
 
-            lastEvents().Should().BeEquivalentTo(new Cancel(outlet));
+            lastEvents().Should().BeEquivalentTo(new Cancel(outlet, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance));
             outlet.IsAvailable().Should().Be(false);
             outlet.IsClosed().Should().Be(true);
             inlet.IsAvailable().Should().Be(false);
@@ -771,7 +770,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
 
             stepAll();
 
-            lastEvents().Should().BeEquivalentTo(new Cancel(outlet));
+            lastEvents().Should().BeEquivalentTo(new Cancel(outlet, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance));
             outlet.IsAvailable().Should().Be(false);
             outlet.IsClosed().Should().Be(true);
             inlet.IsAvailable().Should().Be(false);
@@ -809,7 +808,7 @@ namespace Akka.Streams.Tests.Implementation.Fusing
             inlet.Invoking(x => x.Grab()).Should().Throw<ArgumentException>();
 
             stepAll();
-            lastEvents().Should().BeEquivalentTo(new Cancel(outlet));
+            lastEvents().Should().BeEquivalentTo(new Cancel(outlet, SubscriptionWithCancelException.NoMoreElementsNeeded.Instance));
             outlet.IsAvailable().Should().Be(false);
             outlet.IsClosed().Should().Be(true);
             inlet.IsAvailable().Should().Be(false);

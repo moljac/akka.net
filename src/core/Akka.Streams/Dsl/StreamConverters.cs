@@ -1,14 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="StreamConverters.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading.Tasks;
-using Akka.IO;
 using Akka.Streams.Implementation.IO;
 using Akka.Streams.Implementation.Stages;
 using Akka.Streams.IO;
@@ -22,7 +22,7 @@ namespace Akka.Streams.Dsl
     {
         /// <summary>
         /// Creates a <see cref="Source{TOut,TMat}"/> from an <see cref="Stream"/> created by the given function.
-        /// Emitted elements are <paramref name="chunkSize"/> sized <see cref="ByteString"/> elements.
+        /// Emitted elements are <paramref name="chunkSize"/> sized <c>ReadOnlySequence&lt;byte&gt;</c> elements.
         /// The actual size of emitted elements depends how much data the underlying
         /// <see cref="Stream"/> returns on each read invocation. Such chunks will
         /// never be larger than chunkSize though.
@@ -38,18 +38,18 @@ namespace Akka.Streams.Dsl
         /// </summary>
         /// <param name="createInputStream">A function which creates the <see cref="Stream"/> to read from</param>
         /// <param name="chunkSize">The size of each read operation, defaults to 8192</param>
-        /// <returns>TBD</returns>
-        public static Source<ByteString, Task<IOResult>> FromInputStream(Func<Stream> createInputStream, int chunkSize = 8192)
+        /// <returns>A source that emits chunks read from the created stream and materializes a task containing the read result.</returns>
+        public static Source<ReadOnlySequence<byte>, Task<IOResult>> FromInputStream(Func<Stream> createInputStream, int chunkSize = 8192)
         {
-            var shape = new SourceShape<ByteString>(new Outlet<ByteString>("InputStreamSource"));
+            var shape = new SourceShape<ReadOnlySequence<byte>>(new Outlet<ReadOnlySequence<byte>>("InputStreamSource"));
             var streamSource = new InputStreamSource(createInputStream, chunkSize, DefaultAttributes.InputStreamSource,
                 shape);
-            return new Source<ByteString, Task<IOResult>>(streamSource);
+            return new Source<ReadOnlySequence<byte>, Task<IOResult>>(streamSource);
         }
 
         /// <summary>
         /// Creates a <see cref="Source{TOut,TMat}"/> which when materialized will return an <see cref="Stream"/> which it is possible
-        /// to write the ByteStrings to the stream this Source is attached to.
+        /// to write the byte data to the stream this Source is attached to.
         /// 
         /// This Source is intended for inter-operation with legacy APIs since it is inherently blocking.
         /// 
@@ -60,12 +60,12 @@ namespace Akka.Streams.Dsl
         /// will complete this <see cref="Source{TOut,TMat}"/>.
         /// </summary>
         /// <param name="writeTimeout">The max time the write operation on the materialized OutputStream should block, defaults to 5 seconds</param>
-        /// <returns>TBD</returns>
-        public static Source<ByteString, Stream> AsOutputStream(TimeSpan? writeTimeout = null)
+        /// <returns>A source that emits bytes written to its materialized output stream.</returns>
+        public static Source<ReadOnlySequence<byte>, Stream> AsOutputStream(TimeSpan? writeTimeout = null)
             => Source.FromGraph(new OutputStreamSourceStage(writeTimeout ?? TimeSpan.FromSeconds(5)));
 
         /// <summary>
-        /// Creates a Sink which writes incoming <see cref="ByteString"/>s to an <see cref="Stream"/> created by the given function.
+        /// Creates a Sink which writes incoming <c>ReadOnlySequence&lt;byte&gt;</c> elements to an <see cref="Stream"/> created by the given function.
         /// 
         /// Materializes a <see cref="Task{TResult}"/> of <see cref="IOResult"/> that will be completed with the size of the file (in bytes) at the streams completion,
         /// and a possible exception if IO operation was not completed successfully.
@@ -79,13 +79,13 @@ namespace Akka.Streams.Dsl
         /// </summary>
         /// <param name="createOutputStream">A function which creates the <see cref="Stream"/> to write to</param>
         /// <param name="autoFlush">If set to true the <see cref="Stream"/> will be flushed whenever a byte array is written, default is false</param>
-        /// <returns>TBD</returns>
-        public static Sink<ByteString, Task<IOResult>> FromOutputStream(Func<Stream> createOutputStream, bool autoFlush = false)
+        /// <returns>A sink that writes incoming chunks to the created stream and materializes a task containing the write result.</returns>
+        public static Sink<ReadOnlySequence<byte>, Task<IOResult>> FromOutputStream(Func<Stream> createOutputStream, bool autoFlush = false)
         {
-            var shape = new SinkShape<ByteString>(new Inlet<ByteString>("OutputStreamSink"));
+            var shape = new SinkShape<ReadOnlySequence<byte>>(new Inlet<ReadOnlySequence<byte>>("OutputStreamSink"));
             var streamSink = new OutputStreamSink(createOutputStream, DefaultAttributes.OutputStreamSink, shape,
                 autoFlush);
-            return new Sink<ByteString, Task<IOResult>>(streamSink);
+            return new Sink<ReadOnlySequence<byte>, Task<IOResult>>(streamSink);
         }
 
         /// <summary>
@@ -101,8 +101,8 @@ namespace Akka.Streams.Dsl
         /// closing the <see cref="Stream"/> will cancel this <see cref="Sink{TIn,TMat}"/>.
         /// </summary>
         /// <param name="readTimeout">The max time the read operation on the materialized stream should block</param>
-        /// <returns>TBD</returns>
-        public static Sink<ByteString, Stream> AsInputStream(TimeSpan? readTimeout = null)
+        /// <returns>A sink that exposes the incoming bytes through its materialized input stream.</returns>
+        public static Sink<ReadOnlySequence<byte>, Stream> AsInputStream(TimeSpan? readTimeout = null)
         {
             readTimeout = readTimeout ?? TimeSpan.FromSeconds(5);
             return Sink.FromGraph(new InputStreamSinkStage(readTimeout.Value));

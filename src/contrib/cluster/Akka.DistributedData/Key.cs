@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Key.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -21,9 +21,9 @@ namespace Akka.DistributedData
     }
 
     /// <summary>
-    /// TBD
+    /// A key for replicated data of type <typeparamref name="T"/>.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The replicated-data type associated with this key.</typeparam>
     public interface IKey<out T> : IKey where T : IReplicatedData { }
 
     /// <summary>
@@ -34,7 +34,7 @@ namespace Akka.DistributedData
     /// Specific classes are provided for the built in data types, e.g. <see cref="ORSetKey{T}"/>,
     /// and you can create your own keys.
     /// </summary>
-    /// <typeparam name="T">TBD</typeparam>
+    /// <typeparam name="T">The replicated-data type stored under this key.</typeparam>
     public abstract class Key<T> : IKey<T> where T : IReplicatedData
     {
         /// <summary>
@@ -51,7 +51,7 @@ namespace Akka.DistributedData
             Id = id;
         }
 
-        /// <inheritdoc/>
+        
         public bool Equals(IKey key)
         {
             if (ReferenceEquals(key, null)) return false;
@@ -60,13 +60,13 @@ namespace Akka.DistributedData
             return Id == key.Id;
         }
 
-        /// <inheritdoc/>
+        
         public sealed override bool Equals(object obj) => obj is IKey key && Equals(key);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode() => Id.GetHashCode();
 
-        /// <inheritdoc/>
+        
         public override string ToString() => Id;
 
         /// <summary>

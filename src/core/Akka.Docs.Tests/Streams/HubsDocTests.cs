@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="HubsDocTests.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,9 +12,8 @@ using System.Threading.Tasks;
 using Akka;
 using Akka.Streams;
 using Akka.Streams.Dsl;
-using Akka.TestKit.Xunit2;
+using Akka.TestKit.Xunit;
 using Xunit;
-using Xunit.Abstractions;
 using Akka.Actor;
 
 namespace DocsExamples.Streams
@@ -30,13 +29,13 @@ namespace DocsExamples.Streams
         }
 
         [Fact]
-        public void Hubs_must_demonstrate_creating_a_dynamic_merge()
+        public async Task Hubs_must_demonstrate_creating_a_dynamic_merge()
         {
             void WriteLine(string s) => TestActor.Tell(s);
 
             #region merge-hub
             // A simple consumer that will print to the console for now
-            Sink<string, Task> consumer = Sink.ForEach<string>(WriteLine);
+            Sink<string, Task<Done>> consumer = Sink.ForEach<string>(WriteLine);
 
             // Attach a MergeHub Source to the consumer. This will materialize to a
             // corresponding Sink.
@@ -54,7 +53,10 @@ namespace DocsExamples.Streams
             Source.Single("Hub!").RunWith(toConsumer, Materializer);
             #endregion
 
-            ExpectMsgAllOf("Hello!", "Hub!");
+            // MergeHub queues producers that start before the hub stage does, so both
+            // elements always arrive; only the timing varies. The 3s default was too
+            // tight for three materializations on a stalled 2-vCPU CI agent.
+            await ExpectMsgAllOfAsync(TimeSpan.FromSeconds(10), new[] { "Hello!", "Hub!" }).ToListAsync();
         }
 
         [Fact]
@@ -167,7 +169,7 @@ namespace DocsExamples.Streams
             Func<PartitionHub.IConsumerInfo, string, long> RoundRobbin()
             {
                 var i = -1L;
-                return (info, element) =>
+                return (info, _) =>
                 {
                     i++;
                     return info.ConsumerByIndex((int) (i % info.Size));
@@ -207,7 +209,7 @@ namespace DocsExamples.Streams
             // value to the left is used)
             IRunnableGraph<Source<int, NotUsed>> runnableGraph =
                 producer.ToMaterialized(PartitionHub.StatefulSink<int>(
-                    () => ((info, element) => info.ConsumerIds.Min(info.QueueSize)),
+                    () => ((info, _) => info.ConsumerIds.Min(info.QueueSize)),
                     startAfterNrOfConsumers: 2, bufferSize: 256), Keep.Right);
 
             // By running/materializing the producer, we get back a Source, which

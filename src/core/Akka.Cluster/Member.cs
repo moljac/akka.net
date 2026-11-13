@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Member.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,7 +11,6 @@ using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
 using Akka.Util;
-using Akka.Util.Internal;
 using Newtonsoft.Json;
 
 namespace Akka.Cluster
@@ -26,34 +25,34 @@ namespace Akka.Cluster
     public class Member : IComparable<Member>, IComparable
     {
         /// <summary>
-        /// TBD
+        /// Creates a member in the Joining status with the supplied identity, roles, and application version.
         /// </summary>
-        /// <param name="uniqueAddress">TBD</param>
-        /// <param name="roles">TBD</param>
+        /// <param name="uniqueAddress">The address and incarnation identifier of the member.</param>
+        /// <param name="roles">The roles assigned to the member.</param>
         /// <param name="appVersion">Application version</param>
-        /// <returns>TBD</returns>
+        /// <returns>A member in the Joining status with no assigned up number.</returns>
         internal static Member Create(UniqueAddress uniqueAddress, ImmutableHashSet<string> roles, AppVersion appVersion)
         {
             return new Member(uniqueAddress, int.MaxValue, MemberStatus.Joining, roles, appVersion);
         }
 
         /// <summary>
-        /// TBD
+        /// Creates a removed-status member tombstone for the specified node.
         /// </summary>
-        /// <param name="node">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="node">The unique address of the removed node.</param>
+        /// <returns>A removed member with no roles and the zero application version.</returns>
         internal static Member Removed(UniqueAddress node)
         {
             return new Member(node, int.MaxValue, MemberStatus.Removed, ImmutableHashSet.Create<string>(), Util.AppVersion.Zero);
         }
 
         /// <summary>
-        /// TBD
+        /// The address and incarnation identifier of this member.
         /// </summary>
         public UniqueAddress UniqueAddress { get; }
 
         /// <summary>
-        /// TBD
+        /// The member's cluster up number. Members created by <see cref="Create(UniqueAddress, ImmutableHashSet{string}, AppVersion)"/> and <see cref="Removed(UniqueAddress)"/> use <see cref="int.MaxValue"/>; a member copied to Removed retains its existing up number.
         /// </summary>
         internal int UpNumber { get; }
 
@@ -123,13 +122,13 @@ namespace Akka.Cluster
         /// </summary>
         public Address Address { get { return UniqueAddress.Address; } }
 
-        /// <inheritdoc cref="object.GetHashCode"/>
+        
         public override int GetHashCode()
         {
             return UniqueAddress.GetHashCode();
         }
 
-        /// <inheritdoc cref="object.Equals(object)"/>
+        
         public override bool Equals(object obj)
         {
             var m = obj as Member;
@@ -137,7 +136,7 @@ namespace Akka.Cluster
             return UniqueAddress.Equals(m.UniqueAddress);
         }
 
-        /// <inheritdoc cref="IComparable.CompareTo"/>
+        
         public int CompareTo(Member other) => Ordering.Compare(this, other);
 
         int IComparable.CompareTo(object obj)
@@ -147,7 +146,7 @@ namespace Akka.Cluster
             throw new ArgumentException($"Cannot compare {nameof(Member)} to an instance of type '{obj?.GetType().FullName ?? "null"}'");
         }
 
-        /// <inheritdoc cref="object.ToString"/>
+        
         public override string ToString()
         {
             return $"Member(address = {Address}, Uid={UniqueAddress.Uid} status = {Status}, role=[{string.Join(",", Roles)}], upNumber={UpNumber}, version={AppVersion})";
@@ -185,7 +184,7 @@ namespace Akka.Cluster
         /// Creates a copy of this member with the status provided.
         /// </summary>
         /// <param name="status">The new status of this member.</param>
-        /// <exception cref="InvalidOperationException">TBD</exception>
+        /// <exception cref="InvalidOperationException">Thrown when the requested status transition is not allowed.</exception>
         /// <returns>A new copy of this member with the provided status.</returns>
         public Member Copy(MemberStatus status)
         {
@@ -255,7 +254,7 @@ namespace Akka.Cluster
         /// Orders the members by their address except that members with status
         /// Joining, Exiting and Down are ordered last (in that order).
         /// </summary>
-        internal static readonly LeaderStatusMemberComparer LeaderStatusOrdering = new LeaderStatusMemberComparer();
+        internal static readonly LeaderStatusMemberComparer LeaderStatusOrdering = new();
 
         /// <summary>
         /// INTERNAL API
@@ -283,7 +282,7 @@ namespace Akka.Cluster
         /// <summary>
         /// <see cref="Member"/> ordering type class, sorts members by host and port.
         /// </summary>
-        internal static readonly MemberComparer Ordering = new MemberComparer();
+        internal static readonly MemberComparer Ordering = new();
 
         /// <summary>
         /// INTERNAL API
@@ -358,6 +357,17 @@ namespace Akka.Cluster
         /// <param name="b">The second collection of members.</param>
         /// <returns>An immutable hash set containing the members with the highest priority.</returns>
         public static ImmutableHashSet<Member> PickHighestPriority(IEnumerable<Member> a, IEnumerable<Member> b)
+            => PickHighestPriority(a, b, ImmutableHashSet<UniqueAddress>.Empty);
+
+        /// <summary>
+        /// Combines and sorts two lists of <see cref="Member"/> into a single list ordered by highest prioirity
+        /// </summary>
+        /// <param name="a">The first collection of members.</param>
+        /// <param name="b">The second collection of members.</param>
+        /// <param name="tombstones">Nodes the cluster has removed.</param>
+        /// <returns>An immutable hash set containing the members with the highest priority.</returns>
+        public static ImmutableHashSet<Member> PickHighestPriority(IEnumerable<Member> a, IEnumerable<Member> b,
+            IImmutableSet<UniqueAddress> tombstones)
         {
             // group all members by Address => Seq[Member]
             var groupedByAddress = (a.Concat(b)).GroupBy(x => x.UniqueAddress);
@@ -369,8 +379,12 @@ namespace Akka.Cluster
                 if (g.Count() == 2) acc.Add(HighestPriorityOf(g.First(), g.Skip(1).First()));
                 else
                 {
+                    // Present on one side only. Either the other side removed it, or the other side has not
+                    // heard of it yet. A tombstone says which. Down and Exiting are terminal, so they are
+                    // still read as evidence of a removal even without one.
                     var m = g.First();
-                    if (!MembershipState.RemoveUnreachableWithMemberStatus.Contains(m.Status)) acc.Add(m);
+                    if (!tombstones.Contains(m.UniqueAddress)
+                        && !MembershipState.RemoveUnreachableWithMemberStatus.Contains(m.Status)) acc.Add(m);
                 }
             }
             return acc.ToImmutableHashSet();
@@ -475,14 +489,14 @@ namespace Akka.Cluster
         /// <summary>
         /// A random long integer used to signal the incarnation of this cluster instance.
         /// </summary>
-        public int Uid { get; }
+        public long Uid { get; }
 
         /// <summary>
         /// Creates a new unique address instance.
         /// </summary>
         /// <param name="address">The original Akka <see cref="Address"/></param>
         /// <param name="uid">The UID for the cluster instance.</param>
-        public UniqueAddress(Address address, int uid)
+        public UniqueAddress(Address address, long uid)
         {
             Uid = uid;
             Address = address;
@@ -501,20 +515,20 @@ namespace Akka.Cluster
             return Uid == other.Uid && Address.Equals(other.Address);
         }
 
-        /// <inheritdoc cref="object.Equals(object)"/>
+        
         public override bool Equals(object obj) => obj is UniqueAddress address && Equals(address);
 
-        /// <inheritdoc cref="object.GetHashCode"/>
+        
         public override int GetHashCode()
         {
-            return Uid;
+            return Uid.GetHashCode();
         }
 
         /// <summary>
-        /// TBD
+        /// Compares this unique address to another by address, then by incarnation identifier when addresses match.
         /// </summary>
-        /// <param name="uniqueAddress">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="uniqueAddress">The unique address to compare with.</param>
+        /// <returns>A value less than zero, zero, or greater than zero according to the comparison order.</returns>
         public int CompareTo(UniqueAddress uniqueAddress) => CompareTo(uniqueAddress, Address.Comparer);
 
         int IComparable.CompareTo(object obj)
@@ -532,7 +546,7 @@ namespace Akka.Cluster
             return result == 0 ? Uid.CompareTo(uniqueAddress.Uid) : result;
         }
 
-        /// <inheritdoc cref="object.ToString"/>
+        
         public override string ToString() => $"UniqueAddress: ({Address}, {Uid})";
 
         #region operator overloads
@@ -562,4 +576,3 @@ namespace Akka.Cluster
         #endregion
     }
 }
-

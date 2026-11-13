@@ -1,19 +1,26 @@
 ---
 uid: cluster-sharding
-title: Akka.Cluster.Sharding module
+title: Akka.Cluster.Sharding - Reliable, Automatic State Distribution with Akka.Cluster
 ---
-# Akka.Cluster.Sharding Module
+# Akka.Cluster.Sharding
 
-Cluster sharding is useful in cases when you want to contact with cluster actors using their logical id's, but don't want to care about their physical location inside the cluster or manage their creation. Moreover it's able to re-balance them, as nodes join/leave the cluster. It's often used to represent i.e. Aggregate Roots in Domain Driven Design terminology.
+Cluster sharding is useful in cases when you want to contact with cluster actors using their logical id's, but don't want to care about their physical location inside the cluster or manage their creation. Moreover it's able to re-balance them, as nodes join/leave the cluster.
+
+<!-- markdownlint-disable MD033 -->
+<iframe width="560" height="315" src="https://www.youtube.com/embed/2apFt9v0Vjw?si=1CEHMstm6GSXizSu" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+ <!-- markdownlint-enable MD033 -->
+
+> [!IMPORTANT]
+> Interested in upgrading an Akka.NET v1.4 Cluster.Sharding application to v1.5? [Please read our Akka.Cluster.Sharding v1.5 migration guide](xref:akkadotnet-v15-upgrade-advisories#akkaclustersharding-state-storage).
 
 Cluster sharding can operate in 2 modes, configured via `akka.cluster.sharding.state-store-mode` HOCON configuration:
 
-1. `persistence` (**default**) depends on Akka.Persistence module. In order to use it, you'll need to specify an event journal accessible by all of the participating nodes. An information about the particular shard placement is stored in a persistent cluster singleton actor known as *coordinator*. In order to guarantee consistent state between different incarnations, coordinator stores its own state using Akka.Persistence event journals.
-2. `ddata` depends on Akka.DistributedData module. It uses Conflict-free Replicated Data Types (CRDT) to ensure eventually consistent shard placement and global availability via node-to-node replication and automatic conflict resolution. In this mode event journals don't have to be configured.
+1. `persistence` depends on Akka.Persistence module. In order to use it, you'll need to specify an event journal accessible by all of the participating nodes. An information about the particular shard placement is stored in a persistent cluster singleton actor known as *coordinator*. In order to guarantee consistent state between different incarnations, coordinator stores its own state using Akka.Persistence event journals. **This setting is being deprecated after 1.5 - please move to using `state-store-mode=ddata` for all new and existing applications**.
+2. `ddata` (**default** since v1.6) depends on Akka.DistributedData module. It uses Conflict-free Replicated Data Types (CRDT) to ensure eventually consistent shard placement and global availability via node-to-node replication and automatic conflict resolution. In this mode event journals don't have to be configured.
 
 Cluster sharding may be active only on nodes in `Up` status - so the ones fully recognized and acknowledged by every other node in a cluster.
 
-## QuickStart
+## Quick Start
 
 Actors managed by cluster sharding are called **entities** and can be automatically distributed across multiple nodes inside the cluster. One entity instance may live only at one node at the time, and can be communicated with via `ShardRegion` without need to know, what it's exact node location is.
 
@@ -80,6 +87,39 @@ As you may have seen in the examples above shard resolution algorithm is one of 
 
 By default re-balancing process always happens from nodes with the highest number of shards, to the ones with the smallest one. This can be configured into by specifying custom implementation of the `IShardAllocationStrategy` interface in `ClusterSharding.Start` parameters.
 
+## Shard Re-Balancing
+
+In the shard re-balance process, the coordinator first notifies all `ShardRegion` actors that a handoff for a shard has started.
+That means they will start buffering incoming messages for that shard, in the same way as if the shard location is unknown.
+During the re-balance process, the coordinator will not answer any requests for the location of shards that are being rebalanced, i.e. local buffering will continue until the handoff is completed.
+The `ShardRegion` responsible for the rebalanced shard will stop all entities in that shard by sending the specified `handoffStopMessage` (default `PoisonPill`) to them.
+When all entities have been terminated the `ShardRegion` owning the entities will acknowledge the handoff as completed to the coordinator.
+Thereafter the coordinator will reply to requests for the location of the shard, thereby allocating a new home for the shard, and then buffered messages in the `ShardRegion` actors are delivered to the new location; this means that the state of the entities are not transferred or migrated.
+If the state of the entities are of importance it should be persistent (durable) with Persistence, so that it can be recovered at the new location.
+
+The logic that decides which shards to re-balance is defined in a pluggable shard allocation strategy. The default implementation `LeastShardAllocationStrategy` allocates new shards to the `ShardRegion` (node) with least number of previously allocated shards.
+
+## Intercepting Actor Shutdown During Shard Re-Balancing Handoff Using Custom Stop Message
+
+The default `PoisonPill` handoff message is perfectly fine for most shard implementation where shard entity actor does not need to do additional processing before being stopped.
+The default `PoisonPill` message, however, are handled automatically by the `ActorCell`, making it hard for the shard entity actor to intercept handoff stop events. For an actor to intercept such events, we will need to provide a custom type for cluster sharding to use.
+
+To illustrate this, let us assume that we have an actor that needs to perform an asynchronous operation before it can safely shut itself down. We will use a custom handoff message called `Stop` that are declared as such:
+
+[!code-csharp[Stop Message](../../../src/contrib/cluster/Akka.Cluster.Sharding.Tests.MultiNode/ClusterShardingGracefulShutdownOldestSpec.cs?name=StopMessage)]
+
+We then tell the sharding system that we would like to use a custom handoff stop message by passing an instance of it into the cluster sharding `Start()` method:
+
+[!code-csharp[Cluster Start](../../../src/contrib/cluster/Akka.Cluster.Sharding.Tests.MultiNode/ClusterShardingGracefulShutdownOldestSpec.cs?name=ClusterStart)]
+
+We can then intercept this custom message type inside the entity actor message handler and perform our operation before the actor stops:
+
+[!code-csharp[Delayed Stop](../../../src/contrib/cluster/Akka.Cluster.Sharding.Tests.MultiNode/ClusterShardingGracefulShutdownOldestSpec.cs?name=DelayedStop)]
+
+## Reliable Delivery of Messages to Sharded Entity Actors
+
+If you are interested in ensuring that all messages are guaranteed to be delivered to your entity actors even across restarts, re-balancing operations, or crashes then please see "[Reliable Delivery over Akka.Cluster.Sharding](xref:cluster-sharding-delivery)."
+
 ## Passivation
 
 To reduce memory consumption, you may decide to stop entities after some period of inactivity using `Context.SetReceiveTimeout(timeout)`. In order to make cluster sharding aware of stopping entities, **DON'T use `Context.Stop(Self)` on the entities**, as this may result in losing messages. Instead send a `ShardRegion.Passivate` message to current entity `Context.Parent` (which is shard itself in this case). This will inform shard to stop forwarding messages to target entity, and buffer them instead until it's terminated. Once that happens, if there are still some messages buffered, entity will be reincarnated and messages flushed to it automatically.
@@ -117,24 +157,34 @@ public sealed class MessageExtractor : HashCodeMessageExtractor
 }
 ```
 
+> ![IMPORTANT]
+> Since [Akka.NET v1.5.15](https://github.com/akkadotnet/akka.net/releases/tag/1.5.15) Akka.Cluster.Sharding will now automatically handle `ShardRegion.StartEntity` messages for you and will raise an analyzer warning [`AK2001`](xref:AK2001) if you attempt to handle them in your message extractors.
+
 Using `ShardRegion.StartEntity` implies, that you're able to infer a shard id given an entity id alone. For this reason, in example above we modified a cluster sharding routing logic to make use of `HashCodeMessageExtractor` - in this variant, shard id doesn't have to be provided explicitly, as it will be computed from the hash of entity id itself. Notice a `maxNumberOfShards`, which is the maximum available number of shards allowed for this type of an actor - this value must never change during a single lifetime of a cluster.
 
 ### Remember Entities Store
 
-There are two options for the remember entities store:
-
-1. Distributed data
-2. Persistence
-
-#### Remember Entities Persistence Mode
-
-You can enable persistence mode (enabled by default) with:
+As of Akka.NET v1.5, there is now a dedicated setting for storing data about remembered entities:
 
 ```hocon
-akka.cluster.sharding.state-store-mode = persistence
+akka.cluster.sharding{
+  state-store-mode = ddata
+  remember-entities-store = eventsourced or ddata
+}
+```
+
+You don't need to configure this setting if you don't have `remember-entities=on`.
+
+#### Remember Entities Event Sourced Mode
+
+You can enable event sourced with:
+
+```hocon
+akka.cluster.sharding.remember-entities-store = eventsourced
 ```
 
 This mode uses [persistence](../persistence/event-sourcing.md) to store the active shards and active entities for each shard.
+
 By default, cluster sharding will use the journal and snapshot store plugin defined in `akka.persistence.journal.plugin` and
 `akka.persistence.snapshot-store.plugin` respectively; to change this behavior, you can use these configuration:
 
@@ -143,16 +193,76 @@ akka.cluster.sharding.journal-plugin-id = <plugin>
 akka.cluster.sharding.snapshot-plugin-id = <plugin>
 ```
 
+> [!IMPORTANT]
+> It's considered a good practice to have Akka.Cluster.Sharding store its state in a separate journal and snapshot store - that way, in the event that you need to purge all sharding data, this can be easily isolated in its own table.
+
+You can have Akka.Cluster.Sharding use its own separate journal and snapshot store via the following HOCON, for instance:
+
+```hocon
+akka.persistence {
+    # default plugins
+    journal {
+        plugin = "akka.persistence.journal.mongodb"
+        mongodb {
+            # qualified type name of the MongoDb persistence journal actor
+            class = "Akka.Persistence.MongoDb.Journal.MongoDbJournal, Akka.Persistence.MongoDb"
+
+            # connection string used for database access
+            connection-string = ""
+            collection = "EventJournal"
+            metadata-collection = "Metadata"
+        }
+
+        sharding {
+            # qualified type name of the MongoDb persistence journal actor
+            class = "Akka.Persistence.MongoDb.Journal.MongoDbJournal, Akka.Persistence.MongoDb"
+
+            # connection string used for database access
+            connection-string = ""
+
+            # separate collections / tables for Akka.Cluster.Sharding
+            collection = "EventJournalSharding"
+            metadata-collection = "MetadataSharding"
+        }
+    }
+
+    snapshot-store {
+        plugin = "akka.persistence.snapshot-store.mongodb"
+        mongodb {
+            class = "Akka.Persistence.MongoDb.Snapshot.MongoDbSnapshotStore, Akka.Persistence.MongoDb"
+
+            # connection string used for database access
+            connection-string = ""
+
+            collection = "SnapshotStore"
+        }
+
+        sharding {
+            class = "Akka.Persistence.MongoDb.Snapshot.MongoDbSnapshotStore, Akka.Persistence.MongoDb"
+
+            # connection string used for database access
+            connection-string = ""
+
+            collection = "SnapshotStoreSharding"
+        }
+    }
+}
+
+akka.cluster.sharding.journal-plugin-id = akka.persistence.journal.sharding
+akka.cluster.sharding.snapshot-plugin-id = akka.persistence.snapshot-store.sharding
+```
+
 #### Remember Entities Distributed Data Mode
+
+It's recommended to use `state-store-mode=eventsourced` as it's much faster and more scalable than `ddata`, but in case you can't use Akka.Persistence for some reason you can still use DData.
 
 You can enable DData mode by setting these configuration:
 
 ```hocon
-akka.cluster.sharding.state-store-mode = ddata
+akka.cluster.sharding.remember-entities-store = ddata
 ```
 
-To support restarting entities after a full cluster restart (non-rolling) the remember entities store
-is persisted to disk by distributed data. This can be disabled if not needed:
+To support restarting entities after a full cluster restart (non-rolling) the remember entities store is persisted to disk by distributed data. This can be disabled if not needed:
 
 ```hocon
 akka.cluster.sharding.distributed-data.durable.keys = []
@@ -165,18 +275,11 @@ Possible reasons for disabling remember entity storage are:
 
 For supporting remembered entities in an environment without disk storage but with access to a database, use persistence mode instead.
 
-> [!NOTE]
-> Currently, Lightning.NET library, the storage solution used to store DData in disk, is having problem
-> deploying native library files in [Linux operating system operating in x64 and ARM platforms]
-> (<https://github.com/CoreyKaylor/Lightning.NET/issues/141>).
->
-> You will need to install LightningDB in your Linux distribution manually if you wanted to use the durable DData feature.
-
 ### Terminating Remembered Entities
 
 One complication that  `akka.cluster.sharding.remember-entities = true` introduces is that your sharded entity actors can no longer be terminated through the normal Akka.NET channels, i.e. `Context.Stop(Self)`, `PoisonPill.Instance`, and the like. This is because as part of the `remember-entities` contract - the sharding system is going to insist on keeping all remembered entities alive until explicitly told to stop.
 
-To terminate a remembered entity, the sharded entity actor needs to send a [`Passivate` command](xref:Akka.Cluster.Sharding.Passivate) _to its parent actor_ in order to signal to the sharding system that we no longer need to remember this particular entity.
+To terminate a remembered entity, the sharded entity actor needs to send a [`Passivate` command](xref:Akka.Cluster.Sharding.Passivate) *to its parent actor* in order to signal to the sharding system that we no longer need to remember this particular entity.
 
 ```csharp
 protected override bool ReceiveCommand(object message)
@@ -217,6 +320,14 @@ You can inspect current sharding stats by using following messages:
 * On `GetShardRegionState` shard region will reply with `ShardRegionState` containing data about shards living in the current actor system and what entities are alive on each one of them.
 * On `GetClusterShardingStats` shard region will reply with `ClusterShardingStats` having information about shards living in the whole cluster and how many entities alive in each one of them.
 
+### Querying for the Location of Specific Entities
+
+It's possible to query a `ShardRegion` or a `ShardRegionProxy` using a `GetEntityLocation` query:
+
+[!code-csharp[ShardRegionQueriesSpecs.cs](../../../src/contrib/cluster/Akka.Cluster.Sharding.Tests/ShardRegionQueriesSpecs.cs?name=GetEntityLocationQuery)]
+
+A `GetEntityLocation` query will always return an `EntityLocation` response - even if the query could not be executed.
+
 ## Integrating Cluster Sharding with Persistent Actors
 
 One of the most common scenarios, where cluster sharding is used, is to combine them with event-sourced persistent actors from [Akka.Persistence](xref:persistence-architecture) module.
@@ -256,7 +367,7 @@ In the normal operation of an Akka.NET cluster, the sharding system automaticall
 
 However, in the event that an `ActorSystem` is aborted as a result of a process / hardware failure it's possible that when using `akka.cluster.sharding.state-store-mode=persistence` leftover sharding data can still be present inside the Akka.Persistence journal and snapshot store - which will prevent the Akka.Cluster.Sharding system from recovering and starting up correctly the next time it's launched.
 
-This is a _rare_, but not impossible occurrence. In the event that this happens you'll need to purge the old Akka.Cluster.Sharding data before restarting the sharding system. You can purge this data automatically by [using the Akka.Cluster.Sharding.RepairTool](https://github.com/petabridge/Akka.Cluster.Sharding.RepairTool) produced by [Petabridge](https://petabridge.com/).
+This is a *rare*, but not impossible occurrence. In the event that this happens you'll need to purge the old Akka.Cluster.Sharding data before restarting the sharding system. You can purge this data automatically by [using the Akka.Cluster.Sharding.RepairTool](https://github.com/petabridge/Akka.Cluster.Sharding.RepairTool) produced by [Petabridge](https://petabridge.com/).
 
 ## Tutorial
 
@@ -334,3 +445,13 @@ In this example, we will use the built-in `HashCodeMessageExtractor`; this extra
 shard id by applying murmur hash algorithm on the entity id so we don't need to create our own.
 
 [!code-csharp[MessageExtractor.cs](../../../src/examples/Cluster/ClusterSharding/ShoppingCart/MessageExtractor.cs?name=ExtractorClass "Message envelope and extractor class")]
+
+### Migrating to Different Sharding State Storage Modes
+
+After you've gone live with Akka.Cluster.Sharding, one day you might decide it'd be better to migrate from `state-store-mode=persistence` to `state-store-mode=ddata` as the latter is more performant and resilient, plus the former (persistence) will be deprecated eventually.
+
+Migrating between storage modes requires a **full restart of your Akka.Cluster** as it's a significant, far-reaching change. You can see a demonstration of how to perform this upgrade in our ["Akka NET v1.5 New Features and Upgrade Guide" video beginning at 12:53](https://youtu.be/-UPestlIw4k?t=773).
+
+<!-- markdownlint-disable MD033 -->
+<iframe width="560" height="315" src="https://www.youtube.com/embed/-UPestlIw4k" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+<!-- markdownlint-enable MD033 -->

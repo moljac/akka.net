@@ -1,12 +1,14 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Sources.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Annotations;
 using Akka.Pattern;
@@ -22,28 +24,29 @@ namespace Akka.Streams.Implementation
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    /// <typeparam name="TOut">TBD</typeparam>
+    /// <typeparam name="TOut">The type of elements offered to and emitted by the queue source.</typeparam>
+    #nullable enable
     [InternalApi]
     public sealed class QueueSource<TOut> : GraphStageWithMaterializedValue<SourceShape<TOut>, ISourceQueueWithComplete<TOut>>
     {
         #region internal classes
 
         /// <summary>
-        /// TBD
+        /// Marker interface for messages submitted to the queue source's stage logic.
         /// </summary>
         public interface IInput { }
 
         /// <summary>
-        /// TBD
+        /// Represents an element offer and the task that receives its queue offer result.
         /// </summary>
-        /// <typeparam name="T">TBD</typeparam>
+        /// <typeparam name="T">The type of the offered element.</typeparam>
         internal sealed class Offer<T> : IInput
         {
             /// <summary>
-            /// TBD
+            /// Creates an element offer with its completion source.
             /// </summary>
-            /// <param name="element">TBD</param>
-            /// <param name="completionSource">TBD</param>
+            /// <param name="element">The element being offered.</param>
+            /// <param name="completionSource">Completes with the result of the offer.</param>
             public Offer(T element, TaskCompletionSource<IQueueOfferResult> completionSource)
             {
                 Element = element;
@@ -51,25 +54,25 @@ namespace Akka.Streams.Implementation
             }
 
             /// <summary>
-            /// TBD
+            /// The element being offered.
             /// </summary>
             public T Element { get; }
 
             /// <summary>
-            /// TBD
+            /// Completes with the result of the offer.
             /// </summary>
             public TaskCompletionSource<IQueueOfferResult> CompletionSource { get; }
         }
 
         /// <summary>
-        /// TBD
+        /// Represents a request to complete the queue source after accepted elements have been emitted.
         /// </summary>
         internal sealed class Completion : IInput
         {
             /// <summary>
-            /// TBD
+            /// The singleton completion request.
             /// </summary>
-            public static Completion Instance { get; } = new Completion();
+            public static Completion Instance { get; } = new();
 
             private Completion()
             {
@@ -77,23 +80,50 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Represents a request to fail the queue source.
         /// </summary>
         internal sealed class Failure : IInput
         {
             /// <summary>
-            /// TBD
+            /// Creates a failure request.
             /// </summary>
-            /// <param name="ex">TBD</param>
+            /// <param name="ex">The failure to signal.</param>
             public Failure(Exception ex)
             {
                 Ex = ex;
             }
 
             /// <summary>
-            /// TBD
+            /// The failure to signal.
             /// </summary>
             public Exception Ex { get; }
+        }
+
+        /// <summary>
+        /// INTERNAL API
+        /// </summary>
+        internal sealed class CancelOffer : IInput
+        {
+            /// <summary>
+            /// INTERNAL API
+            /// </summary>
+            /// <param name="target">The offer to cancel if it is still pending.</param>
+            /// <param name="cancellationToken">The token that canceled the offer.</param>
+            public CancelOffer(Offer<TOut> target, CancellationToken cancellationToken)
+            {
+                Target = target;
+                CancellationToken = cancellationToken;
+            }
+
+            /// <summary>
+            /// INTERNAL API
+            /// </summary>
+            public Offer<TOut> Target { get; }
+
+            /// <summary>
+            /// INTERNAL API
+            /// </summary>
+            public CancellationToken CancellationToken { get; }
         }
 
         #endregion
@@ -102,8 +132,8 @@ namespace Akka.Streams.Implementation
         {
             private readonly TaskCompletionSource<object> _completion;
             private readonly QueueSource<TOut> _stage;
-            private IBuffer<TOut> _buffer;
-            private Offer<TOut> _pendingOffer;
+            private IBuffer<TOut>? _buffer;
+            private Offer<TOut>? _pendingOffer;
             private bool _terminating;
 
             public Logic(QueueSource<TOut> stage, TaskCompletionSource<object> completion) : base(stage.Shape)
@@ -116,7 +146,7 @@ namespace Akka.Streams.Implementation
 
             public void OnPull()
             {
-                if (_stage._maxBuffer == 0)
+                if (_buffer is null)
                 {
                     if (_pendingOffer != null)
                     {
@@ -130,30 +160,33 @@ namespace Akka.Streams.Implementation
                         }
                     }
                 }
-                else if (_buffer.NonEmpty)
+                else
                 {
-                    Push(_stage.Out, _buffer.Dequeue());
-                    if (_pendingOffer != null)
+                    if (_buffer.NonEmpty)
                     {
-                        EnqueueAndSuccess(_pendingOffer);
-                        _pendingOffer = null;
+                        Push(_stage.Out, _buffer.Dequeue());
+                        if (_pendingOffer != null)
+                        {
+                            EnqueueAndSuccess(_pendingOffer);
+                            _pendingOffer = null;
+                        }
                     }
-                }
-
-                if (_terminating && _buffer.IsEmpty)
-                {
-                    _completion.SetResult(new object());
-                    CompleteStage();
+                    if (_terminating && _buffer.IsEmpty)
+                    {
+                        _completion.SetResult(new object());
+                        CompleteStage();
+                    }
                 }
             }
 
-            public void OnDownstreamFinish()
+            public void OnDownstreamFinish(Exception cause)
             {
                 if (_pendingOffer != null)
                 {
                     _pendingOffer.CompletionSource.NonBlockingTrySetResult(QueueOfferResult.QueueClosed.Instance);
                     _pendingOffer = null;
                 }
+                _terminating = true;
                 _completion.SetResult(new object());
                 CompleteStage();
             }
@@ -168,7 +201,12 @@ namespace Akka.Streams.Implementation
             public override void PostStop()
             {
                 var exception = new StreamDetachedException();
-                _completion.TrySetException(exception);
+                if (_completion.TrySetException(exception))
+                {
+                    // See #8210: Source.Queue can fault this internal task even when WatchCompletionAsync() was never called.
+                    // Observe the fault here so shutdown does not leak an UnobservedTaskException.
+                    _ = _completion.Task.Exception;
+                }
                 StopCallback(input =>
                 {
                     if (!(input is Offer<TOut> offer)) return;
@@ -179,13 +217,17 @@ namespace Akka.Streams.Implementation
 
             private void EnqueueAndSuccess(Offer<TOut> offer)
             {
-                _buffer.Enqueue(offer.Element);
+                Debug.Assert(_buffer != null, nameof(_buffer) + " != null");
+                
+                _buffer!.Enqueue(offer.Element);
                 offer.CompletionSource.NonBlockingTrySetResult(QueueOfferResult.Enqueued.Instance);
             }
 
             private void BufferElement(Offer<TOut> offer)
             {
-                if (!_buffer.IsFull)
+                Debug.Assert(_buffer != null, nameof(_buffer) + " != null");
+                
+                if (!_buffer!.IsFull)
                     EnqueueAndSuccess(offer);
                 else
                 {
@@ -210,6 +252,7 @@ namespace Akka.Streams.Implementation
                             var bufferOverflowException =
                                 new BufferOverflowException($"Buffer overflow (max capacity was: {_stage._maxBuffer})!");
                             offer.CompletionSource.NonBlockingTrySetResult(new QueueOfferResult.Failure(bufferOverflowException));
+                            _terminating = true;
                             _completion.SetException(bufferOverflowException);
                             FailStage(bufferOverflowException);
                             break;
@@ -221,6 +264,8 @@ namespace Akka.Streams.Implementation
                             else
                                 _pendingOffer = offer;
                             break;
+                        default:
+                            throw new IndexOutOfRangeException($"Unknown {nameof(OverflowStrategy)}: {_stage._overflowStrategy}");
                     }
                 }
             }
@@ -230,10 +275,15 @@ namespace Akka.Streams.Implementation
                 return GetAsyncCallback<IInput>(
                     input =>
                     {
-                        var offer = input as Offer<TOut>;
-                        if (offer != null)
+                        if (input is Offer<TOut> offer)
                         {
-                            if (_stage._maxBuffer != 0)
+                            if (_terminating)
+                            {
+                                offer.CompletionSource.NonBlockingTrySetResult(QueueOfferResult.Dropped.Instance);
+                                return;
+                            }
+
+                            if (_buffer is not null)
                             {
                                 BufferElement(offer);
                                 if (IsAvailable(_stage.Out))
@@ -269,6 +319,7 @@ namespace Akka.Streams.Implementation
                                             new BufferOverflowException(
                                                 $"Buffer overflow (max capacity was: {_stage._maxBuffer})!");
                                         offer.CompletionSource.NonBlockingTrySetResult(new QueueOfferResult.Failure(bufferOverflowException));
+                                        _terminating = true;
                                         _completion.SetException(bufferOverflowException);
                                         FailStage(bufferOverflowException);
                                         break;
@@ -278,10 +329,9 @@ namespace Akka.Streams.Implementation
                             }
                         }
 
-                        var completion = input as Completion;
-                        if (completion != null)
+                        if (input is Completion)
                         {
-                            if (_stage._maxBuffer != 0 && _buffer.NonEmpty || _pendingOffer != null)
+                            if (_buffer is not null && _buffer.NonEmpty || _pendingOffer != null)
                                 _terminating = true;
                             else
                             {
@@ -290,11 +340,20 @@ namespace Akka.Streams.Implementation
                             }
                         }
 
-                        var failure = input as Failure;
-                        if (failure != null)
+                        if (input is Failure failure)
                         {
+                            _terminating = true;
                             _completion.SetException(failure.Ex);
                             FailStage(failure.Ex);
+                        }
+
+                        if (input is CancelOffer cancelOffer)
+                        {
+                            if (!_terminating && _pendingOffer != null && ReferenceEquals(_pendingOffer, cancelOffer.Target))
+                            {
+                                _pendingOffer.CompletionSource.NonBlockingTrySetCanceled(cancelOffer.CancellationToken);
+                                _pendingOffer = null;
+                            }
                         }
                     });
             }
@@ -303,7 +362,7 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// Exposes the queue stage's offer and completion operations to the materialized stream API.
         /// </summary>
         public sealed class Materialized : ISourceQueueWithComplete<TOut>
         {
@@ -311,10 +370,10 @@ namespace Akka.Streams.Implementation
             private readonly TaskCompletionSource<object> _completion;
 
             /// <summary>
-            /// TBD
+            /// Creates the materialized queue operations backed by stage callbacks and a completion task.
             /// </summary>
-            /// <param name="invokeLogic">TBD</param>
-            /// <param name="completion">TBD</param>
+            /// <param name="invokeLogic">Sends queue inputs to the stage logic.</param>
+            /// <param name="completion">Completes when the stream completes, fails, or detaches.</param>
             public Materialized(Action<IInput> invokeLogic, TaskCompletionSource<object> completion)
             {
                 _invokeLogic = invokeLogic;
@@ -322,32 +381,52 @@ namespace Akka.Streams.Implementation
             }
 
             /// <summary>
-            /// TBD
+            /// Offers an element to the queue without a cancellation token.
             /// </summary>
-            /// <param name="element">TBD</param>
-            /// <returns>TBD</returns>
+            /// <param name="element">The element to offer.</param>
+            /// <returns>A task that completes with an enqueue, drop, closed-queue, or failure result; the task may also fault if an offer cannot be accepted.</returns>
             public Task<IQueueOfferResult> OfferAsync(TOut element)
+                => OfferAsync(element, CancellationToken.None);
+
+            /// <summary>
+            /// Cancellable variant of <see cref="OfferAsync(TOut)"/>.
+            /// </summary>
+            /// <param name="element">Element to send to a stream.</param>
+            /// <param name="cancellationToken">Token used to cancel a pending offer.</param>
+            /// <returns>A task that completes with the offer result, fails, or is canceled.</returns>
+            public Task<IQueueOfferResult> OfferAsync(TOut element, CancellationToken cancellationToken)
             {
+                if (cancellationToken.IsCancellationRequested)
+                    return Task.FromCanceled<IQueueOfferResult>(cancellationToken);
+
                 var promise = TaskEx.NonBlockingTaskCompletionSource<IQueueOfferResult>(); // new TaskCompletionSource<IQueueOfferResult>();
-                _invokeLogic(new Offer<TOut>(element, promise));
+                var offer = new Offer<TOut>(element, promise);
+                _invokeLogic(offer);
+
+                if (cancellationToken.CanBeCanceled)
+                {
+                    var registration = cancellationToken.Register(() => _invokeLogic(new CancelOffer(offer, cancellationToken)));
+                    promise.Task.ContinueWith(_ => registration.Dispose(), TaskContinuationOptions.ExecuteSynchronously);
+                }
+
                 return promise.Task;
             }
 
             /// <summary>
-            /// TBD
+            /// Returns the task that completes when the queue source terminates. It succeeds after normal completion or downstream cancellation and faults if the source fails or detaches.
             /// </summary>
-            /// <returns>TBD</returns>
+            /// <returns>The queue source's termination task.</returns>
             public Task WatchCompletionAsync() => _completion.Task;
 
             /// <summary>
-            /// TBD
+            /// Requests normal completion after queued and pending offers have been handled.
             /// </summary>
             public void Complete() => _invokeLogic(Completion.Instance);
 
             /// <summary>
-            /// TBD
+            /// Requests failure of the queue source with the supplied exception.
             /// </summary>
-            /// <param name="ex">TBD</param>
+            /// <param name="ex">The failure to signal.</param>
             public void Fail(Exception ex) => _invokeLogic(new Failure(ex));
         }
 
@@ -355,10 +434,10 @@ namespace Akka.Streams.Implementation
         private readonly OverflowStrategy _overflowStrategy;
 
         /// <summary>
-        /// TBD
+        /// Creates a queue source with the specified buffer capacity and overflow policy.
         /// </summary>
-        /// <param name="maxBuffer">TBD</param>
-        /// <param name="overflowStrategy">TBD</param>
+        /// <param name="maxBuffer">The maximum number of elements buffered when positive; zero disables the element buffer.</param>
+        /// <param name="overflowStrategy">The policy used when the buffer is full.</param>
         public QueueSource(int maxBuffer, OverflowStrategy overflowStrategy)
         {
             _maxBuffer = maxBuffer;
@@ -367,27 +446,28 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// The outlet that emits offered elements.
         /// </summary>
-        public Outlet<TOut> Out { get; } = new Outlet<TOut>("queueSource.out");
+        public Outlet<TOut> Out { get; } = new("queueSource.out");
 
         /// <summary>
-        /// TBD
+        /// The source shape containing <see cref="Out"/>.
         /// </summary>
         public override SourceShape<TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates stage logic and a materialized queue for offering elements and observing source termination.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">The attributes inherited by the stage.</param>
+        /// <returns>The stage logic and its source queue.</returns>
         public override ILogicAndMaterializedValue<ISourceQueueWithComplete<TOut>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
         {
-            var completion = new TaskCompletionSource<object>();
+            var completion = TaskEx.NonBlockingTaskCompletionSource<object>();
             var logic = new Logic(this, completion);
             return new LogicAndMaterializedValue<ISourceQueueWithComplete<TOut>>(logic, new Materialized(t => logic.Invoke(t), completion));
         }
     }
+    #nullable restore
 
     /// <summary>
     /// INTERNAL API
@@ -454,7 +534,7 @@ namespace Akka.Streams.Implementation
                 }
             }
 
-            public override void OnDownstreamFinish() => CloseStage();
+            public override void OnDownstreamFinish(Exception cause) => CloseStage();
 
             public override void PreStart()
             {
@@ -499,11 +579,12 @@ namespace Akka.Streams.Implementation
 
 
         /// <summary>
-        /// TBD
+        /// Creates a source that opens a resource, reads elements on demand, and closes the resource when reading ends
+        /// or the stream stops.
         /// </summary>
-        /// <param name="create">TBD</param>
-        /// <param name="readData">TBD</param>
-        /// <param name="close">TBD</param>
+        /// <param name="create">Opens and returns the resource used for reading.</param>
+        /// <param name="readData">Reads the next element, or returns <see cref="Option{T}.None"/> when the resource is exhausted.</param>
+        /// <param name="close">Closes a resource opened by <paramref name="create"/>.</param>
         public UnfoldResourceSource(Func<TSource> create, Func<TSource, Option<TOut>> readData, Action<TSource> close)
         {
             _create = create;
@@ -514,39 +595,40 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// The default attributes for this resource source.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = DefaultAttributes.UnfoldResourceSource;
 
         /// <summary>
-        /// TBD
+        /// The outlet that emits values read from the resource.
         /// </summary>
-        public Outlet<TOut> Out { get; } = new Outlet<TOut>("UnfoldResourceSource.out");
+        public Outlet<TOut> Out { get; } = new("UnfoldResourceSource.out");
 
         /// <summary>
-        /// TBD
+        /// The source shape containing <see cref="Out"/>.
         /// </summary>
         public override SourceShape<TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates stage logic that opens the resource at startup, reads on demand, and applies the inherited
+        /// supervision strategy to read failures.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">The attributes used to select the supervision strategy.</param>
+        /// <returns>The stage logic for this source.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this, inheritedAttributes);
 
         /// <summary>
-        /// TBD
+        /// Returns the diagnostic name of this source.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>UnfoldResourceSource</c>.</returns>
         public override string ToString() => "UnfoldResourceSource";
     }
 
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    /// <typeparam name="TOut">TBD</typeparam>
-    /// <typeparam name="TSource">TBD</typeparam>
+    /// <typeparam name="TOut">The type of elements read from the resource.</typeparam>
+    /// <typeparam name="TSource">The type representing the asynchronously opened resource.</typeparam>
     [InternalApi]
     public sealed class UnfoldResourceSourceAsync<TOut, TSource> : GraphStage<SourceShape<TOut>>
     {
@@ -556,6 +638,7 @@ namespace Akka.Streams.Implementation
         {
             private readonly UnfoldResourceSourceAsync<TOut, TSource> _stage;
             private readonly Lazy<Decider> _decider;
+            private readonly Lazy<IAsyncCallback<Try<TSource>>> _createdCallback;
             private Option<TSource> _state = Option<TSource>.None;
 
             public Logic(UnfoldResourceSourceAsync<TOut, TSource> stage, Attributes inheritedAttributes)
@@ -568,18 +651,21 @@ namespace Akka.Streams.Implementation
                     return strategy != null ? strategy.Decider : Deciders.StoppingDecider;
                 });
 
+                _createdCallback = new Lazy<IAsyncCallback<Try<TSource>>>(() =>
+                    GetTypedAsyncCallback<Try<TSource>>(resource =>
+                    {
+                        if (resource.IsSuccess)
+                        {
+                            _state = resource.Success;
+                            if (IsAvailable(_stage.Out)) OnPull();
+                        }
+                        else FailStage(resource.Failure.Value);
+                    }));
+
                 SetHandler(_stage.Out, this);
             }
 
-            private Action<Try<TSource>> CreatedCallback => GetAsyncCallback<Try<TSource>>(resource =>
-            {
-                if (resource.IsSuccess)
-                {
-                    _state = resource.Success;
-                    if (IsAvailable(_stage.Out)) OnPull();
-                }
-                else FailStage(resource.Failure.Value);
-            });
+            private IAsyncCallback<Try<TSource>> CreatedCallback => _createdCallback.Value;
 
             private void ErrorHandler(Exception ex)
             {
@@ -689,24 +775,31 @@ namespace Akka.Streams.Implementation
             {
                 _stage._create().OnComplete(resource =>
                 {
-                    try
+                    async Task InvokeCallback()
                     {
-                        CreatedCallback(resource);
-                    }
-                    catch (StreamDetachedException)
-                    {
-                        // stream stopped before created callback could be invoked, we need
-                        // to close the resource if it is was opened, to not leak it
-                        if (resource.IsSuccess)
+                        try
                         {
-                            _stage._close(resource.Success.Value);
+                            await CreatedCallback.InvokeWithFeedback(resource);
                         }
-                        else
+                        catch (StreamDetachedException)
                         {
-                            // failed to open but stream is stopped already
-                            throw resource.Failure.Value;
+                            // stream stopped before created callback could be invoked, we need
+                            // to close the resource if it is was opened, to not leak it
+                            if (resource.IsSuccess)
+                            {
+#pragma warning disable CS4014 // Because this call is not awaited - fire-and-forget is intentional for cleanup
+                                _stage._close(resource.Success.Value);
+#pragma warning restore CS4014
+                            }
+                            else
+                            {
+                                // failed to open but stream is stopped already
+                                throw resource.Failure.Value;
+                            }
                         }
                     }
+
+                    _ = InvokeCallback();
                 });
             }
         }
@@ -718,11 +811,13 @@ namespace Akka.Streams.Implementation
         private readonly Func<TSource, Task> _close;
 
         /// <summary>
-        /// TBD
+        /// Creates a source that asynchronously opens a resource and reads elements on demand. It awaits the close
+        /// task when reading ends; if the stage stops while the resource is open, it invokes the close function without
+        /// awaiting its completion as part of stopping.
         /// </summary>
-        /// <param name="create">TBD</param>
-        /// <param name="readData">TBD</param>
-        /// <param name="close">TBD</param>
+        /// <param name="create">Asynchronously opens and returns the resource used for reading.</param>
+        /// <param name="readData">Asynchronously reads the next element, or returns <see cref="Option{T}.None"/> when exhausted.</param>
+        /// <param name="close">Asynchronously closes a resource opened by <paramref name="create"/>.</param>
         public UnfoldResourceSourceAsync(Func<Task<TSource>> create, Func<TSource, Task<Option<TOut>>> readData, Func<TSource, Task> close)
         {
             _create = create;
@@ -733,31 +828,32 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// The default attributes for this asynchronous resource source.
         /// </summary>
         protected override Attributes InitialAttributes => DefaultAttributes.UnfoldResourceSourceAsync;
 
         /// <summary>
-        /// TBD
+        /// The outlet that emits values read from the resource.
         /// </summary>
-        public Outlet<TOut> Out { get; } = new Outlet<TOut>("UnfoldResourceSourceAsync.out");
+        public Outlet<TOut> Out { get; } = new("UnfoldResourceSourceAsync.out");
 
         /// <summary>
-        /// TBD
+        /// The source shape containing <see cref="Out"/>.
         /// </summary>
         public override SourceShape<TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates stage logic that opens and reads the resource asynchronously, applying the inherited supervision
+        /// strategy to asynchronous read failures.
         /// </summary>
-        /// <param name="inheritedAttributes">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="inheritedAttributes">The attributes used to select the supervision strategy.</param>
+        /// <returns>The stage logic for this source.</returns>
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this, inheritedAttributes);
 
         /// <summary>
-        /// TBD
+        /// Returns the diagnostic name of this source.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns><c>UnfoldResourceSourceAsync</c>.</returns>
         public override string ToString() => "UnfoldResourceSourceAsync";
     }
 
@@ -784,40 +880,41 @@ namespace Akka.Streams.Implementation
                 SetHandler(stage.Out, this);
             }
 
-            public override void OnDownstreamFinish()
+            public override void OnDownstreamFinish(Exception cause)
             {
-                _completion.SetException(new Exception("Downstream canceled without triggering lazy source materialization"));
+                _completion.SetException(new Exception("Downstream canceled without triggering lazy source materialization", cause));
                 CompleteStage();
             }
 
-
+#nullable enable
             public override void OnPull()
             {
-                var source = _stage._sourceFactory();
                 var subSink = new SubSinkInlet<TOut>(this, "LazySource");
                 subSink.Pull();
 
-                SetHandler(_stage.Out, () => subSink.Pull(), () =>
+                SetHandler(_stage.Out, () => subSink.Pull(), cause =>
                 {
-                    subSink.Cancel();
-                    CompleteStage();
+                    subSink.Cancel(cause);
+                    InternalOnDownstreamFinish(cause);
                 });
 
                 subSink.SetHandler(new LambdaInHandler(() => Push(_stage.Out, subSink.Grab())));
 
                 try
                 {
+                    var source = _stage._sourceFactory();
                     var value = SubFusingMaterializer.Materialize(source.ToMaterialized(subSink.Sink, Keep.Left),
                         _inheritedAttributes);
                     _completion.SetResult(value);
                 }
                 catch (Exception e)
                 {
-                    subSink.Cancel();
+                    subSink.Cancel(e);
                     FailStage(e);
                     _completion.TrySetException(e);
                 }
             }
+#nullable restore
 
             public override void PostStop() => _completion.TrySetException(
                 new Exception("LazySource stopped without completing the materialized task"));
@@ -838,26 +935,27 @@ namespace Akka.Streams.Implementation
         }
 
         /// <summary>
-        /// TBD
+        /// The outlet that emits elements from the lazily created source.
         /// </summary>
-        public Outlet<TOut> Out { get; } = new Outlet<TOut>("LazySource.out");
+        public Outlet<TOut> Out { get; } = new("LazySource.out");
 
         /// <summary>
-        /// TBD
+        /// The source shape containing <see cref="Out"/>.
         /// </summary>
         public override SourceShape<TOut> Shape { get; }
 
         /// <summary>
-        /// TBD
+        /// The default attributes for this lazy source.
         /// </summary>
         protected override Attributes InitialAttributes { get; } = DefaultAttributes.LazySource;
 
         /// <summary>
-        /// TBD
+        /// Creates stage logic that invokes the source factory on the first downstream pull and completes the
+        /// materialized task with the created source's materialized value.
         /// </summary>
         public override ILogicAndMaterializedValue<Task<TMat>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
         {
-            var completion = new TaskCompletionSource<TMat>();
+            var completion = TaskEx.NonBlockingTaskCompletionSource<TMat>();
             var logic = new Logic(this, completion, inheritedAttributes);
 
             return new LogicAndMaterializedValue<Task<TMat>>(logic, completion.Task);
@@ -877,8 +975,7 @@ namespace Akka.Streams.Implementation
         /// <summary>
         /// Creates a new <see cref="LazySource{TOut,TMat}"/> for the given <paramref name="create"/> factory
         /// </summary>
-        public static LazySource<TOut, TMat> Create<TOut, TMat>(Func<Source<TOut, TMat>> create) =>
-            new LazySource<TOut, TMat>(create);
+        public static LazySource<TOut, TMat> Create<TOut, TMat>(Func<Source<TOut, TMat>> create) => new(create);
     }
 
     /// <summary>
@@ -900,7 +997,7 @@ namespace Akka.Streams.Implementation
             Shape = new SourceShape<TOut>(Out);
         }
 
-        public Outlet<TOut> Out { get; } = new Outlet<TOut>("EmptySource.out");
+        public Outlet<TOut> Out { get; } = new("EmptySource.out");
 
         public override SourceShape<TOut> Shape { get; }
 
@@ -974,7 +1071,7 @@ namespace Akka.Streams.Implementation
             private readonly Action<T> _onOverflow;
             private readonly Action<T> _onEvent;
             private readonly Action<Exception> _onError;
-            private readonly Action _onCompleted;
+            private readonly Action<Exception> _onCompleted;
 
             private IDisposable _disposable;
 
@@ -996,7 +1093,7 @@ namespace Akka.Streams.Implementation
                     }
                 });
                 _onError = GetAsyncCallback<Exception>(e => Fail(_stage.Outlet, e));
-                _onCompleted = GetAsyncCallback(() => Complete(_stage.Outlet));
+                _onCompleted = GetAsyncCallback<Exception>(InternalOnDownstreamFinish);
                 _onOverflow = SetupOverflowStrategy(stage._overflowStrategy);
 
                 SetHandler(stage.Outlet, onPull: () =>
@@ -1011,7 +1108,8 @@ namespace Akka.Streams.Implementation
 
             public void OnNext(T value) => _onEvent(value);
             public void OnError(Exception error) => _onError(error);
-            public void OnCompleted() => _onCompleted();
+            public void OnCompleted() => _onCompleted(SubscriptionWithCancelException.StageWasCompleted.Instance);
+            public void OnCompleted(Exception cause) => _onCompleted(cause);
 
             public override void PreStart()
             {
@@ -1052,7 +1150,7 @@ namespace Akka.Streams.Implementation
                             Enqueue(message);
                         };
                     case OverflowStrategy.DropNew:
-                        return message =>
+                        return _ =>
                         {
                             /* do nothing */
                         };
@@ -1063,9 +1161,9 @@ namespace Akka.Streams.Implementation
                             Enqueue(message);
                         };
                     case OverflowStrategy.Fail:
-                        return message => FailStage(new BufferOverflowException($"{_stage.Outlet} buffer has been overflown"));
+                        return _ => FailStage(new BufferOverflowException($"{_stage.Outlet} buffer has been overflown"));
                     case OverflowStrategy.Backpressure:
-                        return message => throw new NotSupportedException("OverflowStrategy.Backpressure is not supported");
+                        return _ => throw new NotSupportedException("OverflowStrategy.Backpressure is not supported");
                     default: throw new NotSupportedException($"Unknown option: {overflowStrategy}");
                 }
             }
@@ -1086,7 +1184,7 @@ namespace Akka.Streams.Implementation
             Shape = new SourceShape<T>(Outlet);
         }
 
-        public Outlet<T> Outlet { get; } = new Outlet<T>("observable.out");
+        public Outlet<T> Outlet { get; } = new("observable.out");
         public override SourceShape<T> Shape { get; }
         protected override GraphStageLogic CreateLogic(Attributes inheritedAttributes) => new Logic(this);
     }

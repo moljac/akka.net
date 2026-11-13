@@ -1,10 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-    <Import Project="..\..\..\common.props" />
     <Import Project="..\..\..\xunitSettings.props" />
 
     <PropertyGroup>
-        <AssemblyTitle>Akka.Cluster.Metrics.Tests</AssemblyTitle>
-        <TargetFrameworks>$(NetFrameworkTestVersion);$(NetTestVersion);$(NetCoreTestVersion)</TargetFrameworks>
+        <TargetFramework>$(NetTestVersion)</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
     </PropertyGroup>
 
     <ItemGroup>
@@ -14,18 +14,10 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="$(TestSdkVersion)" />
-        <PackageReference Include="xunit" Version="$(XunitVersion)" />
-        <PackageReference Include="xunit.runner.visualstudio" Version="$(XunitVersion)" />
+        <PackageReference Include="xunit.v3" Version="$(Xunit3Version)" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="$(Xunit3RunnerVersion)" />
         <PackageReference Include="FluentAssertions" Version="$(FluentAssertionsVersion)" />
     </ItemGroup>
 
-    <ItemGroup Condition=" '$(TargetFramework)' == '$(NetFrameworkTestVersion)' ">
-        <Reference Include="System.Xml" />
-        <Reference Include="System.Xml.Linq" />
-    </ItemGroup>
-
-    <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-        <DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
-    </PropertyGroup>
 
 </Project>

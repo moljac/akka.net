@@ -1,28 +1,28 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="FileSourceSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Akka.Actor;
-using Akka.IO;
+using Akka.TestKit.Extensions;
 using Akka.Streams.Dsl;
 using Akka.Streams.Implementation;
 using Akka.Streams.Implementation.Stages;
 using Akka.Streams.TestKit;
-using Akka.Streams.TestKit.Tests;
 using Akka.TestKit;
 using Akka.Util.Internal;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Streams.Tests.IO
 {
@@ -30,7 +30,7 @@ namespace Akka.Streams.Tests.IO
     {
         private readonly string _testText;
         private readonly ActorMaterializer _materializer;
-        private readonly FileInfo _testFilePath = new FileInfo(Path.Combine(Path.GetTempPath(), "file-source-spec.tmp"));
+        private readonly FileInfo _testFilePath = new(Path.Combine(Path.GetTempPath(), "file-source-spec.tmp"));
         private FileInfo _manyLinesPath;
 
         public FileSourceSpec(ITestOutputHelper helper) : base(Utils.UnboundedMailboxConfig, helper)
@@ -48,18 +48,17 @@ namespace Akka.Streams.Tests.IO
         }
 
         [Fact]
-        public void FileSource_should_read_contents_from_a_file()
+        public async Task FileSource_should_read_contents_from_a_file()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var chunkSize = 512;
                 var bufferAttributes = Attributes.CreateInputBuffer(1, 2);
 
                 var p = FileIO.FromFile(TestFile(), chunkSize)
                     .WithAttributes(bufferAttributes)
-                    .RunWith(Sink.AsPublisher<ByteString>(false), _materializer);
+                    .RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), _materializer);
 
-                var c = this.CreateManualSubscriberProbe<ByteString>();
+                var c = this.CreateManualSubscriberProbe<ReadOnlySequence<byte>>();
                 p.Subscribe(c);
                 var sub = c.ExpectSubscription();
 
@@ -83,44 +82,45 @@ namespace Akka.Streams.Tests.IO
                 });
 
                 sub.Request(1);
-                c.ExpectNext().ToString(Encoding.UTF8).Should().Be(nextChunk());
+                Encoding.UTF8.GetString(c.ExpectNext().ToArray()).Should().Be(nextChunk());
                 sub.Request(1);
-                c.ExpectNext().ToString(Encoding.UTF8).Should().Be(nextChunk());
+                Encoding.UTF8.GetString(c.ExpectNext().ToArray()).Should().Be(nextChunk());
                 c.ExpectNoMsg(TimeSpan.FromMilliseconds(300));
 
                 sub.Request(200);
                 var expectedChunk = nextChunk();
                 while (!string.IsNullOrEmpty(expectedChunk))
                 {
-                    var actual = c.ExpectNext().ToString(Encoding.UTF8);
+                    var actual = Encoding.UTF8.GetString(c.ExpectNext().ToArray());
                     actual.Should().Be(expectedChunk);
                     expectedChunk = nextChunk();
                 }
                 sub.Request(1);
                 c.ExpectComplete();
+                return Task.CompletedTask;
             }, _materializer);
         }
 
         [Fact]
-        public void Filesource_could_read_partial_contents_from_a_file()
+        public async Task Filesource_could_read_partial_contents_from_a_file()
         {
-            this.AssertAllStagesStopped(() => 
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var chunkSize = 512;
                 var startPosition = 1000;
                 var bufferAttributes = Attributes.CreateInputBuffer(1, 2);
 
                 var p = FileIO.FromFile(TestFile(), chunkSize, startPosition)
                     .WithAttributes(bufferAttributes)
-                    .RunWith(Sink.AsPublisher<ByteString>(false), _materializer);
+                    .RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), _materializer);
 
-                var c = this.CreateManualSubscriberProbe<ByteString>();
+                var c = this.CreateManualSubscriberProbe<ReadOnlySequence<byte>>();
                 p.Subscribe(c);
                 var sub = c.ExpectSubscription();
 
                 var remaining = _testText.Substring(1000);
 
-                var nextChunk = new Func<string>(() => {
+                var nextChunk = new Func<string>(() =>
+                {
                     string chunks;
 
                     if (remaining.Length <= chunkSize)
@@ -140,30 +140,29 @@ namespace Akka.Streams.Tests.IO
                 sub.Request(5000);
 
                 var expectedChunk = nextChunk();
-                for(int i=0; i<10; ++i)
+                for (int i = 0; i < 10; ++i)
                 {
-                    c.ExpectNext().ToString().Should().Be(expectedChunk);
+                    Encoding.UTF8.GetString(c.ExpectNext().ToArray()).Should().Be(expectedChunk);
                     expectedChunk = nextChunk();
                 }
                 c.ExpectComplete();
-
+                return Task.CompletedTask;
             }, _materializer);
         }
 
         [Fact]
-        public void FileSource_should_complete_only_when_all_contents_of_a_file_have_been_signalled()
+        public async Task FileSource_should_complete_only_when_all_contents_of_a_file_have_been_signalled()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var chunkSize = 512;
                 var bufferAttributes = Attributes.CreateInputBuffer(1, 2);
                 var demandAllButOnechunks = _testText.Length / chunkSize - 1;
 
                 var p = FileIO.FromFile(TestFile(), chunkSize)
                     .WithAttributes(bufferAttributes)
-                    .RunWith(Sink.AsPublisher<ByteString>(false), _materializer);
+                    .RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), _materializer);
 
-                var c = this.CreateManualSubscriberProbe<ByteString>();
+                var c = this.CreateManualSubscriberProbe<ReadOnlySequence<byte>>();
                 p.Subscribe(c);
                 var sub = c.ExpectSubscription();
 
@@ -188,30 +187,30 @@ namespace Akka.Streams.Tests.IO
 
                 sub.Request(demandAllButOnechunks);
                 for (var i = 0; i < demandAllButOnechunks; i++)
-                    c.ExpectNext().ToString(Encoding.UTF8).Should().Be(nextChunk());
+                    Encoding.UTF8.GetString(c.ExpectNext().ToArray()).Should().Be(nextChunk());
                 c.ExpectNoMsg(TimeSpan.FromMilliseconds(300));
 
                 sub.Request(1);
-                c.ExpectNext().ToString(Encoding.UTF8).Should().Be(nextChunk());
+                Encoding.UTF8.GetString(c.ExpectNext().ToArray()).Should().Be(nextChunk());
                 c.ExpectNoMsg(TimeSpan.FromMilliseconds(200));
 
                 sub.Request(1);
-                c.ExpectNext().ToString(Encoding.UTF8).Should().Be(nextChunk());
+                Encoding.UTF8.GetString(c.ExpectNext().ToArray()).Should().Be(nextChunk());
                 c.ExpectComplete();
+                return Task.CompletedTask;
             }, _materializer);
         }
 
         [Fact]
-        public void FileSource_should_open_file_in_shared_mode_for_reading_multiple_times()
+        public async Task FileSource_should_open_file_in_shared_mode_for_reading_multiple_times()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var testFile = TestFile();
-                var p1 = FileIO.FromFile(testFile).RunWith(Sink.AsPublisher<ByteString>(false), _materializer);
-                var p2 = FileIO.FromFile(testFile).RunWith(Sink.AsPublisher<ByteString>(false), _materializer);
-                
-                var c1 = this.CreateManualSubscriberProbe<ByteString>();
-                var c2 = this.CreateManualSubscriberProbe<ByteString>();
+                var p1 = FileIO.FromFile(testFile).RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), _materializer);
+                var p2 = FileIO.FromFile(testFile).RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), _materializer);
+
+                var c1 = this.CreateManualSubscriberProbe<ReadOnlySequence<byte>>();
+                var c2 = this.CreateManualSubscriberProbe<ReadOnlySequence<byte>>();
                 p1.Subscribe(c1);
                 p2.Subscribe(c2);
                 var s1 = c1.ExpectSubscription();
@@ -222,27 +221,28 @@ namespace Akka.Streams.Tests.IO
 
                 c1.ExpectNext();
                 c2.ExpectNext();
-
+                return Task.CompletedTask;
             }, _materializer);
         }
 
         [Fact]
-        public void FileSource_should_onError_with_failure_and_return_a_failed_IOResult_when_trying_to_read_from_file_which_does_not_exist()
+        public async Task FileSource_should_onError_with_failure_and_return_a_failed_IOResult_when_trying_to_read_from_file_which_does_not_exist()
         {
-            this.AssertAllStagesStopped(() =>
+            await this.AssertAllStagesStoppedAsync(async() =>
             {
                 var t = FileIO.FromFile(NotExistingFile())
-                    .ToMaterialized(Sink.AsPublisher<ByteString>(false), Keep.Both)
+                    .ToMaterialized(Sink.AsPublisher<ReadOnlySequence<byte>>(false), Keep.Both)
                     .Run(_materializer);
                 var r = t.Item1;
                 var p = t.Item2;
 
-                var c = this.CreateManualSubscriberProbe<ByteString>();
+                var c = this.CreateManualSubscriberProbe<ReadOnlySequence<byte>>();
                 p.Subscribe(c);
 
                 c.ExpectSubscription();
                 c.ExpectError();
-                r.AwaitResult(Dilated(TimeSpan.FromSeconds(3))).WasSuccessful.ShouldBeFalse();
+                var complete = await r.WaitAsync(Dilated(TimeSpan.FromSeconds(3)));
+                complete.WasSuccessful.ShouldBeFalse();
             }, _materializer);
         }
 
@@ -256,7 +256,7 @@ namespace Akka.Streams.Tests.IO
             var s = FileIO.FromFile(ManyLines(), chunkSize)
                 .WithAttributes(Attributes.CreateInputBuffer(readAhead, readAhead));
             var f = s.RunWith(
-                Sink.Aggregate<ByteString, int>(0, (acc, l) => acc + l.ToString(Encoding.UTF8).Count(c => c == '\n')),
+                Sink.Aggregate<ReadOnlySequence<byte>, int>(0, (acc, l) => acc + Encoding.UTF8.GetString(l.ToArray()).Count(c => c == '\n')),
                 _materializer);
 
             f.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
@@ -265,16 +265,15 @@ namespace Akka.Streams.Tests.IO
         }
 
         [Fact]
-        public void FileSource_should_use_dedicated_blocking_io_dispatcher_by_default()
+        public async Task FileSource_should_use_dedicated_blocking_io_dispatcher_by_default()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var sys = ActorSystem.Create("dispatcher-testing", Utils.UnboundedMailboxConfig);
                 var materializer = sys.Materializer();
 
                 try
                 {
-                    var p = FileIO.FromFile(ManyLines()).RunWith(this.SinkProbe<ByteString>(), materializer);
+                    var p = FileIO.FromFile(ManyLines()).RunWith(this.SinkProbe<ReadOnlySequence<byte>>(), materializer);
                     (materializer as ActorMaterializerImpl).Supervisor.Tell(StreamSupervisor.GetChildren.Instance, TestActor);
 
                     var actorRef = ExpectMsg<StreamSupervisor.Children>().Refs.First(r => r.Path.ToString().Contains("fileSource"));
@@ -291,6 +290,8 @@ namespace Akka.Streams.Tests.IO
                 {
                     Shutdown(sys);
                 }
+
+                return Task.CompletedTask;
             }, _materializer);
         }
 
@@ -305,7 +306,7 @@ namespace Akka.Streams.Tests.IO
             {
                 var p = FileIO.FromFile(ManyLines())
                     .WithAttributes(ActorAttributes.CreateDispatcher("akka.actor.default-dispatcher"))
-                    .RunWith(this.SinkProbe<ByteString>(), materializer);
+                    .RunWith(this.SinkProbe<ReadOnlySequence<byte>>(), materializer);
                 (materializer as ActorMaterializerImpl).Supervisor.Tell(StreamSupervisor.GetChildren.Instance, TestActor);
 
                 var actorRef = ExpectMsg<StreamSupervisor.Children>().Refs.First(r => r.Path.ToString().Contains("File"));
@@ -327,10 +328,11 @@ namespace Akka.Streams.Tests.IO
         [Fact]
         public void FileSource_should_not_signal_OnComplete_more_than_once()
         {
-            FileIO.FromFile(TestFile(), 2*_testText.Length)
-                .RunWith(this.SinkProbe<ByteString>(), _materializer)
-                .RequestNext(ByteString.FromString(_testText))
-                .ExpectComplete()
+            var probe = FileIO.FromFile(TestFile(), 2*_testText.Length)
+                .RunWith(this.SinkProbe<ReadOnlySequence<byte>>(), _materializer);
+            var next = probe.RequestNext();
+            Encoding.UTF8.GetString(next.ToArray()).Should().Be(_testText);
+            probe.ExpectComplete()
                 .ExpectNoMsg(TimeSpan.FromSeconds(1));
         }
 
@@ -339,20 +341,21 @@ namespace Akka.Streams.Tests.IO
         private FileInfo ManyLines()
         {
             _manyLinesPath = new FileInfo(Path.Combine(Path.GetTempPath(), $"file-source-spec-lines_{LinesCount}.tmp"));
-            var line = "";
-            var lines = new List<string>();
-            for (var i = 0; i < LinesCount; i++)
-                line += "a";
+
+            // Create a reasonable line of text (not LinesCount characters long!)
+            var line = new string('a', 100); // Fixed line length of 100 characters
+            var lines = new List<string>(LinesCount);
             for (var i = 0; i < LinesCount; i++)
                 lines.Add(line);
 
-            File.AppendAllLines(_manyLinesPath.FullName, lines);
+            // Use WriteAllLines to ensure we're not appending to an existing file
+            File.WriteAllLines(_manyLinesPath.FullName, lines);
             return _manyLinesPath;
         }
 
         private FileInfo TestFile()
         {
-            File.AppendAllText(_testFilePath.FullName, _testText);
+            File.WriteAllText(_testFilePath.FullName, _testText);
             return _testFilePath;
         }
 
@@ -367,11 +370,12 @@ namespace Akka.Streams.Tests.IO
         protected override void AfterAll()
         {
             base.AfterAll();
-
+            
             //give the system enough time to shutdown and release the file handle
             Thread.Sleep(500);
             _manyLinesPath?.Delete();
             _testFilePath?.Delete();
         }
+
     }
 }

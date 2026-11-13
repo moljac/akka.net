@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ThrottleTransportAdapter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,6 +11,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Dispatch.SysMsg;
+using Akka.Event;
 using Akka.Remote.Serialization;
 using Akka.Util;
 using Akka.Util.Internal;
@@ -40,29 +41,29 @@ namespace Akka.Remote.Transport
         #region Static methods and self-contained data types
 
         /// <summary>
-        /// TBD
+        /// Scheme identifier added to addresses exposed by this throttling adapter.
         /// </summary>
         public const string Scheme = "trttl";
         /// <summary>
-        /// TBD
+        /// Counter used to generate unique manager and throttler actor names.
         /// </summary>
-        public static readonly AtomicCounter UniqueId = new AtomicCounter(0);
+        public static readonly AtomicCounter UniqueId = new(0);
 
         /// <summary>
-        /// TBD
+        /// Direction in which a throttle mode is applied to association traffic.
         /// </summary>
         public enum Direction
         {
             /// <summary>
-            /// TBD
+            /// Apply throttling to outbound messages sent on the association.
             /// </summary>
             Send,
             /// <summary>
-            /// TBD
+            /// Apply throttling to inbound messages received on the association.
             /// </summary>
             Receive,
             /// <summary>
-            /// TBD
+            /// Apply throttling to both inbound and outbound messages.
             /// </summary>
             Both
         }
@@ -70,18 +71,18 @@ namespace Akka.Remote.Transport
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Creates a throttling adapter around an underlying transport.
         /// </summary>
-        /// <param name="wrappedTransport">TBD</param>
-        /// <param name="system">TBD</param>
+        /// <param name="wrappedTransport">Transport whose associations will be throttled.</param>
+        /// <param name="system">Actor system that owns this adapter and its throttler actors.</param>
         public ThrottleTransportAdapter(Transport wrappedTransport, ActorSystem system) : base(wrappedTransport, system)
         {
         }
 
         // ReSharper disable once InconsistentNaming
-        private static readonly SchemeAugmenter _schemeAugmenter = new SchemeAugmenter(Scheme);
+        private static readonly SchemeAugmenter _schemeAugmenter = new(Scheme);
         /// <summary>
-        /// TBD
+        /// Adds the throttling scheme identifier to addresses exposed by the wrapped transport.
         /// </summary>
         protected override SchemeAugmenter SchemeAugmenter
         {
@@ -112,10 +113,10 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Handles throttle and forced-disassociation commands or forwards other commands to the wrapped transport.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="message">Throttle command, forced-disassociation command, or another transport management command.</param>
+        /// <returns>A task that completes with whether the throttler manager acknowledged the command, or the wrapped transport's result for other commands.</returns>
         public override Task<bool> ManagementCommand(object message)
         {
             if (message is SetThrottle)
@@ -126,7 +127,7 @@ namespace Akka.Remote.Transport
                 });
             }
 
-            if (message is ForceDisassociate || message is ForceDisassociateExplicitly)
+            if (message is ForceDisassociate or ForceDisassociateExplicitly)
             {
                 return manager.Ask(message, AskTimeout).ContinueWith(r => r.Result is ForceDisassociateAck,
                     TaskContinuationOptions.ExecuteSynchronously);
@@ -139,19 +140,19 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// Management command to force disassociation of an address
     /// </summary>
-    internal sealed class ForceDisassociate
+    public sealed class ForceDisassociate
     {
         /// <summary>
-        /// TBD
+        /// Creates a command to force disassociation of the specified remote address.
         /// </summary>
-        /// <param name="address">TBD</param>
+        /// <param name="address">Remote address whose association should be disassociated.</param>
         public ForceDisassociate(Address address)
         {
             Address = address;
         }
 
         /// <summary>
-        /// TBD
+        /// Remote address whose association should be disassociated.
         /// </summary>
         public Address Address { get; private set; }
     }
@@ -159,13 +160,13 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// Management command to force disassociation of an address with an explicit error.
     /// </summary>
-    internal sealed class ForceDisassociateExplicitly
+    public sealed class ForceDisassociateExplicitly
     {
         /// <summary>
-        /// TBD
+        /// Creates a command to disassociate the specified remote address with a reason.
         /// </summary>
-        /// <param name="address">TBD</param>
-        /// <param name="reason">TBD</param>
+        /// <param name="address">Remote address whose association should be disassociated.</param>
+        /// <param name="reason">Reason reported when the association is disassociated.</param>
         public ForceDisassociateExplicitly(Address address, DisassociateInfo reason)
         {
             Reason = reason;
@@ -173,12 +174,12 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Remote address whose association should be disassociated.
         /// </summary>
         public Address Address { get; private set; }
 
         /// <summary>
-        /// TBD
+        /// Reason reported when the association is disassociated.
         /// </summary>
         public DisassociateInfo Reason { get; private set; }
     }
@@ -186,41 +187,34 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    internal sealed class ForceDisassociateAck
+    public sealed class ForceDisassociateAck
     {
         private ForceDisassociateAck() { }
         // ReSharper disable once InconsistentNaming
-        private static readonly ForceDisassociateAck _instance = new ForceDisassociateAck();
 
         /// <summary>
-        /// TBD
+        /// Acknowledgement returned after a force-disassociation command is processed.
         /// </summary>
-        public static ForceDisassociateAck Instance
-        {
-            get
-            {
-                return _instance;
-            }
-        }
+        public static ForceDisassociateAck Instance { get; } = new();
     }
 
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    internal class ThrottlerManager : ActorTransportAdapterManager
+    internal sealed class ThrottlerManager : ActorTransportAdapterManager
     {
         #region Internal message classes
 
         /// <summary>
-        /// TBD
+        /// Manager message providing a remote origin and its throttler handle for inbound setup.
         /// </summary>
         internal sealed class Checkin : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a check-in message for an inbound association.
             /// </summary>
-            /// <param name="origin">TBD</param>
-            /// <param name="handle">TBD</param>
+            /// <param name="origin">Remote origin address extracted from the association handshake.</param>
+            /// <param name="handle">Throttler handle associated with the inbound connection.</param>
             public Checkin(Address origin, ThrottlerHandle handle)
             {
                 ThrottlerHandle = handle;
@@ -228,26 +222,26 @@ namespace Akka.Remote.Transport
             }
 
             /// <summary>
-            /// TBD
+            /// Remote origin address extracted from the association handshake.
             /// </summary>
             public Address Origin { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Throttler handle associated with the inbound connection.
             /// </summary>
             public ThrottlerHandle ThrottlerHandle { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Manager message carrying the underlying association result and its pending status completion source.
         /// </summary>
         internal sealed class AssociateResult : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a message for a completed underlying association attempt.
             /// </summary>
-            /// <param name="associationHandle">TBD</param>
-            /// <param name="statusPromise">TBD</param>
+            /// <param name="associationHandle">Handle returned by the underlying transport.</param>
+            /// <param name="statusPromise">Completion source for the adapted association handle.</param>
             public AssociateResult(AssociationHandle associationHandle, TaskCompletionSource<AssociationHandle> statusPromise)
             {
                 StatusPromise = statusPromise;
@@ -255,26 +249,26 @@ namespace Akka.Remote.Transport
             }
 
             /// <summary>
-            /// TBD
+            /// Handle returned by the underlying transport.
             /// </summary>
             public AssociationHandle AssociationHandle { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Completion source for the adapted association handle.
             /// </summary>
             public TaskCompletionSource<AssociationHandle> StatusPromise { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Manager message carrying an inbound event listener and the throttle mode to apply.
         /// </summary>
         internal sealed class ListenerAndMode : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a listener-and-mode message for an association.
             /// </summary>
-            /// <param name="handleEventListener">TBD</param>
-            /// <param name="mode">TBD</param>
+            /// <param name="handleEventListener">Listener that receives inbound association events.</param>
+            /// <param name="mode">Throttle mode to apply to inbound traffic.</param>
             public ListenerAndMode(IHandleEventListener handleEventListener, ThrottleMode mode)
             {
                 Mode = mode;
@@ -282,52 +276,52 @@ namespace Akka.Remote.Transport
             }
 
             /// <summary>
-            /// TBD
+            /// Listener that receives inbound association events.
             /// </summary>
             public IHandleEventListener HandleEventListener { get; private set; }
 
             /// <summary>
-            /// TBD
+            /// Throttle mode to apply to inbound traffic.
             /// </summary>
             public ThrottleMode Mode { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Manager message exposing a throttler handle to its association actor during initialization.
         /// </summary>
         internal sealed class Handle : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a message that exposes the specified throttler handle.
             /// </summary>
-            /// <param name="throttlerHandle">TBD</param>
+            /// <param name="throttlerHandle">Handle that should be exposed to the association actor.</param>
             public Handle(ThrottlerHandle throttlerHandle)
             {
                 ThrottlerHandle = throttlerHandle;
             }
 
             /// <summary>
-            /// TBD
+            /// Handle exposed to the association actor.
             /// </summary>
             public ThrottlerHandle ThrottlerHandle { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Manager message carrying the registered inbound event listener.
         /// </summary>
         internal sealed class Listener : INoSerializationVerificationNeeded
         {
             /// <summary>
-            /// TBD
+            /// Creates a listener message for an association.
             /// </summary>
-            /// <param name="handleEventListener">TBD</param>
+            /// <param name="handleEventListener">Listener registered for inbound association events.</param>
             public Listener(IHandleEventListener handleEventListener)
             {
                 HandleEventListener = handleEventListener;
             }
 
             /// <summary>
-            /// TBD
+            /// Listener registered for inbound association events.
             /// </summary>
             public IHandleEventListener HandleEventListener { get; private set; }
         }
@@ -335,152 +329,199 @@ namespace Akka.Remote.Transport
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Underlying transport whose association handles are wrapped by throttler actors.
         /// </summary>
-        protected readonly Transport WrappedTransport;
-        private Dictionary<Address, (ThrottleMode, ThrottleTransportAdapter.Direction)> _throttlingModes
-            = new Dictionary<Address, (ThrottleMode, ThrottleTransportAdapter.Direction)>();
+        private readonly Transport WrappedTransport;
+        private readonly Dictionary<Address, (ThrottleMode, ThrottleTransportAdapter.Direction)> _throttlingModes = new();
 
-        private List<(Address, ThrottlerHandle)> _handleTable = new List<(Address, ThrottlerHandle)>();
+        private readonly List<(Address, ThrottlerHandle)> _handleTable = new();
 
         /// <summary>
-        /// TBD
+        /// Creates a manager for throttle actors over an underlying transport.
         /// </summary>
-        /// <param name="wrappedTransport">TBD</param>
+        /// <param name="wrappedTransport">Transport used to establish the physical associations.</param>
         public ThrottlerManager(Transport wrappedTransport)
         {
             WrappedTransport = wrappedTransport;
         }
 
         /// <summary>
-        /// TBD
+        /// A <see cref="ThrottledAssociation"/> cannot recover its own state: an inbound throttler
+        /// only ever receives the <see cref="Handle"/> message that moves it out of
+        /// <see cref="ThrottledAssociation.ThrottlerState.WaitExposedHandle"/> once, when it is created.
+        /// Restarting one therefore leaves it parked in that state forever, silently discarding every
+        /// inbound packet on that association.
+        ///
+        /// Stopping the child instead surfaces the failure as a disassociation, which the remoting
+        /// layer above knows how to recover from. This mirrors <c>AkkaProtocolManager</c>, which uses
+        /// the same strategy for the same reason.
         /// </summary>
-        /// <param name="message">TBD</param>
+        private readonly SupervisorStrategy _supervisor = new OneForOneStrategy(_ => Directive.Stop);
+
+        /// <inheritdoc/>
+        protected override SupervisorStrategy SupervisorStrategy()
+        {
+            return _supervisor;
+        }
+
+        /// <summary>
+        /// Handles new associations, throttle-mode updates, and forced-disassociation commands.
+        /// </summary>
+        /// <param name="message">Association, throttler setup, throttle update, or forced-disassociation message.</param>
         protected override void Ready(object message)
         {
-            if (message is InboundAssociation)
+            switch (message)
             {
-                var ia = message as InboundAssociation;
-                var wrappedHandle = WrapHandle(ia.Association, AssociationListener, true);
-                wrappedHandle.ThrottlerActor.Tell(new Handle(wrappedHandle));
-            }
-            else if (message is AssociateUnderlying)
-            {
-                var ua = message as AssociateUnderlying;
-
-                // Slight modification of PipeTo, only success is sent, failure is propagated to a separate Task
-                var associateTask = WrappedTransport.Associate(ua.RemoteAddress);
-                var self = Self;
-                associateTask.ContinueWith(tr =>
+                case InboundAssociation ia:
                 {
-                    if (tr.IsFaulted)
+                    var wrappedHandle = WrapHandle(ia.Association, AssociationListener, true);
+                    wrappedHandle.ThrottlerActor.Tell(new Handle(wrappedHandle));
+                    return;
+                }
+                
+                case AssociateUnderlying ua:
+                {
+                    // Slight modification of PipeTo, only success is sent, failure is propagated to a separate Task
+                    var associateTask = WrappedTransport.Associate(ua.RemoteAddress);
+                    var self = Self;
+                    associateTask.ContinueWith(tr =>
                     {
-                        ua.StatusPromise.SetException(tr.Exception ?? new Exception("association failed"));
-                    }
-                    else
+                        if (tr.IsFaulted)
+                        {
+                            ua.StatusPromise.SetException(tr.Exception ?? new Exception("association failed"));
+                        }
+                        else
+                        {
+                            self.Tell(new AssociateResult(tr.Result, ua.StatusPromise));
+                        }
+
+                    }, TaskContinuationOptions.ExecuteSynchronously);
+                    return;
+                }
+                
+                // Finished outbound association and got back the handle
+                case AssociateResult ar:
+                {
+                    var wrappedHandle = WrapHandle(ar.AssociationHandle, AssociationListener, false);
+                    var naked = NakedAddress(ar.AssociationHandle.RemoteAddress);
+                    var inMode = GetInboundMode(naked);
+                    wrappedHandle.OutboundThrottleMode.Value = GetOutboundMode(naked);
+                    wrappedHandle.ReadHandlerSource.Task.ContinueWith(
+                            tr => new ListenerAndMode(tr.Result, inMode), 
+                            TaskContinuationOptions.ExecuteSynchronously)
+                        .PipeTo(wrappedHandle.ThrottlerActor);
+                    _handleTable.Add((naked, wrappedHandle));
+                    ar.StatusPromise.SetResult(wrappedHandle);
+                    return;
+                }
+                
+                case SetThrottle st:
+                {
+                    var naked = NakedAddress(st.Address);
+                    _throttlingModes[naked] = (st.Mode, st.Direction);
+                    var modes = new List<Task<SetThrottleAck>>
                     {
-                        self.Tell(new AssociateResult(tr.Result, ua.StatusPromise));
+                        Task.FromResult(SetThrottleAck.Instance)
+                    };
+                    
+                    foreach (var (address, throttlerHandle) in _handleTable)
+                    {
+                        if (address == naked)
+                            modes.Add(SetMode(throttlerHandle, st.Mode, st.Direction));
                     }
 
-                }, TaskContinuationOptions.ExecuteSynchronously);
-
-            }
-            else if (message is AssociateResult) // Finished outbound association and got back the handle
-            {
-                var ar = message as AssociateResult;
-                var wrappedHandle = WrapHandle(ar.AssociationHandle, AssociationListener, false);
-                var naked = NakedAddress(ar.AssociationHandle.RemoteAddress);
-                var inMode = GetInboundMode(naked);
-                wrappedHandle.OutboundThrottleMode.Value = GetOutboundMode(naked);
-                wrappedHandle.ReadHandlerSource.Task.ContinueWith(tr => new ListenerAndMode(tr.Result, inMode), TaskContinuationOptions.ExecuteSynchronously)
-                    .PipeTo(wrappedHandle.ThrottlerActor);
-                _handleTable.Add((naked, wrappedHandle));
-                ar.StatusPromise.SetResult(wrappedHandle);
-            }
-            else if (message is SetThrottle)
-            {
-                var st = message as SetThrottle;
-                var naked = NakedAddress(st.Address);
-                _throttlingModes[naked] = (st.Mode, st.Direction);
-                var ok = Task.FromResult(SetThrottleAck.Instance);
-                var modes = new List<Task<SetThrottleAck>>() { ok };
-                foreach (var handle in _handleTable)
+                    var sender = Sender;
+                    Task.WhenAll(modes).ContinueWith(
+                            _ => SetThrottleAck.Instance, 
+                            TaskContinuationOptions.ExecuteSynchronously)
+                        .PipeTo(sender);
+                    return;
+                }
+                
+                case ForceDisassociate fd:
                 {
-                    if (handle.Item1 == naked)
-                        modes.Add(SetMode(handle.Item2, st.Mode, st.Direction));
+                    var naked = NakedAddress(fd.Address);
+                    foreach (var handle in _handleTable)
+                    {
+                        if (handle.Item1 == naked)
+#pragma warning disable CS0618
+                                handle.Item2.Disassociate();
+#pragma warning restore CS0618
+                        }
+
+                        /*
+                         * NOTE: Important difference between Akka.NET and Akka here.
+                         * In canonical Akka, ThrottleHandlers are never removed from
+                         * the _handleTable. The reason is because Ask-ing a terminated ActorRef
+                         * doesn't cause any exceptions to be thrown upstream - it just times out
+                         * and propagates a failed Future.
+                         * 
+                         * In the CLR, a CancellationException gets thrown and causes all
+                         * parent tasks chaining back to the EndPointManager to fail due
+                         * to an Ask timeout.
+                         * 
+                         * So in order to avoid this problem, we remove any disassociated handles
+                         * from the _handleTable.
+                         * 
+                         * Questions? Ask @Aaronontheweb
+                         */
+                        _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
+                    Sender.Tell(ForceDisassociateAck.Instance);
+                    return;
+                }
+                
+                case ForceDisassociateExplicitly fde:
+                {
+                    var naked = NakedAddress(fde.Address);
+                    foreach (var (address, throttlerHandle) in _handleTable)
+                    {
+                        if (address == naked)
+                            throttlerHandle.DisassociateWithFailure(fde.Reason);
+                    }
+
+                    /*
+                     * NOTE: Important difference between Akka.NET and Akka here.
+                     * In canonical Akka, ThrottleHandlers are never removed from
+                     * the _handleTable. The reason is because Ask-ing a terminated ActorRef
+                     * doesn't cause any exceptions to be thrown upstream - it just times out
+                     * and propagates a failed Future.
+                     * 
+                     * In the CLR, a CancellationException gets thrown and causes all
+                     * parent tasks chaining back to the EndPointManager to fail due
+                     * to an Ask timeout.
+                     * 
+                     * So in order to avoid this problem, we remove any disassociated handles
+                     * from the _handleTable.
+                     * 
+                     * Questions? Ask @Aaronontheweb
+                     */
+                    _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
+                    Sender.Tell(ForceDisassociateAck.Instance);
+                    return;
+                }
+                
+                case Checkin chkin:
+                {
+                    var naked = NakedAddress(chkin.Origin);
+                    _handleTable.Add((naked, chkin.ThrottlerHandle));
+                    SetMode(naked, chkin.ThrottlerHandle);
+                    return;
                 }
 
-                var sender = Sender;
-                Task.WhenAll(modes).ContinueWith(tr =>
+                case Terminated terminated:
                 {
-                    return SetThrottleAck.Instance;
-                }, TaskContinuationOptions.ExecuteSynchronously)
-                    .PipeTo(sender);
-            }
-            else if (message is ForceDisassociate)
-            {
-                var fd = message as ForceDisassociate;
-                var naked = NakedAddress(fd.Address);
-                foreach (var handle in _handleTable)
-                {
-                    if (handle.Item1 == naked)
-                        handle.Item2.Disassociate();
+                    /*
+                     * A throttler child stopped for a reason other than ForceDisassociate[Explicitly]
+                     * (crash, PoisonPill, Blackhole-induced disassociation, transport shutdown).
+                     *
+                     * Its entry has to come out of the table for the same reason described in the
+                     * ForceDisassociate handler above: messaging a terminated handle from SetThrottle
+                     * fails Tasks all the way back up to the EndpointManager, and the table would
+                     * otherwise grow for the lifetime of the transport.
+                     */
+                    _handleTable.RemoveAll(tuple => tuple.Item2.ThrottlerActor.Equals(terminated.ActorRef));
+                    return;
                 }
-
-                /*
-                 * NOTE: Important difference between Akka.NET and Akka here.
-                 * In canonical Akka, ThrottleHandlers are never removed from
-                 * the _handleTable. The reason is because Ask-ing a terminated ActorRef
-                 * doesn't cause any exceptions to be thrown upstream - it just times out
-                 * and propagates a failed Future.
-                 * 
-                 * In the CLR, a CancellationException gets thrown and causes all
-                 * parent tasks chaining back to the EndPointManager to fail due
-                 * to an Ask timeout.
-                 * 
-                 * So in order to avoid this problem, we remove any disassociated handles
-                 * from the _handleTable.
-                 * 
-                 * Questions? Ask @Aaronontheweb
-                 */
-                _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
-                Sender.Tell(ForceDisassociateAck.Instance);
-            }
-            else if (message is ForceDisassociateExplicitly)
-            {
-                var fde = message as ForceDisassociateExplicitly;
-                var naked = NakedAddress(fde.Address);
-                foreach (var handle in _handleTable)
-                {
-                    if (handle.Item1 == naked)
-                        handle.Item2.DisassociateWithFailure(fde.Reason);
-                }
-
-                /*
-                 * NOTE: Important difference between Akka.NET and Akka here.
-                 * In canonical Akka, ThrottleHandlers are never removed from
-                 * the _handleTable. The reason is because Ask-ing a terminated ActorRef
-                 * doesn't cause any exceptions to be thrown upstream - it just times out
-                 * and propagates a failed Future.
-                 * 
-                 * In the CLR, a CancellationException gets thrown and causes all
-                 * parent tasks chaining back to the EndPointManager to fail due
-                 * to an Ask timeout.
-                 * 
-                 * So in order to avoid this problem, we remove any disassociated handles
-                 * from the _handleTable.
-                 * 
-                 * Questions? Ask @Aaronontheweb
-                 */
-                _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
-                Sender.Tell(ForceDisassociateAck.Instance);
-            }
-            else if (message is Checkin)
-            {
-                var chkin = message as Checkin;
-                var naked = NakedAddress(chkin.Origin);
-                _handleTable.Add((naked, chkin.ThrottlerHandle));
-                SetMode(naked, chkin.ThrottlerHandle);
             }
         }
 
@@ -495,7 +536,7 @@ namespace Akka.Remote.Transport
         private ThrottleMode GetInboundMode(Address nakedAddress)
         {
             if (_throttlingModes.TryGetValue(nakedAddress, out var mode))
-                if (mode.Item2 == ThrottleTransportAdapter.Direction.Both || mode.Item2 == ThrottleTransportAdapter.Direction.Receive)
+                if (mode.Item2 is ThrottleTransportAdapter.Direction.Both or ThrottleTransportAdapter.Direction.Receive)
                     return mode.Item1;
 
             return Unthrottled.Instance;
@@ -504,7 +545,7 @@ namespace Akka.Remote.Transport
         private ThrottleMode GetOutboundMode(Address nakedAddress)
         {
             if (_throttlingModes.TryGetValue(nakedAddress, out var mode))
-                if (mode.Item2 == ThrottleTransportAdapter.Direction.Both || mode.Item2 == ThrottleTransportAdapter.Direction.Send)
+                if (mode.Item2 is ThrottleTransportAdapter.Direction.Both or ThrottleTransportAdapter.Direction.Send)
                     return mode.Item1;
 
             return Unthrottled.Instance;
@@ -521,11 +562,9 @@ namespace Akka.Remote.Transport
         private Task<SetThrottleAck> SetMode(ThrottlerHandle handle, ThrottleMode mode,
             ThrottleTransportAdapter.Direction direction)
         {
-            if (direction == ThrottleTransportAdapter.Direction.Both ||
-                direction == ThrottleTransportAdapter.Direction.Send)
+            if (direction is ThrottleTransportAdapter.Direction.Both or ThrottleTransportAdapter.Direction.Send)
                 handle.OutboundThrottleMode.Value = mode;
-            if (direction == ThrottleTransportAdapter.Direction.Both ||
-                direction == ThrottleTransportAdapter.Direction.Receive)
+            if (direction is ThrottleTransportAdapter.Direction.Both or ThrottleTransportAdapter.Direction.Receive)
                 return AskModeWithDeathCompletion(handle.ThrottlerActor, mode, ActorTransportAdapter.AskTimeout);
             else
                 return Task.FromResult(SetThrottleAck.Instance);
@@ -555,10 +594,15 @@ namespace Akka.Remote.Transport
             bool inbound)
         {
             var managerRef = Self;
-            return new ThrottlerHandle(originalHandle, Context.ActorOf(
+            var throttlerActor = Context.ActorOf(
                 RARP.For(Context.System).ConfigureDispatcher(
-                Props.Create(() => new ThrottledAssociation(managerRef, listener, originalHandle, inbound)).WithDeploy(Deploy.Local)),
-                "throttler" + NextId()));
+                    Props.Create(() => new ThrottledAssociation(managerRef, listener, originalHandle, inbound))
+                        .WithDeploy(Deploy.Local)),
+                "throttler" + NextId());
+
+            // watch so we can purge the handle table when this association goes away
+            Context.Watch(throttlerActor);
+            return new ThrottlerHandle(originalHandle, throttlerActor);
         }
 
         #endregion
@@ -570,18 +614,19 @@ namespace Akka.Remote.Transport
     public abstract class ThrottleMode : INoSerializationVerificationNeeded
     {
         /// <summary>
-        /// TBD
+        /// Attempts to consume tokens for the requested amount at the given monotonic time.
+        /// Returns an updated throttle mode and whether the tokens were available.
         /// </summary>
-        /// <param name="nanoTimeOfSend">TBD</param>
-        /// <param name="tokens">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="nanoTimeOfSend">Monotonic timestamp used to calculate newly available tokens.</param>
+        /// <param name="tokens">Number of tokens required for the item.</param>
+        /// <returns>The updated mode and <see langword="true"/> if the item can proceed; otherwise the current mode and <see langword="false"/>.</returns>
         public abstract (ThrottleMode, bool) TryConsumeTokens(long nanoTimeOfSend, int tokens);
         /// <summary>
-        /// TBD
+        /// Calculates how long to wait before the requested tokens should be available.
         /// </summary>
-        /// <param name="currentNanoTime">TBD</param>
-        /// <param name="tokens">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="currentNanoTime">Current monotonic timestamp.</param>
+        /// <param name="tokens">Number of tokens required by the item.</param>
+        /// <returns>Estimated delay before the requested tokens are available.</returns>
         public abstract TimeSpan TimeToAvailable(long currentNanoTime, int tokens);
     }
 
@@ -592,18 +637,11 @@ namespace Akka.Remote.Transport
     {
         private Blackhole() { }
         // ReSharper disable once InconsistentNaming
-        private static readonly Blackhole _instance = new Blackhole();
 
         /// <summary>
         /// The singleton instance
         /// </summary>
-        public static Blackhole Instance
-        {
-            get
-            {
-                return _instance;
-            }
-        }
+        public static Blackhole Instance { get; } = new();
 
         /// <inheritdoc/>
         public override (ThrottleMode, bool) TryConsumeTokens(long nanoTimeOfSend, int tokens)
@@ -624,18 +662,7 @@ namespace Akka.Remote.Transport
     public class Unthrottled : ThrottleMode
     {
         private Unthrottled() { }
-        private static readonly Unthrottled _instance = new Unthrottled();
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public static Unthrottled Instance
-        {
-            get
-            {
-                return _instance;
-            }
-        }
+        public static Unthrottled Instance { get; } = new();
 
         /// <inheritdoc/>
         public override (ThrottleMode, bool) TryConsumeTokens(long nanoTimeOfSend, int tokens)
@@ -653,7 +680,7 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// Applies token-bucket throttling to introduce latency to a connection
     /// </summary>
-    sealed class TokenBucket : ThrottleMode
+    public sealed class TokenBucket : ThrottleMode
     {
         readonly int _capacity;
         readonly double _tokensPerSecond;
@@ -661,12 +688,12 @@ namespace Akka.Remote.Transport
         readonly int _availableTokens;
 
         /// <summary>
-        /// TBD
+        /// Creates a token-bucket mode with the supplied capacity, refill rate, and current state.
         /// </summary>
-        /// <param name="capacity">TBD</param>
-        /// <param name="tokensPerSecond">TBD</param>
-        /// <param name="nanoTimeOfLastSend">TBD</param>
-        /// <param name="availableTokens">TBD</param>
+        /// <param name="capacity">Maximum number of tokens held by the bucket.</param>
+        /// <param name="tokensPerSecond">Rate at which tokens are replenished.</param>
+        /// <param name="nanoTimeOfLastSend">Monotonic timestamp used as the start of token refill accounting.</param>
+        /// <param name="availableTokens">Tokens currently available in the bucket.</param>
         public TokenBucket(int capacity, double tokensPerSecond, long nanoTimeOfLastSend, int availableTokens)
         {
             _capacity = capacity;
@@ -726,15 +753,13 @@ namespace Akka.Remote.Transport
                 && _availableTokens == other._availableTokens;
         }
 
-        /// <inheritdoc/>
         public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj)) return false;
             if (ReferenceEquals(this, obj)) return true;
-            return obj is TokenBucket && Equals((TokenBucket)obj);
+            return obj is TokenBucket bucket && Equals(bucket);
         }
 
-        /// <inheritdoc/>
         public override int GetHashCode()
         {
             unchecked
@@ -810,15 +835,15 @@ namespace Akka.Remote.Transport
             return Equals(_address, other._address) && _direction == other._direction && Equals(_mode, other._mode);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj)) return false;
             if (ReferenceEquals(this, obj)) return true;
-            return obj is SetThrottle && Equals((SetThrottle)obj);
+            return obj is SetThrottle throttle && Equals(throttle);
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -859,17 +884,9 @@ namespace Akka.Remote.Transport
     public sealed class SetThrottleAck
     {
         private SetThrottleAck() { }
-        // ReSharper disable once InconsistentNaming
-        private static readonly SetThrottleAck _instance = new SetThrottleAck();
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public static SetThrottleAck Instance
-        {
-            get { return _instance; }
-        }
+        public static SetThrottleAck Instance { get; } = new();
     }
+
     /// <summary>
     /// INTERNAL API
     /// </summary>
@@ -878,13 +895,13 @@ namespace Akka.Remote.Transport
 
         internal readonly IActorRef ThrottlerActor;
 
-        internal AtomicReference<ThrottleMode> OutboundThrottleMode = new AtomicReference<ThrottleMode>(Unthrottled.Instance);
+        internal AtomicReference<ThrottleMode> OutboundThrottleMode = new(Unthrottled.Instance);
 
         /// <summary>
-        /// TBD
+        /// Wraps an association handle and applies the configured throttle mode to outbound writes.
         /// </summary>
-        /// <param name="wrappedHandle">TBD</param>
-        /// <param name="throttlerActor">TBD</param>
+        /// <param name="wrappedHandle">Underlying association handle.</param>
+        /// <param name="throttlerActor">Actor that manages inbound throttling for this association.</param>
         public ThrottlerHandle(AssociationHandle wrappedHandle, IActorRef throttlerActor) : base(wrappedHandle, ThrottleTransportAdapter.Scheme)
         {
             ThrottlerActor = throttlerActor;
@@ -917,15 +934,17 @@ namespace Akka.Remote.Transport
         }
 
         /// <inheritdoc/>
+#pragma warning disable CS0672
         public override void Disassociate()
+#pragma warning restore CS0672
         {
             ThrottlerActor.Tell(PoisonPill.Instance);
         }
 
         /// <summary>
-        /// TBD
+        /// Disassociates the handle and reports the supplied reason through the association actor.
         /// </summary>
-        /// <param name="reason">TBD</param>
+        /// <param name="reason">Reason to report when the association is disassociated.</param>
         public void DisassociateWithFailure(DisassociateInfo reason)
         {
             ThrottlerActor.Tell(new ThrottledAssociation.FailWith(reason));
@@ -935,19 +954,19 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    internal class ThrottledAssociation : FSM<ThrottledAssociation.ThrottlerState, ThrottledAssociation.IThrottlerData>, ILoggingFSM
+    internal sealed class ThrottledAssociation : FSM<ThrottledAssociation.ThrottlerState, ThrottledAssociation.IThrottlerData>, ILoggingFSM
     {
         #region ThrottledAssociation FSM state and data classes
 
         private const string DequeueTimerName = "dequeue";
 
         /// <summary>
-        /// TBD
+        /// Message that triggers delivery of the next queued inbound payload.
         /// </summary>
         sealed class Dequeue { }
 
         /// <summary>
-        /// TBD
+        /// States used while initializing and throttling an association.
         /// </summary>
         public enum ThrottlerState
         {
@@ -987,60 +1006,55 @@ namespace Akka.Remote.Transport
         }
 
         /// <summary>
-        /// TBD
+        /// Marker interface for state data held by the association throttler FSM.
         /// </summary>
         internal interface IThrottlerData { }
 
         /// <summary>
-        /// TBD
+        /// Initial state data used before an association throttler has been initialized.
         /// </summary>
-        internal class Uninitialized : IThrottlerData
+        internal sealed class Uninitialized : IThrottlerData
         {
             private Uninitialized() { }
-            // ReSharper disable once InconsistentNaming
-            private static readonly Uninitialized _instance = new Uninitialized();
-            /// <summary>
-            /// TBD
-            /// </summary>
-            public static Uninitialized Instance { get { return _instance; } }
+            public static Uninitialized Instance { get; } = new();
         }
 
         /// <summary>
-        /// TBD
+        /// State data containing the public throttler handle exposed during inbound setup.
         /// </summary>
         internal sealed class ExposedHandle : IThrottlerData
         {
             /// <summary>
-            /// TBD
+            /// Creates state data for the exposed throttler handle.
             /// </summary>
-            /// <param name="handle">TBD</param>
+            /// <param name="handle">Handle exposed to the association throttler.</param>
             public ExposedHandle(ThrottlerHandle handle)
             {
                 Handle = handle;
             }
 
             /// <summary>
-            /// TBD
+            /// Throttler handle exposed to the association throttler.
             /// </summary>
             public ThrottlerHandle Handle { get; private set; }
         }
 
         /// <summary>
-        /// TBD
+        /// Message directing the association throttler to fail the association with a reason.
         /// </summary>
         internal sealed class FailWith
         {
             /// <summary>
-            /// TBD
+            /// Creates a failure message for the specified disassociation reason.
             /// </summary>
-            /// <param name="failReason">TBD</param>
+            /// <param name="failReason">Reason to report when the association is disassociated.</param>
             public FailWith(DisassociateInfo failReason)
             {
                 FailReason = failReason;
             }
 
             /// <summary>
-            /// TBD
+            /// Reason to report when the association is disassociated.
             /// </summary>
             public DisassociateInfo FailReason { get; private set; }
         }
@@ -1048,47 +1062,49 @@ namespace Akka.Remote.Transport
         #endregion
 
         /// <summary>
-        /// TBD
+        /// Manager actor that supplies throttle modes and tracks this handle.
         /// </summary>
-        protected IActorRef Manager;
+        private readonly IActorRef Manager;
         /// <summary>
-        /// TBD
+        /// Listener notified when an inbound association is ready for use.
         /// </summary>
-        protected IAssociationEventListener AssociationHandler;
+        private readonly IAssociationEventListener AssociationHandler;
         /// <summary>
-        /// TBD
+        /// Underlying transport association wrapped by this throttler.
         /// </summary>
-        protected AssociationHandle OriginalHandle;
+        private readonly AssociationHandle OriginalHandle;
         /// <summary>
-        /// TBD
+        /// Indicates whether this throttler handles the inbound side of the association.
         /// </summary>
-        protected bool Inbound;
+        private readonly bool Inbound;
 
         /// <summary>
-        /// TBD
+        /// Current mode used to throttle inbound payloads.
         /// </summary>
-        protected ThrottleMode InboundThrottleMode;
+        private ThrottleMode InboundThrottleMode;
         /// <summary>
-        /// TBD
+        /// Inbound payloads queued until the throttle mode and upstream listener allow delivery.
         /// </summary>
-        protected Queue<ByteString> ThrottledMessages = new Queue<ByteString>();
+        private Queue<ByteString> ThrottledMessages = new();
         /// <summary>
-        /// TBD
+        /// Listener that receives payloads after inbound throttling.
         /// </summary>
-        protected IHandleEventListener UpstreamListener;
+        private IHandleEventListener UpstreamListener;
 
         /// <summary>
         /// Used for decoding certain types of throttled messages on-the-fly
         /// </summary>
         private readonly AkkaPduProtobuffCodec _codec;
 
+        private readonly ILoggingAdapter _log = Context.GetLogger();
+
         /// <summary>
-        /// TBD
+        /// Creates a per-association actor that throttles inbound or outbound traffic.
         /// </summary>
-        /// <param name="manager">TBD</param>
-        /// <param name="associationHandler">TBD</param>
-        /// <param name="originalHandle">TBD</param>
-        /// <param name="inbound">TBD</param>
+        /// <param name="manager">Throttler manager coordinating modes and association handles.</param>
+        /// <param name="associationHandler">Listener notified when an inbound association becomes available.</param>
+        /// <param name="originalHandle">Underlying transport association to wrap.</param>
+        /// <param name="inbound"><see langword="true"/> for an inbound association; otherwise, for an outbound association.</param>
         public ThrottledAssociation(IActorRef manager, IAssociationEventListener associationHandler, AssociationHandle originalHandle, bool inbound)
         {
             _codec = new AkkaPduProtobuffCodec(Context.System);
@@ -1099,33 +1115,70 @@ namespace Akka.Remote.Transport
             InitializeFSM();
         }
 
+        /// <summary>
+        /// Disassociates the wrapped handle whenever this actor stops, for any reason (explicit
+        /// disassociate, Blackhole, crash, or transport shutdown). Mirrors canonical Akka's
+        /// <c>ThrottledAssociation.postStop</c>. The wrapped handle's Disassociate() is required to be
+        /// idempotent, so this is safe even if the peer already tore the connection down first.
+        /// </summary>
+        protected override void PostStop()
+        {
+            try
+            {
+                OriginalHandle.Disassociate("the owning ThrottledAssociation stopped", _log);
+            }
+            finally
+            {
+                base.PostStop();
+            }
+        }
+
         private void InitializeFSM()
         {
             When(ThrottlerState.WaitExposedHandle, @event =>
             {
-                if (@event.FsmEvent is ThrottlerManager.Handle && @event.StateData is Uninitialized)
+                if (@event is { FsmEvent: ThrottlerManager.Handle handle, StateData: Uninitialized })
                 {
                     // register to downstream layer and wait for origin
                     OriginalHandle.ReadHandlerSource.SetResult(new ActorHandleEventListener(Self));
                     return
                         GoTo(ThrottlerState.WaitOrigin)
                             .Using(
-                                new ExposedHandle(
-                                    @event.FsmEvent.AsInstanceOf<ThrottlerManager.Handle>().ThrottlerHandle));
+                                new ExposedHandle(handle.ThrottlerHandle));
                 }
+
+                if (@event.FsmEvent is InboundPayload)
+                {
+                    /*
+                     * Unreachable during a healthy startup: nothing can deliver an InboundPayload to us
+                     * until we complete OriginalHandle.ReadHandlerSource above, which is the same step
+                     * that leaves this state.
+                     *
+                     * Getting one here means this actor was restarted - the read handler from the previous
+                     * incarnation still points at this ActorRef, but the ThrottlerManager only ever sends
+                     * Handle once, at creation. Staying put would silently discard every inbound packet for
+                     * the life of the association, so tear it down instead and let remoting re-associate.
+                     */
+                    _log.Warning(
+                        "Throttler for [{0}] received an InboundPayload before it was initialized - most likely restarted. Disassociating so the association can be re-established.",
+                        OriginalHandle.RemoteAddress);
+                    // PostStop disassociates the wrapped handle; no need to do it here too
+                    return Stop();
+                }
+
                 return null;
             });
 
             When(ThrottlerState.WaitOrigin, @event =>
             {
-                if (@event.FsmEvent is InboundPayload && @event.StateData is ExposedHandle)
+                if (@event is { FsmEvent: InboundPayload payload, StateData: ExposedHandle handle })
                 {
-                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>().Payload;
+                    var b = payload.Payload;
                     ThrottledMessages.Enqueue(b);
                     var origin = PeekOrigin(b);
                     if (origin != null)
                     {
-                        Manager.Tell(new ThrottlerManager.Checkin(origin, @event.StateData.AsInstanceOf<ExposedHandle>().Handle));
+                        Manager.Tell(new ThrottlerManager.Checkin(origin, handle.Handle));
                         return GoTo(ThrottlerState.WaitMode);
                     }
                     return Stay();
@@ -1135,24 +1188,25 @@ namespace Akka.Remote.Transport
 
             When(ThrottlerState.WaitMode, @event =>
             {
-                if (@event.FsmEvent is InboundPayload)
+                if (@event.FsmEvent is InboundPayload payload)
                 {
-                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>().Payload;
+                    var b = payload.Payload;
                     ThrottledMessages.Enqueue(b);
                     return Stay();
                 }
 
-                if (@event.FsmEvent is ThrottleMode && @event.StateData is ExposedHandle)
+                if (@event is { FsmEvent: ThrottleMode mode, StateData: ExposedHandle handle })
                 {
-                    var mode = @event.FsmEvent.AsInstanceOf<ThrottleMode>();
-                    var exposedHandle = @event.StateData.AsInstanceOf<ExposedHandle>().Handle;
+                    var exposedHandle = handle.Handle;
                     InboundThrottleMode = mode;
                     try
                     {
                         if (mode is Blackhole)
                         {
                             ThrottledMessages = new Queue<ByteString>();
+#pragma warning disable CS0618
                             exposedHandle.Disassociate();
+#pragma warning restore CS0618
                             return Stop();
                         }
                         else
@@ -1177,16 +1231,15 @@ namespace Akka.Remote.Transport
 
             When(ThrottlerState.WaitUpstreamListener, @event =>
             {
-                if (@event.FsmEvent is InboundPayload)
+                if (@event.FsmEvent is InboundPayload payload)
                 {
-                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>();
-                    ThrottledMessages.Enqueue(b.Payload);
+                    ThrottledMessages.Enqueue(payload.Payload);
                     return Stay();
                 }
 
-                if (@event.FsmEvent is ThrottlerManager.Listener)
+                if (@event.FsmEvent is ThrottlerManager.Listener listener)
                 {
-                    UpstreamListener = @event.FsmEvent.AsInstanceOf<ThrottlerManager.Listener>().HandleEventListener;
+                    UpstreamListener = listener.HandleEventListener;
                     Self.Tell(new Dequeue());
                     return GoTo(ThrottlerState.Throttling);
                 }
@@ -1196,19 +1249,17 @@ namespace Akka.Remote.Transport
 
             When(ThrottlerState.WaitModeAndUpstreamListener, @event =>
             {
-                if (@event.FsmEvent is ThrottlerManager.ListenerAndMode)
+                if (@event.FsmEvent is ThrottlerManager.ListenerAndMode listenerAndMode)
                 {
-                    var listenerAndMode = @event.FsmEvent.AsInstanceOf<ThrottlerManager.ListenerAndMode>();
                     UpstreamListener = listenerAndMode.HandleEventListener;
                     InboundThrottleMode = listenerAndMode.Mode;
                     Self.Tell(new Dequeue());
                     return GoTo(ThrottlerState.Throttling);
                 }
 
-                if (@event.FsmEvent is InboundPayload)
+                if (@event.FsmEvent is InboundPayload inboundPayload)
                 {
-                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>();
-                    ThrottledMessages.Enqueue(b.Payload);
+                    ThrottledMessages.Enqueue(inboundPayload.Payload);
                     return Stay();
                 }
 
@@ -1217,9 +1268,8 @@ namespace Akka.Remote.Transport
 
             When(ThrottlerState.Throttling, @event =>
             {
-                if (@event.FsmEvent is ThrottleMode)
+                if (@event.FsmEvent is ThrottleMode mode)
                 {
-                    var mode = @event.FsmEvent.AsInstanceOf<ThrottleMode>();
                     InboundThrottleMode = mode;
                     if (mode is Blackhole) ThrottledMessages = new Queue<ByteString>();
                     CancelTimer(DequeueTimerName);
@@ -1229,9 +1279,9 @@ namespace Akka.Remote.Transport
                     return Stay();
                 }
 
-                if (@event.FsmEvent is InboundPayload)
+                if (@event.FsmEvent is InboundPayload inboundPayload)
                 {
-                    ForwardOrDelay(@event.FsmEvent.AsInstanceOf<InboundPayload>().Payload);
+                    ForwardOrDelay(inboundPayload.Payload);
                     return Stay();
                 }
 
@@ -1255,9 +1305,9 @@ namespace Akka.Remote.Transport
             WhenUnhandled(@event =>
             {
                 // we should always set the throttling mode
-                if (@event.FsmEvent is ThrottleMode)
+                if (@event.FsmEvent is ThrottleMode mode)
                 {
-                    InboundThrottleMode = @event.FsmEvent.AsInstanceOf<ThrottleMode>();
+                    InboundThrottleMode = mode;
                     Sender.Tell(SetThrottleAck.Instance);
                     return Stay();
                 }
@@ -1267,9 +1317,9 @@ namespace Akka.Remote.Transport
                     return Stop(); // not notifying the upstream handler is intentional: we are relying on heartbeating
                 }
 
-                if (@event.FsmEvent is FailWith)
+                if (@event.FsmEvent is FailWith failWith)
                 {
-                    var reason = @event.FsmEvent.AsInstanceOf<FailWith>().FailReason;
+                    var reason = failWith.FailReason;
                     if (UpstreamListener != null) UpstreamListener.Notify(new Disassociated(reason));
                     return Stop();
                 }
@@ -1296,9 +1346,9 @@ namespace Akka.Remote.Transport
             try
             {
                 var pdu = _codec.DecodePdu(b);
-                if (pdu is Associate)
+                if (pdu is Associate associate)
                 {
-                    return pdu.AsInstanceOf<Associate>().Info.Origin;
+                    return associate.Info.Origin;
                 }
                 return null;
             }

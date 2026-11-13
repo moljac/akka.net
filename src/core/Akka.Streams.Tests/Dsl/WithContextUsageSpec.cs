@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="WithContextUsageSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,7 +13,6 @@ using Akka.Streams.Dsl;
 using Akka.Streams.TestKit;
 using Akka.TestKit;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Streams.Tests.Dsl
 {
@@ -66,7 +65,7 @@ namespace Akka.Streams.Tests.Dsl
         {
             var input = GenInput(0, 10);
 
-            Func<Record, bool> f = record => record.Key.EndsWith("2");
+            Func<Record, bool> f = record => record.Key.EndsWith('2');
             
             var expectedOffsets = input.Where(cm => f(cm.Record)).Select(cm => new Offset(cm.Offset.Offset)).ToArray();
             expectedOffsets = expectedOffsets.Take(expectedOffsets.Length - 1).ToArray();
@@ -214,7 +213,7 @@ namespace Akka.Streams.Tests.Dsl
                     new CommittableMessage<Record>(new Record(GenKey(i), GenValue(i)), new CommittableOffsetImpl(i)))
                 .ToArray();
 
-        private static SourceWithContext<Offset, Record, NotUsed> CreateSourceWithContext(
+        private static SourceWithContext<Record, Offset, NotUsed> CreateSourceWithContext(
             params CommittableMessage<Record>[] messages) =>
             CommittableConsumer.CommittableSource(messages)
                 .AsSourceWithContext(m => new Offset(m.Offset.Offset))
@@ -243,7 +242,7 @@ namespace Akka.Streams.Tests.Dsl
 
         sealed class Offset : IEquatable<Offset>
         {
-            public static readonly Offset Uninitialized = new Offset(-1);
+            public static readonly Offset Uninitialized = new(-1);
             public int Value { get; }
 
             public Offset(int value)

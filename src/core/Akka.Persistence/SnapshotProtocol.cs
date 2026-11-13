@@ -1,12 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SnapshotProtocol.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Newtonsoft.Json;
 
 namespace Akka.Persistence
@@ -26,6 +27,39 @@ namespace Akka.Persistence
     /// </summary>
     public interface ISnapshotResponse : ISnapshotMessage { }
 
+    public sealed class CheckSnapshotStoreHealth : ISnapshotRequest
+    {
+        public CheckSnapshotStoreHealth(CancellationToken cancellationToken)
+        {
+            CancellationToken = cancellationToken;
+        }
+
+        public CancellationToken CancellationToken { get; }
+
+        public override string ToString()
+        {
+            return "CheckSnapshotStoreHealth";
+        }
+    }
+    
+    /// <summary>
+    /// Health check response from the SnapshotStore.
+    /// </summary>
+    public sealed class SnapshotStoreHealthCheckResponse : ISnapshotResponse
+    {
+        public SnapshotStoreHealthCheckResponse(PersistenceHealthCheckResult result)
+        {
+            Result = result;
+        }
+
+        public PersistenceHealthCheckResult Result { get; }
+        
+        public override string ToString()
+        {
+            return $"SnapshotStoreHealthCheckResponse<{Result}>";
+        }
+    }
+
     /// <summary>
     /// Metadata for all persisted snapshot records.
     /// </summary>
@@ -37,7 +71,7 @@ namespace Akka.Persistence
         /// </summary>
         internal class SnapshotMetadataComparer : IComparer<SnapshotMetadata>
         {
-            /// <inheritdoc/>
+           
             public int Compare(SnapshotMetadata x, SnapshotMetadata y)
             {
                 var compare = string.Compare(x.PersistenceId, y.PersistenceId, StringComparison.Ordinal);
@@ -52,32 +86,28 @@ namespace Akka.Persistence
         }
 
         /// <summary>
-        /// TBD
+        /// The singleton comparer instance.
         /// </summary>
         public static IComparer<SnapshotMetadata> Comparer { get; } = new SnapshotMetadataComparer();
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        public static DateTime TimestampNotSpecified = DateTime.MinValue;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SnapshotMetadata"/> class.
         /// </summary>
         /// <param name="persistenceId">The id of the persistent actor fro which the snapshot was taken.</param>
         /// <param name="sequenceNr">The sequence number at which the snapshot was taken.</param>
+        [Obsolete("This constructor is deprecated and will be removed in v1.6. Use the constructor with the timestamp parameter instead. Since v1.5.28", true)]
         public SnapshotMetadata(string persistenceId, long sequenceNr)
-            : this(persistenceId, sequenceNr, TimestampNotSpecified)
+            : this(persistenceId, sequenceNr, DateTime.UtcNow)
         {
         }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SnapshotMetadata"/> class.
         /// </summary>
-        /// <param name="persistenceId">The id of the persistent actor fro mwhich the snapshot was taken.</param>
+        /// <param name="persistenceId">The id of the persistent actor from which the snapshot was taken.</param>
         /// <param name="sequenceNr">The sequence number at which the snapshot was taken.</param>
         /// <param name="timestamp">The time at which the snapshot was saved.</param>
-        [JsonConstructor]
+        [JsonConstructor] // TODO: remove this
         public SnapshotMetadata(string persistenceId, long sequenceNr, DateTime timestamp)
         {
             PersistenceId = persistenceId;
@@ -100,10 +130,16 @@ namespace Akka.Persistence
         /// </summary>
         public DateTime Timestamp { get; }
 
-        /// <inheritdoc/>
+        /// <summary>
+        /// We will probably use nullable in the future, but for the time being
+        /// we use <see cref="DateTime.MinValue"/> to represent "no timestamp"
+        /// </summary>
+        internal static DateTime TimestampNotSpecified => DateTime.MinValue;
+
+
         public override bool Equals(object obj) => Equals(obj as SnapshotMetadata);
 
-        /// <inheritdoc/>
+        
         public bool Equals(SnapshotMetadata other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -112,7 +148,7 @@ namespace Akka.Persistence
             return string.Equals(PersistenceId, other.PersistenceId) && SequenceNr == other.SequenceNr && Timestamp.Equals(other.Timestamp);
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -124,7 +160,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"SnapshotMetadata<pid: {PersistenceId}, seqNr: {SequenceNr}, timestamp: {Timestamp:yyyy/MM/dd}>";
     }
 
@@ -148,7 +184,7 @@ namespace Akka.Persistence
         /// </summary>
         public SnapshotMetadata Metadata { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(SaveSnapshotSuccess other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -157,13 +193,13 @@ namespace Akka.Persistence
             return Equals(Metadata, other.Metadata);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as SaveSnapshotSuccess);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode() => Metadata != null ? Metadata.GetHashCode() : 0;
 
-        /// <inheritdoc/>
+       
         public override string ToString() => $"SaveSnapshotSuccess<{Metadata}>";
     }
 
@@ -187,7 +223,7 @@ namespace Akka.Persistence
         /// </summary>
         public SnapshotMetadata Metadata { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(DeleteSnapshotSuccess other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -196,13 +232,13 @@ namespace Akka.Persistence
             return Equals(Metadata, other.Metadata);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as DeleteSnapshotSuccess);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode() => Metadata != null ? Metadata.GetHashCode() : 0;
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"DeleteSnapshotSuccess<{Metadata}>";
     }
 
@@ -226,7 +262,7 @@ namespace Akka.Persistence
         /// </summary>
         public SnapshotSelectionCriteria Criteria { get; }
 
-        /// <inheritdoc/>
+
         public bool Equals(DeleteSnapshotsSuccess other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -235,19 +271,19 @@ namespace Akka.Persistence
             return Equals(Criteria, other.Criteria);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj)
         {
             return Equals(obj as DeleteSnapshotsSuccess);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Criteria != null ? Criteria.GetHashCode() : 0);
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString()
         {
             return $"DeleteSnapshotsSuccess<{Criteria}>";
@@ -281,7 +317,7 @@ namespace Akka.Persistence
         /// </summary>
         public Exception Cause { get; }
 
-        /// <inheritdoc/>
+        
         public bool Equals(SaveSnapshotFailure other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -290,13 +326,13 @@ namespace Akka.Persistence
             return Equals(Cause, other.Cause) && Equals(Metadata, other.Metadata);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as SaveSnapshotFailure);
         }
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -305,7 +341,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString()
         {
             return $"SaveSnapshotFailure<meta: {Metadata}, cause: {Cause}>";
@@ -339,7 +375,7 @@ namespace Akka.Persistence
         /// </summary>
         public Exception Cause { get; }
 
-        /// <inheritdoc/>
+        
         public bool Equals(DeleteSnapshotFailure other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -348,10 +384,10 @@ namespace Akka.Persistence
             return Equals(Cause, other.Cause) && Equals(Metadata, other.Metadata);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as DeleteSnapshotFailure);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -360,7 +396,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString() => $"DeleteSnapshotFailure<meta: {Metadata}, cause: {Cause}>";
     }
 
@@ -391,7 +427,7 @@ namespace Akka.Persistence
         /// </summary>
         public Exception Cause { get; }
 
-        /// <inheritdoc/>
+        
         public bool Equals(DeleteSnapshotsFailure other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -400,10 +436,10 @@ namespace Akka.Persistence
             return Equals(Cause, other.Cause) && Equals(Criteria, other.Criteria);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as DeleteSnapshotsFailure);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -412,7 +448,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"DeleteSnapshotsFailure<criteria: {Criteria}, cause: {Cause}>";
     }
 
@@ -444,7 +480,7 @@ namespace Akka.Persistence
         /// </summary>
         public object Snapshot { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(SnapshotOffer other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -453,10 +489,10 @@ namespace Akka.Persistence
             return Equals(Metadata, other.Metadata) && Equals(Snapshot, other.Snapshot);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as SnapshotOffer);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -465,7 +501,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"SnapshotOffer<meta: {Metadata}, snapshot: {Snapshot}>";
     }
 
@@ -478,20 +514,20 @@ namespace Akka.Persistence
         /// <summary>
         /// The latest saved snapshot.
         /// </summary>
-        public static SnapshotSelectionCriteria Latest { get; } = new SnapshotSelectionCriteria(long.MaxValue, DateTime.MaxValue);
+        public static SnapshotSelectionCriteria Latest { get; } = new(long.MaxValue, DateTime.MaxValue);
 
         /// <summary>
         /// No saved snapshot matches.
         /// </summary>
-        public static SnapshotSelectionCriteria None { get; } = new SnapshotSelectionCriteria(0L, DateTime.MinValue);
+        public static SnapshotSelectionCriteria None { get; } = new(0L, DateTime.MinValue);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SnapshotSelectionCriteria"/> class.
         /// </summary>
-        /// <param name="maxSequenceNr">Upper bound for a selected snapshot's sequence number.</param>
-        /// <param name="maxTimeStamp">Upper bound for a selected snapshot's timestamp.</param>
-        /// <param name="minSequenceNr">Lower bound for a selected snapshot's sequence number</param>
-        /// <param name="minTimestamp">Lower bound for a selected snapshot's timestamp</param>
+        /// <param name="maxSequenceNr">Inclusive upper bound for a selected snapshot's sequence number.</param>
+        /// <param name="maxTimeStamp">Inclusive upper bound for a selected snapshot's timestamp.</param>
+        /// <param name="minSequenceNr">Inclusive lower bound for a selected snapshot's sequence number.</param>
+        /// <param name="minTimestamp">Inclusive lower bound for a selected snapshot's timestamp. A null value is treated as <see cref="DateTime.MinValue"/>.</param>
         [JsonConstructor]
         public SnapshotSelectionCriteria(long maxSequenceNr, DateTime maxTimeStamp, long minSequenceNr = 0L, DateTime? minTimestamp = null)
         {
@@ -504,28 +540,28 @@ namespace Akka.Persistence
         /// <summary>
         /// Initializes a new instance of the <see cref="SnapshotSelectionCriteria"/> class.
         /// </summary>
-        /// <param name="maxSequenceNr">Upper bound for a selected snapshot's sequence number.</param>
+        /// <param name="maxSequenceNr">Inclusive upper bound for a selected snapshot's sequence number.</param>
         public SnapshotSelectionCriteria(long maxSequenceNr) : this(maxSequenceNr, DateTime.MaxValue)
         {
         }
 
         /// <summary>
-        /// Upper bound for a selected snapshot's sequence number.
+        /// Inclusive upper bound for a selected snapshot's sequence number.
         /// </summary>
         public long MaxSequenceNr { get; }
 
         /// <summary>
-        /// Upper bound for a selected snapshot's timestamp.
+        /// Inclusive upper bound for a selected snapshot's timestamp.
         /// </summary>
         public DateTime MaxTimeStamp { get; }
 
         /// <summary>
-        /// Lower bound for a selected snapshot's sequence number
+        /// Inclusive lower bound for a selected snapshot's sequence number.
         /// </summary>
         public long MinSequenceNr { get; }
 
         /// <summary>
-        /// Lower bound for a selected snapshot's timestamp
+        /// Inclusive lower bound for a selected snapshot's timestamp.
         /// </summary>
         public DateTime? MinTimestamp { get; }
 
@@ -542,7 +578,7 @@ namespace Akka.Persistence
                    metadata.SequenceNr >= MinSequenceNr && metadata.Timestamp >= MinTimestamp;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(SnapshotSelectionCriteria other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -552,10 +588,10 @@ namespace Akka.Persistence
                    MinSequenceNr == other.MinSequenceNr && MinTimestamp == other.MinTimestamp;
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as SnapshotSelectionCriteria);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -569,7 +605,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString() => $"SnapshotSelectionCriteria<maxSeqNr: {MaxSequenceNr}, maxTimestamp: {MaxTimeStamp:yyyy/MM/dd}, minSeqNr: {MinSequenceNr}, minTimestamp: {MinTimestamp:yyyy/MM/dd}>";
     }
 
@@ -600,7 +636,7 @@ namespace Akka.Persistence
         /// </summary>
         public object Snapshot { get; }
 
-        /// <inheritdoc/>
+        
         public bool Equals(SelectedSnapshot other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -609,10 +645,10 @@ namespace Akka.Persistence
             return Equals(Metadata, other.Metadata) && Equals(Snapshot, other.Snapshot);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as SelectedSnapshot);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -621,7 +657,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"SelectedSnapshot<meta: {Metadata}, snapshot: {Snapshot}>";
     }
 
@@ -659,7 +695,7 @@ namespace Akka.Persistence
         /// </summary>
         public long ToSequenceNr { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(LoadSnapshot other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -670,10 +706,10 @@ namespace Akka.Persistence
                    && Equals(Criteria, other.Criteria);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as LoadSnapshot);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -685,7 +721,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString() => $"LoadSnapshot<pid: {PersistenceId}, toSeqNr: {ToSequenceNr}, criteria: {Criteria}>";
     }
 
@@ -716,7 +752,7 @@ namespace Akka.Persistence
         /// </summary>
         public long ToSequenceNr { get; }
 
-        /// <inheritdoc/>
+        
         public bool Equals(LoadSnapshotResult other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -726,10 +762,10 @@ namespace Akka.Persistence
                    && Equals(Snapshot, other.Snapshot);
         }
 
-        /// <inheritdoc/>
+        
         public override bool Equals(object obj) => Equals(obj as LoadSnapshotResult);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -738,7 +774,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"LoadSnapshotResult<toSeqNr: {ToSequenceNr}, snapshot: {Snapshot}>";
     }
 
@@ -767,7 +803,7 @@ namespace Akka.Persistence
         {
             if (ReferenceEquals(null, obj)) return false;
             if (ReferenceEquals(this, obj)) return true;
-            return obj is LoadSnapshotFailed && Equals((LoadSnapshotFailed)obj);
+            return obj is LoadSnapshotFailed failed && Equals(failed);
         }
 
         public override int GetHashCode() => Cause?.GetHashCode() ?? 0;
@@ -791,10 +827,7 @@ namespace Akka.Persistence
         /// </exception>
         public SaveSnapshot(SnapshotMetadata metadata, object snapshot)
         {
-            if (metadata == null)
-                throw new ArgumentNullException(nameof(metadata), "SaveSnapshot requires SnapshotMetadata to be provided");
-
-            Metadata = metadata;
+            Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata), "SaveSnapshot requires SnapshotMetadata to be provided");
             Snapshot = snapshot;
         }
 
@@ -808,7 +841,7 @@ namespace Akka.Persistence
         /// </summary>
         public object Snapshot { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(SaveSnapshot other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -817,10 +850,10 @@ namespace Akka.Persistence
             return Equals(Metadata, other.Metadata) && Equals(Snapshot, other.Snapshot);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as SaveSnapshot);
 
-        /// <inheritdoc/>
+        
         public override int GetHashCode()
         {
             unchecked
@@ -829,7 +862,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+        
         public override string ToString() => $"SaveSnapshot<meta: {Metadata}, snapshot: {Snapshot}>";
     }
 
@@ -846,20 +879,15 @@ namespace Akka.Persistence
         /// <exception cref="ArgumentNullException">
         /// This exception is thrown when the specified <paramref name="metadata"/> is undefined.
         /// </exception>
-        public DeleteSnapshot(SnapshotMetadata metadata)
-        {
-            if (metadata == null)
-                throw new ArgumentNullException(nameof(metadata), "DeleteSnapshot requires SnapshotMetadata to be provided");
-
-            Metadata = metadata;
-        }
+        public DeleteSnapshot(SnapshotMetadata metadata) =>
+            Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata), "DeleteSnapshot requires SnapshotMetadata to be provided");
 
         /// <summary>
         /// Snapshot metadata.
         /// </summary>
         public SnapshotMetadata Metadata { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(DeleteSnapshot other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -868,13 +896,13 @@ namespace Akka.Persistence
             return Equals(Metadata, other.Metadata);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as DeleteSnapshot);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode() => Metadata.GetHashCode();
 
-        /// <inheritdoc/>
+       
         public override string ToString() => $"DeleteSnapshot<meta: {Metadata}>";
     }
 
@@ -905,7 +933,7 @@ namespace Akka.Persistence
         /// </summary>
         public SnapshotSelectionCriteria Criteria { get; }
 
-        /// <inheritdoc/>
+       
         public bool Equals(DeleteSnapshots other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -915,10 +943,10 @@ namespace Akka.Persistence
                    && Equals(Criteria, other.Criteria);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj) => Equals(obj as DeleteSnapshots);
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -927,7 +955,7 @@ namespace Akka.Persistence
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString() => $"DeleteSnapshots<pid: {PersistenceId}, criteria: {Criteria}>";
     }
 }

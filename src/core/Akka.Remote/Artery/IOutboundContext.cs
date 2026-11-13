@@ -1,0 +1,240 @@
+//-----------------------------------------------------------------------
+// <copyright file="IOutboundContext.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+#nullable enable
+
+using System;
+using Akka.Actor;
+
+namespace Akka.Remote.Artery
+{
+    /// <summary>
+    /// INTERNAL API.
+    ///
+    /// The seam <see cref="OutboundHandshakeStage"/> needs from the surrounding association:
+    /// who "we" are, who the peer is, a read view of the shared <see cref="Artery.AssociationState"/>
+    /// (so the stage can detect handshake completion — see the "Handshake-completion notification
+    /// mechanism" note on <see cref="OutboundHandshakeStage"/>), and a hook to send a control
+    /// message. Sized down to exactly what G2 needs; mirrors the role Pekko's
+    /// <c>OutboundContext</c> plays for the handshake stage.
+    /// </summary>
+    internal interface IOutboundContext
+    {
+        /// <summary>
+        /// This system's own unique address.
+        /// </summary>
+        UniqueAddress LocalAddress { get; }
+
+        /// <summary>
+        /// The remote address this outbound association targets.
+        /// </summary>
+        Address RemoteAddress { get; }
+
+        /// <summary>
+        /// A read view of the association's current state. Lock-free and safe to read from any
+        /// thread — see <see cref="Artery.AssociationState"/>.
+        /// </summary>
+        AssociationState AssociationState { get; }
+
+        /// <summary>
+        /// Monotonically incremented every time this association's handshake is (re-)completed --
+        /// see <see cref="Artery.Association.HandshakeGeneration"/>. Design.md group 9's
+        /// <see cref="OutboundHandshakeStage"/> <c>ForceReqOnStart</c> path uses this (not
+        /// <see cref="AssociationState"/> alone) to detect that a FRESH handshake round-trip
+        /// completed since THIS materialization started, even in the same-uid case where
+        /// <see cref="AssociationState"/> itself is a reference-equal no-op and so provides no
+        /// observable signal on its own.
+        /// </summary>
+        long HandshakeGeneration { get; }
+
+        /// <summary>
+        /// Completes the handshake with <paramref name="peer"/> for this outbound association.
+        /// Exposed for symmetry/testability with <see cref="IInboundContext"/>; the normal G2
+        /// flow completes an association's handshake from the INBOUND side (a
+        /// <see cref="HandshakeRsp"/> arriving on the inbound pipeline for the return direction),
+        /// not from <see cref="OutboundHandshakeStage"/> itself.
+        /// </summary>
+        AssociationState CompleteHandshake(UniqueAddress peer);
+
+        /// <summary>
+        /// Registers <paramref name="listener"/> to be nudged whenever this association's handshake
+        /// state advances -- see <see cref="Artery.Association.SubscribeHandshakeStateChanged"/>.
+        /// This is how <see cref="OutboundHandshakeStage"/> learns about completion; the retry timer
+        /// only retransmits the <see cref="HandshakeReq"/>, it is not the detection path.
+        /// </summary>
+        void SubscribeHandshakeStateChanged(object subscriber, Action listener);
+
+        /// <summary>Reverses <see cref="SubscribeHandshakeStateChanged"/>.</summary>
+        void UnsubscribeHandshakeStateChanged(object subscriber);
+
+        /// <summary>
+        /// Sends <paramref name="message"/> over the control channel to the remote peer this
+        /// context is bound to.
+        /// </summary>
+        void SendControl(object message);
+
+        /// <summary>
+        /// Registers <paramref name="subscriber"/> to receive every decoded inbound control message
+        /// across every association (design.md gate G3) -- the seam <see cref="SystemMessageDeliveryStage"/>
+        /// uses to observe <see cref="Ack"/>/<see cref="Nack"/> replies. Mirrors
+        /// <c>ArteryRemoting.SubscribeControl</c>.
+        /// </summary>
+        void SubscribeControl(IControlMessageSubscriber subscriber);
+
+        /// <summary>
+        /// Reverses <see cref="SubscribeControl"/>.
+        /// </summary>
+        void UnsubscribeControl(IControlMessageSubscriber subscriber);
+
+        /// <summary>
+        /// Quarantines this association's CURRENT remote uid (design.md gate G3's "give-up (overflow
+        /// OR timeout) -> quarantine, never a silent drop" invariant). A no-op if the association has
+        /// no known peer uid yet (still <c>Associating</c> -- nothing to quarantine).
+        /// </summary>
+        void Quarantine();
+
+        /// <summary>
+        /// Returns <paramref name="envelope"/> to the association-owned channel this materialization
+        /// reads from. <see cref="OutboundHandshakeStage"/> dequeues one element from that channel and
+        /// holds it (<c>_pendingMessage</c>) while it waits out the handshake; if this materialization
+        /// stops before ever delivering it (a failed reconnect, a killed stream), the element is
+        /// already out of the channel and would otherwise vanish with no <see cref="Akka.Event.Dropped"/>
+        /// event and no log -- <see cref="SystemMessageDeliveryStage"/> traffic (already-wrapped
+        /// <see cref="SystemMessageEnvelope"/>s) is covered by its own association-owned resend
+        /// buffer and is NOT re-offered here (the implementation drops it silently, on purpose, rather
+        /// than handing a duplicate back to a fresh <see cref="SystemMessageDeliveryStage"/> instance),
+        /// but plain control traffic (<see cref="HandshakeReq"/>, <see cref="ArteryHeartbeat"/>,
+        /// <see cref="ArteryQuarantined"/>, <see cref="ClearSystemMessageDelivery"/>, and an unwrapped
+        /// <c>DaemonMsgCreate</c>) is not, and IS re-offered.
+        ///
+        /// <para>
+        /// <b>Ordering: the channel is FIFO and this re-offer goes to the TAIL, not the head.</b>
+        /// <see cref="System.Threading.Channels.Channel{T}"/> has no head-insert operation, so the
+        /// returned element lands behind everything else that was enqueued into this channel while
+        /// the handshake gated it -- it does NOT resume the position it was dequeued from. For an
+        /// unwrapped <c>DaemonMsgCreate</c> this can invert the ordering the type-level remarks on
+        /// <c>ArteryRemoting</c> describe as deliberately engineered (the create ordered ahead of the
+        /// <c>Watch</c> remote deployment sends immediately afterwards): if a <c>Watch</c> for the
+        /// same recipient was enqueued and delivered on a later materialization while this
+        /// <c>DaemonMsgCreate</c> sat held, the returned <c>DaemonMsgCreate</c> can now arrive after
+        /// it. This does not dead-letter the first message that races ahead of the create -- the
+        /// inbound side already tolerates that (see <c>RetryResolveRemoteDeployedRecipient</c>) -- but
+        /// it does reopen, for this one held-and-returned element, the exact race the create/Watch
+        /// ordering was added to close.
+        /// </para>
+        ///
+        /// The implementation re-offers <paramref name="envelope"/> to that same channel when there is
+        /// room, and publishes a <see cref="Akka.Event.Dropped"/> event instead of discarding it
+        /// silently when there is not.
+        /// </summary>
+        void ReturnUndelivered(IOutboundEnvelope envelope);
+    }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
+    /// Default <see cref="IOutboundContext"/> backed by an <see cref="AssociationRegistry"/>.
+    /// The control-send mechanics (real control-stream wiring lands at G3 — see design.md
+    /// "G2 staging") are not this class's concern; it is handed a delegate so callers (tests, or
+    /// a later chunk's control-stream sender) supply the actual transport.
+    /// </summary>
+    internal sealed class AssociationRegistryOutboundContext : IOutboundContext
+    {
+        private readonly AssociationRegistry _registry;
+        private readonly Action<object> _sendControl;
+        private readonly Action<IControlMessageSubscriber> _subscribeControl;
+        private readonly Action<IControlMessageSubscriber> _unsubscribeControl;
+        private readonly Action<Address, long> _quarantine;
+        private readonly Action<IOutboundEnvelope> _returnUndelivered;
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AssociationRegistryOutboundContext"/> class.
+        /// </summary>
+        /// <param name="registry">The shared association registry.</param>
+        /// <param name="localAddress">This system's own unique address.</param>
+        /// <param name="remoteAddress">The remote address this outbound association targets.</param>
+        /// <param name="sendControl">Sends a message over the control channel to <paramref name="remoteAddress"/>.</param>
+        /// <param name="subscribeControl">
+        /// Registers a global inbound-control-message subscriber (design.md gate G3's
+        /// <see cref="SystemMessageDeliveryStage"/> seam). Defaults to a no-op so pre-G3 callers
+        /// (existing tests) do not need to supply it.
+        /// </param>
+        /// <param name="unsubscribeControl">Reverses <paramref name="subscribeControl"/>. Defaults to a no-op.</param>
+        /// <param name="quarantine">
+        /// Quarantines <paramref name="remoteAddress"/> for a given uid (design.md gate G3's
+        /// give-up-&gt;quarantine invariant). Defaults to a no-op.
+        /// </param>
+        /// <param name="returnUndelivered">
+        /// Returns an element a gating <see cref="OutboundHandshakeStage"/> was holding back to the
+        /// association-owned channel this materialization reads from -- see
+        /// <see cref="IOutboundContext.ReturnUndelivered"/>. Defaults to a no-op so pre-existing
+        /// callers (tests that never exercise a mid-handshake stage failure) do not need to supply
+        /// it.
+        /// </param>
+        public AssociationRegistryOutboundContext(
+            AssociationRegistry registry,
+            UniqueAddress localAddress,
+            Address remoteAddress,
+            Action<object> sendControl,
+            Action<IControlMessageSubscriber>? subscribeControl = null,
+            Action<IControlMessageSubscriber>? unsubscribeControl = null,
+            Action<Address, long>? quarantine = null,
+            Action<IOutboundEnvelope>? returnUndelivered = null)
+        {
+            _registry = registry;
+            LocalAddress = localAddress;
+            RemoteAddress = remoteAddress;
+            _sendControl = sendControl;
+            _subscribeControl = subscribeControl ?? (static _ => { });
+            _unsubscribeControl = unsubscribeControl ?? (static _ => { });
+            _quarantine = quarantine ?? (static (_, _) => { });
+            _returnUndelivered = returnUndelivered ?? (static _ => { });
+        }
+
+        /// <inheritdoc/>
+        public UniqueAddress LocalAddress { get; }
+
+        /// <inheritdoc/>
+        public Address RemoteAddress { get; }
+
+        /// <inheritdoc/>
+        public AssociationState AssociationState => _registry.AssociationFor(RemoteAddress).CurrentState;
+
+        /// <inheritdoc/>
+        public long HandshakeGeneration => _registry.AssociationFor(RemoteAddress).HandshakeGeneration;
+
+        /// <inheritdoc/>
+        public AssociationState CompleteHandshake(UniqueAddress peer) => _registry.CompleteHandshake(RemoteAddress, peer);
+
+        /// <inheritdoc/>
+        public void SubscribeHandshakeStateChanged(object subscriber, Action listener) =>
+            _registry.AssociationFor(RemoteAddress).SubscribeHandshakeStateChanged(subscriber, listener);
+
+        /// <inheritdoc/>
+        public void UnsubscribeHandshakeStateChanged(object subscriber) =>
+            _registry.AssociationFor(RemoteAddress).UnsubscribeHandshakeStateChanged(subscriber);
+
+        /// <inheritdoc/>
+        public void SendControl(object message) => _sendControl(message);
+
+        /// <inheritdoc/>
+        public void SubscribeControl(IControlMessageSubscriber subscriber) => _subscribeControl(subscriber);
+
+        /// <inheritdoc/>
+        public void UnsubscribeControl(IControlMessageSubscriber subscriber) => _unsubscribeControl(subscriber);
+
+        /// <inheritdoc/>
+        public void Quarantine()
+        {
+            if (AssociationState.UniqueRemoteAddress is { } peer)
+                _quarantine(RemoteAddress, peer.Uid);
+        }
+
+        /// <inheritdoc/>
+        public void ReturnUndelivered(IOutboundEnvelope envelope) => _returnUndelivered(envelope);
+    }
+}

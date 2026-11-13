@@ -1,40 +1,34 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Serializer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.Serialization;
 using Akka.Actor;
 using Akka.Annotations;
 using Akka.Util;
 using Akka.Configuration;
+using Akka.Util.Reflection;
 
 namespace Akka.Serialization
 {
     /// <summary>
     /// A Serializer represents a bimap between an object and an array of bytes representing that object.
     ///
-    /// Serializers are loaded using reflection during <see cref="ActorSystem"/>
-    /// start-up, where two constructors are tried in order:
-    ///
-    /// <ul>
-    /// <li>taking exactly one argument of type <see cref="ExtendedActorSystem"/>;
-    /// this should be the preferred one because all reflective loading of classes
-    /// during deserialization should use ExtendedActorSystem.dynamicAccess (see
-    /// [[akka.actor.DynamicAccess]]), and</li>
-    /// <li>without arguments, which is only an option if the serializer does not
-    /// load classes using reflection.</li>
-    /// </ul>
-    ///
-    /// <b>Be sure to always use the PropertyManager for loading classes!</b> This is necessary to
-    /// avoid strange match errors and inequalities which arise from different class loaders loading
-    /// the same class.
+    /// When dynamic type loading is enabled, a custom serializer named by type in
+    /// <c>akka.actor.serializers</c> is created during serialization initialization. When
+    /// <c>akka.actor.serialization-settings.&lt;alias&gt;</c>
+    /// contains configuration, the loader invokes a constructor taking <see cref="ExtendedActorSystem"/>
+    /// and <see cref="Config"/>; otherwise it invokes a constructor taking only
+    /// <see cref="ExtendedActorSystem"/>. There is no parameterless-constructor fallback.
+    /// <see cref="SerializationSetup"/> registers serializer instances returned by its factory,
+    /// and those registrations are applied after the HOCON serializer entries.
     /// </summary>
     public abstract class Serializer
     {
@@ -44,6 +38,8 @@ namespace Akka.Serialization
         /// The actor system to associate with this serializer.
         /// </summary>
         protected readonly ExtendedActorSystem system;
+
+        internal ExtendedActorSystem ExtendedSystem => system;
 
         private readonly FastLazy<int> _value;
 
@@ -76,14 +72,24 @@ namespace Akka.Serialization
         public abstract byte[] ToBinary(object obj);
 
         /// <summary>
+        /// Returns the manifest that should be stored with <paramref name="obj"/>.
+        /// </summary>
+        public virtual string Manifest(object obj)
+        {
+            return IncludeManifest ? obj.GetType().TypeQualifiedName() : string.Empty;
+        }
+
+        /// <summary>
         /// Serializes the given object into a byte array and uses the given address to decorate serialized ActorRef's
         /// </summary>
         /// <param name="address">The address to use when serializing local ActorRef´s</param>
         /// <param name="obj">The object to serialize</param>
-        /// <returns>TBD</returns>
+        /// <returns>A byte array containing the serialized object with decorated ActorRef's</returns>
         public byte[] ToBinaryWithAddress(Address address, object obj)
         {
+#pragma warning disable CS0618 // Type or member is obsolete
             return Serialization.WithTransport(system, address, () => ToBinary(obj));
+#pragma warning restore CS0618 // Type or member is obsolete
         }
 
         /// <summary>
@@ -95,6 +101,46 @@ namespace Akka.Serialization
         public abstract object FromBinary(byte[] bytes, Type type);
 
         /// <summary>
+        /// Deserializes a byte array into an object using a string manifest.
+        /// </summary>
+        /// <remarks>
+        /// A <see cref="TypeCache"/> hit wins first; a miss then checks
+        /// <see cref="AkkaFeatures.IsDynamicTypeLoadingSupported"/> (cold, never per-message) before reflecting.
+        /// </remarks>
+        public virtual object FromBinary(byte[] bytes, string manifest)
+        {
+            if (string.IsNullOrEmpty(manifest))
+                return FromBinary(bytes, (Type)null);
+
+            if (TypeCache.TryGetCached(manifest, out var cached))
+                return FromBinary(bytes, cached);
+
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw new SerializationException(
+                    $"Cannot resolve manifest [{manifest}] for serializer [{Identifier}] with Akka.DynamicTypeLoading off: " +
+                    "this serializer must resolve its own manifests (e.g. implement SerializerWithStringManifest), " +
+                    "or register the type through a SerializationSetup.");
+
+            return FromBinaryReflecting(bytes, manifest);
+        }
+
+        [RequiresUnreferencedCode("Resolves manifest to a Type by reflection through TypeCache. The trimmer cannot tell which type that is, so it may have been trimmed away.")]
+        private object FromBinaryReflecting(byte[] bytes, string manifest)
+        {
+            Type type;
+            try
+            {
+                type = TypeCache.GetType(manifest);
+            }
+            catch (Exception ex)
+            {
+                throw new SerializationException($"Cannot find manifest class [{manifest}] for serializer with id [{Identifier}].", ex);
+            }
+
+            return FromBinary(bytes, type);
+        }
+
+        /// <summary>
         /// Deserializes a byte array into an object.
         /// </summary>
         /// <param name="bytes">The array containing the serialized object</param>
@@ -103,7 +149,7 @@ namespace Akka.Serialization
     }
 
     /// <summary>
-    /// TBD
+    /// A specialized serializer that uses string manifests for type hinting during deserialization.
     /// </summary>
     public abstract class SerializerWithStringManifest : Serializer
     {
@@ -137,7 +183,9 @@ namespace Akka.Serialization
         /// <returns>The object contained in the array</returns>
         public sealed override object FromBinary(byte[] bytes, Type type)
         {
-            var manifest = type.TypeQualifiedName();
+            // A null type maps to the empty manifest - the same thing SerializerV2 did before it derived from
+            // this class - so FromBinary(bytes, string) decides what an empty manifest means.
+            var manifest = type is null ? string.Empty : type.TypeQualifiedName();
             return FromBinary(bytes, manifest);
         }
 
@@ -156,7 +204,7 @@ namespace Akka.Serialization
         /// <param name="bytes">The array containing the serialized object</param>
         /// <param name="manifest">The type hint used to deserialize the object contained in the array.</param>
         /// <returns>The object contained in the array</returns>
-        public abstract object FromBinary(byte[] bytes, string manifest);
+        public abstract override object FromBinary(byte[] bytes, string manifest);
 
         /// <summary>
         /// Returns the manifest (type hint) that will be provided in the <see cref="FromBinary(byte[],System.Type)"/> method.
@@ -167,7 +215,7 @@ namespace Akka.Serialization
         /// </summary>
         /// <param name="o">The object for which the manifest is needed.</param>
         /// <returns>The manifest needed for the deserialization of the specified <paramref name="o"/>.</returns>
-        public abstract string Manifest(object o);
+        public abstract override string Manifest(object o);
     }
 
     /// <summary>
@@ -179,14 +227,37 @@ namespace Akka.Serialization
         internal const string SerializationIdentifiers = "akka.actor.serialization-identifiers";
 
         /// <summary>
-        /// TBD
+        /// Gets the serializer identifier for the specified type from the configuration.
         /// </summary>
-        /// <param name="type">TBD</param>
-        /// <param name="system">TBD</param>
+        /// <param name="type">The type of the serializer to get the identifier for.</param>
+        /// <param name="system">The actor system containing the configuration.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown if the system couldn't find the given serializer <paramref name="type"/> id in the configuration.
         /// </exception>
-        /// <returns>TBD</returns>
+        /// <returns>The serializer identifier for the specified type.</returns>
+        /// <remarks>
+        /// <para>
+        /// The keys under <c>akka.actor.serialization-identifiers</c> are matched against the name of the
+        /// <paramref name="type"/> that is already in hand, rather than resolved back into a <see cref="Type"/>.
+        /// Each key is split with <see cref="Akka.Util.TypeExtensions.TrySplitTypeName"/>: the type name is
+        /// compared case-sensitively, the assembly name case-insensitively, which is how
+        /// <see cref="Type.GetType(string)"/> compared them.
+        /// </para>
+        /// <para>
+        /// Assembly-qualified keys are matched across the whole block first, and only then bare
+        /// <see cref="Type.FullName"/> keys, so a bare key cannot shadow an exact assembly-qualified key
+        /// further down the block. A bare key matches a type of that name in <em>any</em> assembly. Unlike the
+        /// <c>BuiltIn*</c> tables elsewhere, a match here is not limited to the <c>Akka</c> assembly: the
+        /// type's own assembly, whatever it is, has to match an assembly-qualified key.
+        /// </para>
+        /// <para>
+        /// Matching by name also fixes a latent bug. The lookup used to call
+        /// <c>Type.GetType(key, throwOnError: true)</c> for <em>every</em> key in the block, so one key naming a
+        /// type this application cannot load - a serializer from a package that is configured but not
+        /// referenced, say - made every identifier lookup throw, including the lookups for serializers whose
+        /// own key was perfectly good.
+        /// </para>
+        /// </remarks>
         public static int GetSerializerIdentifierFromConfig(Type type, ExtendedActorSystem system)
         {
             var config = system.Settings.Config.GetConfig(SerializationIdentifiers);
@@ -194,14 +265,36 @@ namespace Akka.Serialization
             if (config.IsNullOrEmpty())
                 throw new ConfigurationException($"Cannot retrieve serialization identifier informations: {SerializationIdentifiers} configuration node not found");
             */
-            var identifiers = config.AsEnumerable()
-                .ToDictionary(pair => Type.GetType(pair.Key, true), pair => pair.Value.GetInt());
 
-            if (!identifiers.TryGetValue(type, out int value))
-                throw new ArgumentException($"Couldn't find serializer id for [{type}] under [{SerializationIdentifiers}] HOCON path", nameof(type));
+            // TypeQualifiedName() is the cached "Namespace.Type, Assembly" spelling with the assembly identity
+            // already stripped, including inside a generic type's arguments. Nested types spell with '+' on
+            // both sides.
+            Akka.Util.TypeExtensions.TrySplitTypeName(type.TypeQualifiedName(), out var fullName, out var assemblyName);
 
-            return value;
+            // Pass 1: assembly-qualified keys, over the whole block, so one of them always beats a bare key.
+            foreach (var pair in config.AsEnumerable())
+            {
+                if (!Akka.Util.TypeExtensions.TrySplitTypeName(pair.Key, out var keyName, out var keyAssembly) ||
+                    keyAssembly is null)
+                    continue;
+
+                if (string.Equals(keyName, fullName, StringComparison.Ordinal) &&
+                    string.Equals(keyAssembly, assemblyName ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                {
+                    return pair.Value.GetInt();
+                }
+            }
+
+            // Pass 2: bare keys.
+            foreach (var pair in config.AsEnumerable())
+            {
+                if (Akka.Util.TypeExtensions.TrySplitTypeName(pair.Key, out var keyName, out var keyAssembly) &&
+                    keyAssembly is null &&
+                    string.Equals(keyName, fullName, StringComparison.Ordinal))
+                    return pair.Value.GetInt();
+            }
+
+            throw new ArgumentException($"Couldn't find serializer id for [{type}] under [{SerializationIdentifiers}] HOCON path", nameof(type));
         }
     }
 }
-

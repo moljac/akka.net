@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="WriteAggregatorSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -15,12 +15,11 @@ using Akka.DistributedData.Internal;
 using Akka.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.DistributedData.Tests
 {
     [Collection("DistributedDataSpec")]
-    public class WriteAggregatorSpec : Akka.TestKit.Xunit2.TestKit
+    public class WriteAggregatorSpec : Akka.TestKit.Xunit.TestKit
     {
         internal class TestWriteAggregator<T> : WriteAggregator where T : IReplicatedData
         {
@@ -78,18 +77,18 @@ namespace Akka.DistributedData.Tests
             IActorRef replyTo,
             bool durable) => Actor.Props.Create(() => new TestWriteAggregator<ORSet<string>>(KeyB, data, delta, consistency, probes, nodes, unreachable, replyTo, durable));
 
-        private static readonly GSetKey<string> KeyA = new GSetKey<string>("a");
-        private static readonly ORSetKey<string> KeyB = new ORSetKey<string>("b");
+        private static readonly GSetKey<string> KeyA = new("a");
+        private static readonly ORSetKey<string> KeyB = new("b");
 
-        private readonly Address _nodeA = new Address("akka.tcp", "Sys", "a", 2552);
-        private readonly Address _nodeB = new Address("akka.tcp", "Sys", "b", 2552);
-        private readonly Address _nodeC = new Address("akka.tcp", "Sys", "c", 2552);
-        private readonly Address _nodeD = new Address("akka.tcp", "Sys", "d", 2552);
+        private readonly Address _nodeA = new("akka.tcp", "Sys", "a", 2552);
+        private readonly Address _nodeB = new("akka.tcp", "Sys", "b", 2552);
+        private readonly Address _nodeC = new("akka.tcp", "Sys", "c", 2552);
+        private readonly Address _nodeD = new("akka.tcp", "Sys", "d", 2552);
         private readonly IImmutableList<Address> _nodes;
 
         private readonly GSet<string> _data = GSet.Create("A", "B");
-        private readonly WriteTo _writeThree = new WriteTo(3, TimeSpan.FromSeconds(3));
-        private readonly WriteMajority _writeMajority = new WriteMajority(TimeSpan.FromSeconds(3));
+        private readonly WriteTo _writeThree = new(3, TimeSpan.FromSeconds(3));
+        private readonly WriteMajority _writeMajority = new(TimeSpan.FromSeconds(3));
         private readonly WriteAll _writeAll;
 
         private readonly ORSet<string> _fullState1;

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="StreamTcpException.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -11,7 +11,7 @@ using System.Runtime.Serialization;
 namespace Akka.Streams
 {
     /// <summary>
-    /// TBD
+    /// Base exception for errors reported by stream TCP operations.
     /// </summary>
     public class StreamTcpException : Exception
     {
@@ -51,7 +51,7 @@ namespace Akka.Streams
         /// <summary>
         /// Initializes a single instance of the <see cref="StreamDetachedException"/> class.
         /// </summary>
-        public static readonly StreamDetachedException Instance = new StreamDetachedException();
+        public static readonly StreamDetachedException Instance = new();
 
         public StreamDetachedException()
             : this("Stream is terminated. Materialized value is detached.")
@@ -62,17 +62,23 @@ namespace Akka.Streams
             : base(message)
         {
         }
+        
+        public StreamDetachedException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+        
     }
 
     /// <summary>
-    /// TBD
+    /// Exception reported when a TCP bind operation fails.
     /// </summary>
     public class BindFailedException : StreamTcpException
     {
         /// <summary>
         /// The single instance of this exception
         /// </summary>
-        public static readonly BindFailedException Instance = new BindFailedException();
+        public static readonly BindFailedException Instance = new();
 
         private BindFailedException() : base("bind failed")
         {
@@ -89,7 +95,7 @@ namespace Akka.Streams
     }
 
     /// <summary>
-    /// TBD
+    /// Exception reported when a stream TCP connection fails.
     /// </summary>
     public class ConnectionException : StreamTcpException
     {

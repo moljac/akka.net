@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="DistributedMessages.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -14,26 +14,26 @@ using System.Linq;
 namespace Akka.Cluster.Tools.PublishSubscribe
 {
     /// <summary>
-    /// TBD
+    /// Requests registration of a locally scoped actor with the distributed publish-subscribe mediator under its path.
     /// </summary>
     [Serializable]
     public sealed class Put : IEquatable<Put>
     {
         /// <summary>
-        /// TBD
+        /// Actor to register with the mediator.
         /// </summary>
         public IActorRef Ref { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a registration request for a locally scoped actor.
         /// </summary>
-        /// <param name="ref">TBD</param>
+        /// <param name="ref">Locally scoped actor reference to register.</param>
         public Put(IActorRef @ref)
         {
             Ref = @ref;
         }
 
-        /// <inheritdoc/>
+            
         public bool Equals(Put other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -41,19 +41,19 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             return Equals(Ref, other.Ref);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as Put);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Ref != null ? Ref.GetHashCode() : 0);
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"Put<ref:{Ref}>";
@@ -61,26 +61,26 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Removes a path previously registered with the distributed publish-subscribe mediator.
     /// </summary>
     [Serializable]
     public sealed class Remove : IEquatable<Remove>
     {
         /// <summary>
-        /// TBD
+        /// Actor path to remove from the mediator's registry.
         /// </summary>
         public string Path { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a removal message for a registered actor path.
         /// </summary>
-        /// <param name="path">TBD</param>
+        /// <param name="path">Path of the actor registration to remove.</param>
         public Remove(string path)
         {
             Path = path;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(Remove other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -88,19 +88,19 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             return Equals(Path, other.Path);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as Remove);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Path != null ? Path.GetHashCode() : 0);
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"Remove<path:{Path}>";
@@ -108,32 +108,32 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Subscribes an actor to a topic, optionally as a member of a subscriber group.
     /// </summary>
     [Serializable]
     public sealed class Subscribe : IEquatable<Subscribe>
     {
         /// <summary>
-        /// TBD
+        /// Topic to which the actor subscribes.
         /// </summary>
         public string Topic { get; }
 
         /// <summary>
-        /// TBD
+        /// Optional group name used when a publication is configured to deliver to one subscriber per group.
         /// </summary>
         public string Group { get; }
 
         /// <summary>
-        /// TBD
+        /// Actor that receives messages published to the topic.
         /// </summary>
         public IActorRef Ref { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a subscription request for an actor and topic.
         /// </summary>
-        /// <param name="topic">TBD</param>
-        /// <param name="ref">TBD</param>
-        /// <param name="group">TBD</param>
+        /// <param name="topic">Topic to subscribe to; it must not be null or empty.</param>
+        /// <param name="ref">Actor reference to subscribe.</param>
+        /// <param name="group">Optional group name used by publications configured to deliver to one subscriber per group.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="topic"/> is undefined.
         /// </exception>
@@ -146,7 +146,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             Ref = @ref;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(Subscribe other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -156,13 +156,13 @@ namespace Akka.Cluster.Tools.PublishSubscribe
                    Equals(Ref, other.Ref);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as Subscribe);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -174,7 +174,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"Subscribe<topic:{Topic}, group:{Group}, ref:{Ref}>";
@@ -182,32 +182,32 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Removes an actor's subscription to a topic and optional subscriber group.
     /// </summary>
     [Serializable]
     public sealed class Unsubscribe : IEquatable<Unsubscribe>
     {
         /// <summary>
-        /// TBD
+        /// Topic from which the actor unsubscribes.
         /// </summary>
         public string Topic { get; }
 
         /// <summary>
-        /// TBD
+        /// Optional subscriber group from which the actor unsubscribes.
         /// </summary>
         public string Group { get; }
 
         /// <summary>
-        /// TBD
+        /// Actor whose subscription is removed.
         /// </summary>
         public IActorRef Ref { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates an unsubscription request for an actor and topic.
         /// </summary>
-        /// <param name="topic">TBD</param>
-        /// <param name="ref">TBD</param>
-        /// <param name="group">TBD</param>
+        /// <param name="topic">Topic to unsubscribe from; it must not be null or empty.</param>
+        /// <param name="ref">Actor reference to unsubscribe.</param>
+        /// <param name="group">Optional subscriber group from which to remove the actor.</param>
         /// <exception cref="ArgumentException">
         /// This exception is thrown when the specified <paramref name="topic"/> is undefined.
         /// </exception>
@@ -220,7 +220,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             Ref = @ref;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(Unsubscribe other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -230,13 +230,13 @@ namespace Akka.Cluster.Tools.PublishSubscribe
                    Equals(Ref, other.Ref);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as Unsubscribe);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -248,7 +248,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"Unsubscribe<topic:{Topic}, group:{Group}, ref:{Ref}>";
@@ -256,27 +256,26 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Acknowledges processing of a subscription request.
     /// </summary>
     [Serializable]
     public sealed class SubscribeAck : IEquatable<SubscribeAck>, IDeadLetterSuppression
     {
         /// <summary>
-        /// TBD
+        /// Subscription request acknowledged by the mediator.
         /// </summary>
         public Subscribe Subscribe { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates an acknowledgement for a subscription request.
         /// </summary>
-        /// <param name="subscribe">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="subscribe">Subscription request that was processed.</param>
         public SubscribeAck(Subscribe subscribe)
         {
             Subscribe = subscribe;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(SubscribeAck other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -284,19 +283,19 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             return Equals(Subscribe, other.Subscribe);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as SubscribeAck);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Subscribe != null ? Subscribe.GetHashCode() : 0);
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"SubscribeAck<{Subscribe}>";
@@ -304,25 +303,26 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Acknowledges processing of an unsubscription request.
     /// </summary>
     [Serializable]
     public sealed class UnsubscribeAck : IEquatable<UnsubscribeAck>
     {
         /// <summary>
-        /// TBD
+        /// Unsubscription request acknowledged by the mediator.
         /// </summary>
         public Unsubscribe Unsubscribe { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates an acknowledgement for the specified unsubscription request.
         /// </summary>
+        /// <param name="unsubscribe">The unsubscription request being acknowledged.</param>
         public UnsubscribeAck(Unsubscribe unsubscribe)
         {
             Unsubscribe = unsubscribe;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(UnsubscribeAck other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -330,19 +330,19 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             return Equals(Unsubscribe, other.Unsubscribe);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as UnsubscribeAck);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Unsubscribe != null ? Unsubscribe.GetHashCode() : 0);
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"UnsubscribeAck<{Unsubscribe}>";
@@ -350,30 +350,30 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Publishes a message to subscribers of a topic.
     /// </summary>
     [Serializable]
     public sealed class Publish : IDistributedPubSubMessage, IEquatable<Publish>, IWrappedMessage
     {
         /// <summary>
-        /// TBD
+        /// Topic to which the message is published.
         /// </summary>
         public string Topic { get; }
         /// <summary>
-        /// TBD
+        /// Message delivered to topic subscribers.
         /// </summary>
         public object Message { get; }
         /// <summary>
-        /// TBD
+        /// Whether to route the publication separately within each subscriber group instead of to ordinary topic subscribers.
         /// </summary>
         public bool SendOneMessageToEachGroup { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a message publication request.
         /// </summary>
-        /// <param name="topic">TBD</param>
-        /// <param name="message">TBD</param>
-        /// <param name="sendOneMessageToEachGroup">TBD</param>
+        /// <param name="topic">Topic whose subscribers receive the message.</param>
+        /// <param name="message">Message to publish.</param>
+        /// <param name="sendOneMessageToEachGroup">If <see langword="true"/>, route to each matching subscriber group using the configured routing logic; otherwise use the ordinary topic-subscriber path.</param>
         public Publish(string topic, object message, bool sendOneMessageToEachGroup = false)
         {
             Topic = topic;
@@ -381,7 +381,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             SendOneMessageToEachGroup = sendOneMessageToEachGroup;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(Publish other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -391,13 +391,13 @@ namespace Akka.Cluster.Tools.PublishSubscribe
                    Equals(Message, other.Message);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as Publish);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -409,38 +409,69 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"Publish<topic:{Topic}, sendOneToEachGroup:{SendOneMessageToEachGroup}, message:{Message}>";
         }
     }
+    
+    public sealed record PublishWithAck : IDistributedPubSubMessage, IWrappedMessage
+    {
+        public PublishWithAck(string topic, object message, TimeSpan timeout, bool sendOneMessageToEachGroup = false)
+        {
+            if(timeout.Ticks <= 0)
+                throw new ArgumentException("Timeout must be greater than zero", nameof(timeout));
+            
+            Topic = topic;
+            Message = message;
+            Timeout = timeout;
+            SendOneMessageToEachGroup = sendOneMessageToEachGroup;
+        }
+        
+        public string Topic { get; }
+        public object Message { get; }
+        public TimeSpan Timeout { get; }
+        public bool SendOneMessageToEachGroup { get; }
+    }
+
+    public enum PublishFailReason
+    {
+        Timeout,
+        MediatorShuttingDown
+    }
+    
+    public interface IPublishResponse;
+    
+    public sealed record PublishFailed(PublishWithAck Message, PublishFailReason Reason): IPublishResponse, IDeadLetterSuppression;
+    
+    public sealed record PublishSucceeded(PublishWithAck Message): IPublishResponse, IDeadLetterSuppression;
 
     /// <summary>
-    /// TBD
+    /// Requests delivery to registrations matching the path using the mediator's configured routing logic.
     /// </summary>
     [Serializable]
     public sealed class Send : IDistributedPubSubMessage, IEquatable<Send>, IWrappedMessage
     {
         /// <summary>
-        /// TBD
+        /// Actor path used to select a registered recipient.
         /// </summary>
         public string Path { get; }
         /// <summary>
-        /// TBD
+        /// Message forwarded to the selected recipient.
         /// </summary>
         public object Message { get; }
         /// <summary>
-        /// TBD
+        /// Whether to prefer a matching recipient in the same local actor system as the mediator.
         /// </summary>
         public bool LocalAffinity { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a request to send a message to registrations matching the path.
         /// </summary>
-        /// <param name="path">TBD</param>
-        /// <param name="message">TBD</param>
-        /// <param name="localAffinity">TBD</param>
+        /// <param name="path">Actor path used by the mediator to select matching registrations.</param>
+        /// <param name="message">Message to deliver.</param>
+        /// <param name="localAffinity">If <see langword="true"/>, prefer a recipient local to the mediator when one matches.</param>
         public Send(string path, object message, bool localAffinity = false)
         {
             Path = path;
@@ -448,7 +479,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             LocalAffinity = localAffinity;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(Send other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -458,13 +489,13 @@ namespace Akka.Cluster.Tools.PublishSubscribe
                    Equals(Message, other.Message);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as Send);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -476,7 +507,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"Send<path:{Path}, localAffinity:{LocalAffinity}, message:{Message}>";
@@ -484,32 +515,32 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Sends a message to every actor registered at a matching path.
     /// </summary>
     [Serializable]
     public sealed class SendToAll : IDistributedPubSubMessage, IEquatable<SendToAll>, IWrappedMessage
     {
         /// <summary>
-        /// TBD
+        /// Actor path used to select registered recipients.
         /// </summary>
         public string Path { get; }
 
         /// <summary>
-        /// TBD
+        /// Message forwarded to each matching recipient.
         /// </summary>
         public object Message { get; }
 
         /// <summary>
-        /// TBD
+        /// Whether to omit matching recipients on the mediator's local cluster node.
         /// </summary>
         public bool ExcludeSelf { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a request to send a message to all matching registered actors.
         /// </summary>
-        /// <param name="path">TBD</param>
-        /// <param name="message">TBD</param>
-        /// <param name="excludeSelf">TBD</param>
+        /// <param name="path">Actor path used to select matching registered actors.</param>
+        /// <param name="message">Message to deliver.</param>
+        /// <param name="excludeSelf">If <see langword="true"/>, exclude matching recipients on the mediator's local cluster node.</param>
         public SendToAll(string path, object message, bool excludeSelf = false)
         {
             Path = path;
@@ -517,7 +548,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             ExcludeSelf = excludeSelf;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(SendToAll other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -527,13 +558,13 @@ namespace Akka.Cluster.Tools.PublishSubscribe
                    Equals(Message, other.Message);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as SendToAll);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             unchecked
@@ -545,7 +576,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             }
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"SendToAll<path:{Path}, excludeSelf:{ExcludeSelf}, message:{Message}>";
@@ -553,39 +584,39 @@ namespace Akka.Cluster.Tools.PublishSubscribe
     }
 
     /// <summary>
-    /// TBD
+    /// Requests the set of topic names currently known to the mediator.
     /// </summary>
     [Serializable]
     public sealed class GetTopics
     {
         /// <summary>
-        /// TBD
+        /// Singleton instance of the topic-list request.
         /// </summary>
-        public static GetTopics Instance { get; } = new GetTopics();
+        public static GetTopics Instance { get; } = new();
         private GetTopics() { }
     }
 
     /// <summary>
-    /// TBD
+    /// Reply containing the topic names currently known to the mediator.
     /// </summary>
     [Serializable]
     public sealed class CurrentTopics : IEquatable<CurrentTopics>
     {
         /// <summary>
-        /// TBD
+        /// Set of topic names known to the mediator.
         /// </summary>
         public IImmutableSet<string> Topics { get; }
 
         /// <summary>
-        /// TBD
+        /// Creates a reply containing the known topic names.
         /// </summary>
-        /// <param name="topics">TBD</param>
+        /// <param name="topics">Topic names to return; a null value is treated as an empty set.</param>
         public CurrentTopics(IImmutableSet<string> topics)
         {
             Topics = topics ?? ImmutableHashSet<string>.Empty;
         }
 
-        /// <inheritdoc/>
+       
         public bool Equals(CurrentTopics other)
         {
             if (ReferenceEquals(other, null)) return false;
@@ -594,19 +625,19 @@ namespace Akka.Cluster.Tools.PublishSubscribe
             return Topics.SequenceEqual(other.Topics);
         }
 
-        /// <inheritdoc/>
+       
         public override bool Equals(object obj)
         {
             return Equals(obj as CurrentTopics);
         }
 
-        /// <inheritdoc/>
+       
         public override int GetHashCode()
         {
             return (Topics != null ? Topics.GetHashCode() : 0);
         }
 
-        /// <inheritdoc/>
+       
         public override string ToString()
         {
             return $"CurrentTopics<{string.Join(",", Topics)}>";

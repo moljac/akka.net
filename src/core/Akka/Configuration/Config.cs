@@ -1,12 +1,13 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Config.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Akka.Configuration.Hocon;
 using Akka.Util.Internal;
@@ -35,10 +36,7 @@ namespace Akka.Configuration
         /// <exception cref="ArgumentNullException">This exception is thrown if the given <paramref name="root"/> value is undefined.</exception>
         public Config(HoconRoot root)
         {
-            if (root.Value == null)
-                throw new ArgumentNullException(nameof(root), "The root value cannot be null.");
-
-            Value = root.Value;
+            Value = root.Value ?? throw new ArgumentNullException(nameof(root), "The root value cannot be null.");
             Root = root.Value;
             Substitutions = root.Substitutions;
         }
@@ -152,6 +150,7 @@ namespace Akka.Configuration
         /// <param name="def">Default return value if none provided.</param>
         /// <exception cref="InvalidOperationException">This exception is thrown if the current node is undefined.</exception>
         /// <returns>The long value defined in the specified path.</returns>
+        [return: NotNullIfNotNull(nameof(def))]
         public virtual long? GetByteSize(string path, long? def = null)
         {
             HoconValue value = GetNode(path);
@@ -343,7 +342,6 @@ namespace Akka.Configuration
         /// Retrieves a list of string values from the specified path in the configuration.
         /// </summary>
         /// <param name="path">The path that contains the values to retrieve.</param>
-        /// <param name="strings"></param>
         /// <exception cref="InvalidOperationException">This exception is thrown if the current node is undefined.</exception>
         /// <returns>The list of string values defined in the specified path.</returns>
         public virtual IList<string> GetStringList(string path)
@@ -438,8 +436,8 @@ namespace Akka.Configuration
         /// <summary>
         /// Converts the current configuration to a string 
         /// </summary>
-        /// <param name="includeFallback">if true returns string with current config combined with fallback key-values else only current config key-values</param>
-        /// <returns>TBD</returns>
+        /// <param name="includeFallback">When <c>true</c>, returns the root's HOCON representation; fallback values appear only if they have already been merged into that root. When <c>false</c>, uses the default configuration string representation.</param>
+        /// <returns>The root's HOCON representation when <paramref name="includeFallback"/> is <c>true</c>, including fallback values only when they are already merged into the root; otherwise, the default configuration string representation.</returns>
         public string ToString(bool includeFallback)
         {
             if (includeFallback == false)
@@ -616,4 +614,3 @@ namespace Akka.Configuration
         }
     }
 }
-

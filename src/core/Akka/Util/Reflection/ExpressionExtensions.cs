@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ExpressionExtensions.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -33,14 +33,11 @@ namespace Akka.Util.Reflection
     }
     internal static class ExpressionBasedParser
     {
-        private static readonly ConcurrentDictionary<ConstructorInfo, string[]>
-            paramNameDictionary =
-                new ConcurrentDictionary<ConstructorInfo, string[]>();
+        private static readonly ConcurrentDictionary<ConstructorInfo, string[]> paramNameDictionary = new();
 
         private static readonly Type _objectType = typeof(object);
 
-        private static readonly Type _multicastDelegateType =
-            typeof(MulticastDelegate);
+        private static readonly Type _multicastDelegateType = typeof(MulticastDelegate);
         
         public static object[] ParseExpressionArgs(
             this NewExpression newExpr)
@@ -110,17 +107,22 @@ namespace Akka.Util.Reflection
                         }
                     }
                 }
-                catch (Exception exception)
+                catch (Exception)
                 {
                     //Fallback. Do the worst way and compile.
                     try
                     {
-                        object fallbackVal;
                         {
-                            _jobArgs[i] = Expression.Lambda(
+                            // The non-generic Expression.Lambda overload is [RequiresDynamicCode] - it may
+                            // have to create a delegate type at runtime - so use the generic one, which needs
+                            // no new delegate type. The value is identical because the body is already
+                            // converted to object; the only difference is that the caller now sees the
+                            // argument's own exception instead of the TargetInvocationException DynamicInvoke
+                            // wrapped it in.
+                            _jobArgs[i] = Expression.Lambda<Func<object>>(
                                     Expression.Convert(theArg, _objectType)
                                 )
-                                .Compile().DynamicInvoke();
+                                .Compile()();
                         }
 
                     }

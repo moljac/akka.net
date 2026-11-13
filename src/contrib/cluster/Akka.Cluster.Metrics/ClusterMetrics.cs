@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterMetrics.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -13,6 +13,7 @@ using Akka.Cluster.Metrics.Events;
 using Akka.Cluster.Metrics.Helpers;
 using Akka.Cluster.Metrics.Serialization;
 using Akka.Configuration;
+using Akka.Event;
 using Akka.Util;
 using ConfigurationFactory = Akka.Configuration.ConfigurationFactory;
 
@@ -43,7 +44,7 @@ namespace Akka.Cluster.Metrics
         /// <summary>
         /// Default HOCON settings for cluster metrics.
         /// </summary>
-        /// <returns>TBD</returns>
+        /// <returns>The default cluster-metrics configuration loaded from the embedded reference configuration.</returns>
         public static Config DefaultConfig()
         {
             return ConfigurationFactory.FromResource<ClusterMetrics>("Akka.Cluster.Metrics.reference.conf");
@@ -88,7 +89,7 @@ namespace Akka.Cluster.Metrics
                     {
                         _system.Log.Error(
                             $"Configured strategy provider {Settings.SupervisorStrategyProvider} failed to load, " +
-                            $"using default {typeof(ClusterMetricsStrategy).Name}.");
+                            $"using default {nameof(ClusterMetricsStrategy)}.");
                         return new ClusterMetricsStrategy(Settings.SupervisorStrategyConfiguration);
                     })
                     .Get();

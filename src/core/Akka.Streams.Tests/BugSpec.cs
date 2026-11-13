@@ -1,22 +1,23 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="BugSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO.Pipes;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Akka.IO;
 using Akka.Streams.Dsl;
-using Akka.Streams.IO;
 using Akka.TestKit;
+using Akka.TestKit.Extensions;
+using FluentAssertions;
+using FluentAssertions.Extensions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Streams.Tests
 {
@@ -36,26 +37,26 @@ namespace Akka.Streams.Tests
             var serverPipeConnectionTask = serverPipe.WaitForConnectionAsync();
 
             var clientPipe = new NamedPipeClientStream(".", "unique-pipe-name", PipeDirection.In, PipeOptions.Asynchronous);
-            clientPipe.Connect();
+            await clientPipe.ConnectAsync();
 
             await serverPipeConnectionTask;
             var cnt = 0;
 
             var writeToStreamTask = Source.From(Enumerable.Range(0, 100))
-                .Select(i => ByteString.FromString(i.ToString()))
-                .Select(bs => cnt++ == 10 ? ByteString.Empty : bs) // ByteString.Empty.ToArray() failed in original bug
+                .Select(i => new ReadOnlySequence<byte>(Encoding.ASCII.GetBytes(i.ToString())))
+                .Select(bs => cnt++ == 10 ? ReadOnlySequence<byte>.Empty : bs) // empty byte array caused original bug
                 .ToMaterialized(StreamConverters.FromOutputStream(() => serverPipe), Keep.Right)
                 .Run(Materializer);
 
             var result = new List<string>();
             var readFromStreamTask = StreamConverters.FromInputStream(() => clientPipe, 1)
-                .RunForeach(bs => result.Add(bs.ToString(Encoding.ASCII)), Materializer);
+                .RunForeach(bs => result.Add(Encoding.ASCII.GetString(bs.ToArray())), Materializer);
 
-            await Task.WhenAll(writeToStreamTask, readFromStreamTask);
+            await Task.WhenAll(writeToStreamTask, readFromStreamTask).WaitAsync(3.Seconds());
 
             var expected = Enumerable.Range(0, 100)
                 .SelectMany(i => i == 10 ? Array.Empty<string>() : i.ToString().Select(c => c.ToString()));
-            expected.SequenceEqual(result).ShouldBeTrue();
+            expected.Should().BeEquivalentTo(result, options => options.WithStrictOrdering());
         }
     }
 }

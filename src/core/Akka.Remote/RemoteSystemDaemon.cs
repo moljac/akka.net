@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RemoteSystemDaemon.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -12,6 +12,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
 using Akka.Actor.Internal;
+using Akka.Annotations;
 using Akka.Dispatch.SysMsg;
 using Akka.Event;
 using Akka.Util;
@@ -22,8 +23,15 @@ namespace Akka.Remote
 {
     /// <summary>
     /// INTERNAL API
+    /// Used to mark that a message is meant as a system call and should not be traced
     /// </summary>
-    internal interface IDaemonMsg { }
+    [InternalApi]
+    public interface IInternalRemotingMessage { }
+    
+    /// <summary>
+    /// INTERNAL API
+    /// </summary>
+    internal interface IDaemonMsg:IInternalRemotingMessage { }
 
     /// <summary>
     ///  INTERNAL API
@@ -80,8 +88,8 @@ namespace Akka.Remote
     internal sealed class RemoteSystemDaemon : VirtualPathContainer
     {
         private readonly ActorSystemImpl _system;
-        private readonly Switch _terminating = new Switch(false);
-        private readonly ConcurrentDictionary<IActorRef, IImmutableSet<IActorRef>> _parent2Children = new ConcurrentDictionary<IActorRef, IImmutableSet<IActorRef>>();
+        private readonly Switch _terminating = new(false);
+        private readonly ConcurrentDictionary<IActorRef, IImmutableSet<IActorRef>> _parent2Children = new();
         private readonly IActorRef _terminator;
 
         /// <summary>
@@ -90,8 +98,8 @@ namespace Akka.Remote
         /// <param name="system">The system.</param>
         /// <param name="path">The path.</param>
         /// <param name="parent">The parent.</param>
-        /// <param name="terminator">TBD</param>
-        /// <param name="log">TBD</param>
+        /// <param name="terminator">The actor that receives <see cref="TerminationHookDone"/> after this daemon has no children.</param>
+        /// <param name="log">The logger used by this daemon.</param>
         public RemoteSystemDaemon(ActorSystemImpl system, ActorPath path, IInternalActorRef parent,IActorRef terminator, ILoggingAdapter log)
             : base(system.Provider, path, parent, log)
         {
@@ -123,7 +131,7 @@ namespace Akka.Remote
             if (message is IDaemonMsg)
             {
                 Log.Debug("Received command [{0}] to RemoteSystemDaemon on [{1}]", message, Path.Address);
-                if (message is DaemonMsgCreate) HandleDaemonMsgCreate((DaemonMsgCreate)message);
+                if (message is DaemonMsgCreate create) HandleDaemonMsgCreate(create);
             }
             else if (message is ActorSelectionMessage sel)
             {
@@ -172,9 +180,8 @@ namespace Akka.Remote
             }
             //Remote ActorSystem on another process / machine has died. 
             //Need to clean up any references to remote deployments here.
-            else if (message is AddressTerminated)
+            else if (message is AddressTerminated addressTerminated)
             {
-                var addressTerminated = (AddressTerminated)message;
                 //stop any remote actors that belong to this address
                 ForEachChild(@ref =>
                 {
@@ -196,9 +203,9 @@ namespace Akka.Remote
         }
 
         /// <summary>
-        /// TBD
+        /// Handles death-watch notifications for remote-deployed actors and forwards other system messages to the base container.
         /// </summary>
-        /// <param name="message">TBD</param>
+        /// <param name="message">The system message to send.</param>
         public override void SendSystemMessage(ISystemMessage message)
         {
             if (message is DeathWatchNotification deathWatchNotification)
@@ -258,8 +265,7 @@ namespace Akka.Remote
             var supervisor = (IInternalActorRef) message.Supervisor;
             var parent = supervisor;
             Props props = message.Props;
-            ActorPath childPath;
-            if(ActorPath.TryParse(message.Path, out childPath))
+            if(ActorPath.TryParse(message.Path, out var childPath))
             {
                 IEnumerable<string> subPath = childPath.ElementsWithUid.Drop(1); //drop the /remote
                 ActorPath p = Path/subPath;
@@ -350,4 +356,3 @@ namespace Akka.Remote
         }
     }
 }
-

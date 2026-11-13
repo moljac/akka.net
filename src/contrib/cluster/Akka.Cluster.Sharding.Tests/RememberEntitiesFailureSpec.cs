@@ -1,0 +1,849 @@
+﻿//-----------------------------------------------------------------------
+// <copyright file="RememberEntitiesFailureSpec.cs" company="Akka.NET Project">
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
+// </copyright>
+//-----------------------------------------------------------------------
+
+using System;
+using System.Collections.Immutable;
+using System.Linq;
+
+using System.Threading.Tasks;
+using Akka.Actor;
+using Akka.Cluster.Sharding.Internal;
+using Akka.Cluster.Tools.Singleton;
+using Akka.Configuration;
+using Akka.Event;
+using Akka.TestKit;
+using Akka.Util;
+using FluentAssertions;
+using Xunit;
+
+namespace Akka.Cluster.Sharding.Tests
+{
+    public class RememberEntitiesFailureSpec : AkkaSpec
+    {
+        internal class EntityActor : ActorBase
+        {
+            private readonly ILoggingAdapter _log = Context.GetLogger();
+
+            public EntityActor()
+            {
+                _log.Info("Entity actor [{0}] starting up", Context.Self.Path.Name);
+            }
+
+            protected override bool Receive(object message)
+            {
+                switch (message)
+                {
+                    case "stop":
+                        _log.Info("Stopping myself!");
+                        Context.Stop(Self);
+                        return true;
+                    case "graceful-stop":
+                        Context.Parent.Tell(new Passivate("stop"));
+                        return true;
+                    case var msg:
+                        Sender.Tell(msg);
+                        return true;
+                }
+            }
+        }
+
+        private class EntityEnvelope
+        {
+            public EntityEnvelope(int entityId, object msg)
+            {
+                EntityId = entityId;
+                Msg = msg;
+            }
+
+            public int EntityId { get; }
+            public object Msg { get; }
+        }
+
+        private sealed class MessageExtractor: IMessageExtractor
+        {
+            public string EntityId(object message)
+                => message switch
+                {
+                    EntityEnvelope e => e.EntityId.ToString(),
+                    _ => null
+                };
+
+            public object EntityMessage(object message)
+                => message switch
+                {
+                    EntityEnvelope e => e.Msg,
+                    _ => message
+                };
+
+            public string ShardId(object message)
+                => message switch
+                {
+                    EntityEnvelope e => (e.EntityId % 10).ToString(),
+                    _ => null
+                };
+
+            public string ShardId(string entityId, object messageHint = null)
+                => (int.Parse(entityId) % 10).ToString();
+        }
+
+        private interface IFail
+        {
+        }
+
+        private class NoResponse : IFail
+        {
+            public override string ToString() => "NoResponse";
+        }
+
+        private class CrashStore : IFail
+        {
+            public override string ToString() => "CrashStore";
+        }
+
+        private class StopStore : IFail
+        {
+            public override string ToString() => "StopStore";
+        }
+
+        private class Delay : IFail
+        {
+            public Delay(TimeSpan howLong)
+            {
+                HowLong = howLong;
+            }
+
+            public TimeSpan HowLong { get; }
+
+            public override string ToString() => $"Delay{HowLong.TotalMilliseconds}";
+        }
+
+        // Unlike Delay (whose delayed reply on the update-entity path carries the wrong payload type,
+        // so it's stashed as unrecognized and the write always times out, no matter how short the
+        // delay is - that's fine, every existing Delay fact below only wants "eventually fails"), this
+        // acknowledges the write correctly with RememberEntitiesShardStore.UpdateDone once the delay
+        // elapses, so a write can genuinely complete late but within its timeout.
+        private class DelayedSuccess : IFail
+        {
+            public DelayedSuccess(TimeSpan howLong)
+            {
+                HowLong = howLong;
+            }
+
+            public TimeSpan HowLong { get; }
+
+            public override string ToString() => $"DelayedSuccess{HowLong.TotalMilliseconds}";
+        }
+
+        // outside store since we need to be able to set them before sharding initializes
+        private static ImmutableDictionary<string, IFail> _failShardGetEntities = ImmutableDictionary<string, IFail>.Empty;
+        private static readonly IFail FailCoordinatorGetShards = null;
+
+        private class ShardStoreCreated
+        {
+            public ShardStoreCreated(IActorRef store, string shardId)
+            {
+                Store = store;
+                ShardId = shardId;
+            }
+
+            public IActorRef Store { get; }
+            public string ShardId { get; }
+        }
+
+        private class CoordinatorStoreCreated
+        {
+            public CoordinatorStoreCreated(IActorRef store)
+            {
+                Store = store;
+            }
+
+            public IActorRef Store { get; }
+        }
+
+        internal class FakeStore : IRememberEntitiesProvider
+        {
+            public FakeStore(ClusterShardingSettings settings, string typeName)
+            {
+            }
+
+            public Props ShardStoreProps(string shardId)
+            {
+                return FakeShardStoreActor.Props(shardId);
+            }
+
+            public Props CoordinatorStoreProps()
+            {
+                return FakeCoordinatorStoreActor.Props();
+            }
+        }
+
+        private class FakeShardStoreActor : ActorBase, IWithTimers
+        {
+            public static Props Props(string shardId) => Actor.Props.Create(() => new FakeShardStoreActor(shardId));
+
+            internal class FailUpdateEntity
+            {
+                public FailUpdateEntity(IFail whichWay)
+                {
+                    WhichWay = whichWay;
+                }
+
+                public IFail WhichWay { get; }
+            }
+
+            internal class ClearFail
+            {
+            }
+
+            internal class Delayed
+            {
+                public Delayed(IActorRef replyTo, object msg)
+                {
+                    ReplyTo = replyTo;
+                    Msg = msg;
+                }
+
+                public IActorRef ReplyTo { get; }
+                public object Msg { get; }
+            }
+
+            private readonly string shardId;
+            private IFail failUpdate;
+            private readonly ILoggingAdapter log = Context.GetLogger();
+
+            public FakeShardStoreActor(string shardId)
+            {
+                this.shardId = shardId;
+                Context.System.EventStream.Publish(new ShardStoreCreated(Self, shardId));
+            }
+
+            public ITimerScheduler Timers { get; set; }
+
+            //protected override void PreStart()
+            //{
+            //    Context.System.EventStream.Publish(new ShardStoreCreated(Self, shardId));
+            //    base.PreStart();
+            //}
+
+            //protected override void PostRestart(Exception reason)
+            //{
+            //}
+
+            protected override bool Receive(object message)
+            {
+                switch (message)
+                {
+                    case RememberEntitiesShardStore.GetEntities _:
+                        switch (_failShardGetEntities.GetValueOrDefault(shardId))
+                        {
+                            case null:
+                                Sender.Tell(new RememberEntitiesShardStore.RememberedEntities(ImmutableHashSet<string>.Empty));
+                                return true;
+                            case NoResponse _:
+                                log.Debug("Sending no response for GetEntities");
+                                return true;
+                            case CrashStore _:
+                                throw new ApplicationException("store crash on GetEntities");
+                            case StopStore _:
+                                Context.Stop(Self);
+                                return true;
+                            case Delay f:
+                                log.Debug("Delaying initial entities listing with {0}", f.HowLong);
+                                Timers.StartSingleTimer("get-entities-delay", new Delayed(Sender, ImmutableHashSet<string>.Empty), f.HowLong);
+                                return true;
+                        }
+                        return true;
+                    case RememberEntitiesShardStore.Update m:
+                        switch (failUpdate)
+                        {
+                            case null:
+                                Sender.Tell(new RememberEntitiesShardStore.UpdateDone(m.Started, m.Stopped));
+                                return true;
+                            case NoResponse _:
+                                log.Debug("Sending no response for AddEntity");
+                                return true;
+                            case CrashStore _:
+                                throw new ApplicationException("store crash on AddEntity");
+                            case StopStore _:
+                                Context.Stop(Self);
+                                return true;
+                            case Delay f:
+                                log.Debug("Delaying response for AddEntity with {0}", f.HowLong);
+                                Timers.StartSingleTimer("add-entity-delay", new Delayed(Sender, ImmutableHashSet<string>.Empty), f.HowLong);
+                                return true;
+                            case DelayedSuccess f:
+                                log.Debug("Delaying but eventually acknowledging AddEntity with {0}", f.HowLong);
+                                Timers.StartSingleTimer(
+                                    "add-entity-delay",
+                                    new Delayed(Sender, new RememberEntitiesShardStore.UpdateDone(m.Started, m.Stopped)),
+                                    f.HowLong);
+                                return true;
+                        }
+                        return true;
+                    case FailUpdateEntity m:
+                        failUpdate = m.WhichWay;
+                        Sender.Tell(Done.Instance);
+                        return true;
+                    case ClearFail _:
+                        failUpdate = null;
+                        Sender.Tell(Done.Instance);
+                        return true;
+                    case Delayed m:
+                        m.ReplyTo.Tell(m.Msg);
+                        return true;
+                }
+                return false;
+            }
+        }
+
+        private class FakeCoordinatorStoreActor : ActorBase, IWithTimers
+        {
+            public static Props Props() => Actor.Props.Create(() => new FakeCoordinatorStoreActor());
+
+            internal class FailAddShard
+            {
+                public FailAddShard(string shardId, IFail wayToFail)
+                {
+                    ShardId = shardId;
+                    WayToFail = wayToFail;
+                }
+
+                public string ShardId { get; }
+                public IFail WayToFail { get; }
+            }
+
+            internal class ClearFailShard
+            {
+                public ClearFailShard(string shardId)
+                {
+                    ShardId = shardId;
+                }
+
+                public string ShardId { get; }
+            }
+
+            private readonly ILoggingAdapter log = Context.GetLogger();
+            private ImmutableDictionary<string, IFail> failAddShard = ImmutableDictionary<string, IFail>.Empty;
+
+            public ITimerScheduler Timers { get; set; }
+
+            public FakeCoordinatorStoreActor()
+            {
+                Context.System.EventStream.Publish(new CoordinatorStoreCreated(Context.Self));
+            }
+
+            protected override bool Receive(object message)
+            {
+                switch (message)
+                {
+                    case RememberEntitiesCoordinatorStore.GetShards _:
+                        switch (FailCoordinatorGetShards)
+                        {
+                            case null:
+                                Sender.Tell(new RememberEntitiesCoordinatorStore.RememberedShards(ImmutableHashSet<string>.Empty));
+                                return true;
+                            case NoResponse _:
+                                return true;
+                            case CrashStore _:
+                                throw new ApplicationException("store crash on load");
+                            case StopStore _:
+                                Context.Stop(Self);
+                                return true;
+                            case Delay f:
+                                log.Debug("Delaying initial shard listing with {0}", f.HowLong);
+                                Timers.StartSingleTimer("list-shards-delay", new FakeShardStoreActor.Delayed(Sender, ImmutableHashSet<string>.Empty), f.HowLong);
+                                return true;
+                        }
+                        return true;
+                    case RememberEntitiesCoordinatorStore.AddShard m:
+                        switch (failAddShard.GetValueOrDefault(m.ShardId))
+                        {
+                            case null:
+                                Sender.Tell(new RememberEntitiesCoordinatorStore.UpdateDone(m.ShardId));
+                                return true;
+                            case NoResponse _:
+                                return true;
+                            case CrashStore _:
+                                throw new ApplicationException("store crash on add");
+                            case StopStore _:
+                                Context.Stop(Self);
+                                return true;
+                            case Delay f:
+                                log.Debug("Delaying adding shard with {0}", f.HowLong);
+                                Timers.StartSingleTimer("add-shard-delay", new FakeShardStoreActor.Delayed(Sender, ImmutableHashSet<string>.Empty), f.HowLong);
+                                return true;
+                        }
+                        return true;
+                    case FailAddShard m:
+                        log.Debug("Failing store of {0} with {1}", m.ShardId, m.WayToFail);
+                        failAddShard = failAddShard.SetItem(m.ShardId, m.WayToFail);
+                        Sender.Tell(Done.Instance);
+                        return true;
+                    case ClearFailShard m:
+                        log.Debug("No longer failing store of {0}", m.ShardId);
+                        failAddShard = failAddShard.Remove(m.ShardId);
+                        Sender.Tell(Done.Instance);
+                        return true;
+                    case FakeShardStoreActor.Delayed m:
+                        m.ReplyTo.Tell(m.Msg);
+                        return true;
+                }
+                return false;
+            }
+        }
+
+        private static Config SpecConfig =>
+            ConfigurationFactory.ParseString(@"
+                akka.loglevel = DEBUG
+                akka.actor.provider = cluster
+                akka.remote.dot-netty.tcp.port = 0
+                akka.cluster.sharding.distributed-data.durable.keys = []
+                # must be ddata or else remember entities store is ignored
+                akka.cluster.sharding.state-store-mode = ddata
+                akka.cluster.sharding.remember-entities = on
+                akka.cluster.sharding.remember-entities-store = custom
+                akka.cluster.sharding.remember-entities-custom-store = ""Akka.Cluster.Sharding.Tests.RememberEntitiesFailureSpec+FakeStore, Akka.Cluster.Sharding.Tests""
+                # quick backoffs
+                akka.cluster.sharding.entity-restart-backoff = 1s
+                akka.cluster.sharding.shard-failure-backoff = 1s
+                akka.cluster.sharding.coordinator-failure-backoff = 1s
+                akka.cluster.sharding.updating-state-timeout = 1s
+                akka.cluster.sharding.verbose-debug-logging = on
+                akka.cluster.sharding.fail-on-invalid-entity-state-transition = on")
+                .WithFallback(ClusterSingleton.DefaultConfig()
+                .WithFallback(ClusterSharding.DefaultConfig()));
+
+        public RememberEntitiesFailureSpec(ITestOutputHelper helper) : base(SpecConfig, helper)
+        {
+        }
+
+        protected override void AtStartup()
+        {
+            // Form a one node cluster
+            var cluster = Cluster.Get(Sys);
+            cluster.Join(cluster.SelfAddress);
+            AwaitAssert(() =>
+            {
+                cluster.ReadView.Members.Count(m => m.Status == MemberStatus.Up).Should().Be(1);
+            });
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails_NoResponse()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails(new NoResponse());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails_CrashStore()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails(new CrashStore());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails_StopStore()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails(new StopStore());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails_Delay_500()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails(new Delay(TimeSpan.FromMilliseconds(500)));
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails_Delay_1000()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails(new Delay(TimeSpan.FromSeconds(1)));
+        }
+
+        private void Remember_entities_handling_in_sharding_must_recover_when_initial_remember_entities_load_fails(IFail wayToFail)
+        {
+            Log.Debug("Getting entities for shard 1 will fail");
+            _failShardGetEntities = ImmutableDictionary<string, IFail>.Empty.Add("1", wayToFail);
+
+            try
+            {
+                var probe = CreateTestProbe();
+                var sharding = ClusterSharding.Get(Sys).Start(
+                    $"initial-{wayToFail}",
+                    Props.Create(() => new EntityActor()),
+                    ClusterShardingSettings.Create(Sys).WithRememberEntities(true),
+                    new MessageExtractor());
+
+                sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+                probe.ExpectNoMsg(); // message is lost because shard crashes
+
+                Log.Debug("Resetting initial fail");
+                _failShardGetEntities = ImmutableDictionary<string, IFail>.Empty;
+
+                // shard should be restarted and eventually succeed
+                AwaitAssert(() =>
+                {
+                    sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+                    probe.ExpectMsg("hello-1");
+                });
+
+                Sys.Stop(sharding);
+            }
+            finally
+            {
+                _failShardGetEntities = ImmutableDictionary<string, IFail>.Empty;
+            }
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails_NoResponse()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails(new NoResponse());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails_CrashStore()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails(new CrashStore());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails_StopStore()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails(new StopStore());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails_Delay_500()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails(new Delay(TimeSpan.FromMilliseconds(500)));
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails_Delay_1000()
+        {
+            Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails(new Delay(TimeSpan.FromSeconds(1)));
+        }
+
+        private void Remember_entities_handling_in_sharding_must_recover_when_shard_storing_a_start_event_fails(IFail wayToFail)
+        {
+            var storeProbe = CreateTestProbe();
+            Sys.EventStream.Subscribe(storeProbe.Ref, typeof(ShardStoreCreated));
+
+            var sharding = ClusterSharding.Get(Sys).Start(
+                $"shardStoreStart-{wayToFail}",
+                Props.Create(() => new EntityActor()),
+                ClusterShardingSettings.Create(Sys).WithRememberEntities(true),
+                new MessageExtractor());
+
+            // trigger shard start and store creation
+            var probe = CreateTestProbe();
+            sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+            var shardStore = storeProbe.ExpectMsg<ShardStoreCreated>().Store;
+            probe.ExpectMsg("hello-1");
+
+            // hit shard with other entity that will fail
+            shardStore.Tell(new FakeShardStoreActor.FailUpdateEntity(wayToFail), storeProbe.Ref);
+            storeProbe.ExpectMsg<Done>();
+
+            sharding.Tell(new EntityEnvelope(11, "hello-11"), probe.Ref);
+
+            // do we get an answer here? shard crashes
+            probe.ExpectNoMsg();
+            if (wayToFail is StopStore or CrashStore)
+            {
+                // a new store should be started
+                shardStore = storeProbe.ExpectMsg<ShardStoreCreated>().Store;
+            }
+
+            if (wayToFail is NoResponse or Delay or CrashStore)
+            {
+                // a new store should be started
+                shardStore = storeProbe.ExpectMsg<ShardStoreCreated>().Store;
+            }
+
+            var stopFailingProbe = CreateTestProbe();
+            shardStore.Tell(new FakeShardStoreActor.ClearFail(), stopFailingProbe.Ref);
+            stopFailingProbe.ExpectMsg<Done>();
+
+            // it takes a while - timeout hits and then backoff
+            AwaitAssert(() =>
+            {
+                sharding.Tell(new EntityEnvelope(11, "hello-11-2"), probe.Ref);
+                probe.ExpectMsg("hello-11-2");
+            }, TimeSpan.FromSeconds(10));
+            Sys.Stop(sharding);
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails_NoResponse()
+        {
+            Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails(new NoResponse());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails_CrashStore()
+        {
+            Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails(new CrashStore());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails_StopStore()
+        {
+            Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails(new StopStore());
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails_Delay_500()
+        {
+            Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails(new Delay(TimeSpan.FromMilliseconds(500)));
+        }
+
+        [Fact]
+        public void Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails_Delay_1000()
+        {
+            Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails(new Delay(TimeSpan.FromSeconds(1)));
+        }
+
+        private void Remember_entities_handling_in_sharding_must_recover_on_abrupt_entity_stop_when_storing_a_stop_event_fails(IFail wayToFail)
+        {
+            var storeProbe = CreateTestProbe();
+            Sys.EventStream.Subscribe(storeProbe.Ref, typeof(ShardStoreCreated));
+
+            var sharding = ClusterSharding.Get(Sys).Start(
+                $"shardStoreStopAbrupt-{wayToFail}",
+                Props.Create(() => new EntityActor()),
+                ClusterShardingSettings.Create(Sys).WithRememberEntities(true),
+                new MessageExtractor());
+
+            var probe = CreateTestProbe();
+
+            // trigger shard start and store creation
+            sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+            var shard1Store = storeProbe.ExpectMsg<ShardStoreCreated>().Store;
+            probe.ExpectMsg("hello-1");
+
+            // fail it when stopping
+            shard1Store.Tell(new FakeShardStoreActor.FailUpdateEntity(wayToFail), storeProbe.Ref);
+            storeProbe.ExpectMsg<Done>();
+
+            // FIXME restart without passivating is not saved and re-started again without storing the stop so this isn't testing anything
+            sharding.Tell(new EntityEnvelope(1, "stop"));
+
+            shard1Store.Tell(new FakeShardStoreActor.ClearFail(), storeProbe.Ref);
+            storeProbe.ExpectMsg<Done>();
+
+            // it takes a while - timeout hits and then backoff
+            AwaitAssert(() =>
+            {
+                sharding.Tell(new EntityEnvelope(1, "hello-2"), probe.Ref);
+                probe.ExpectMsg("hello-2");
+            }, TimeSpan.FromSeconds(10));
+            Sys.Stop(sharding);
+        }
+
+        [Fact]
+        public async Task Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails_NoResponse()
+        {
+            await Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails(new NoResponse());
+        }
+
+        [Fact]
+        public async Task Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails_CrashStore()
+        {
+            await Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails(new CrashStore());
+        }
+
+        [Fact]
+        public async Task Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails_StopStore()
+        {
+            await Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails(new StopStore());
+        }
+
+        [Fact]
+        public async Task Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails_Delay_500()
+        {
+            await Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails(new Delay(TimeSpan.FromMilliseconds(500)));
+        }
+
+        [Fact]
+        public async Task Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails_Delay_1000()
+        {
+            await Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails(new Delay(TimeSpan.FromSeconds(1)));
+        }
+
+        private async Task Remember_entities_handling_in_sharding_must_recover_on_graceful_entity_stop_when_storing_a_stop_event_fails(IFail wayToFail)
+        {
+            var storeProbe = CreateTestProbe();
+            Sys.EventStream.Subscribe(storeProbe.Ref, typeof(ShardStoreCreated));
+
+            var sharding = ClusterSharding.Get(Sys).Start(
+                $"shardStoreStopGraceful-{wayToFail}",
+                Props.Create(() => new EntityActor()),
+                ClusterShardingSettings.Create(Sys).WithRememberEntities(true),
+                new MessageExtractor(),
+                ShardAllocationStrategy.LeastShardAllocationStrategy(absoluteLimit: 1, relativeLimit: 0.1),
+                "graceful-stop");
+
+            var probe = CreateTestProbe();
+
+            // trigger shard start and store creation
+            sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+            var shard1Store = (await storeProbe.ExpectMsgAsync<ShardStoreCreated>()).Store;
+            await probe.ExpectMsgAsync("hello-1");
+
+            // fail it when stopping
+            shard1Store.Tell(new FakeShardStoreActor.FailUpdateEntity(wayToFail), storeProbe.Ref);
+            await storeProbe.ExpectMsgAsync<Done>();
+
+            sharding.Tell(new EntityEnvelope(1, "graceful-stop"));
+
+            if (wayToFail is StopStore or CrashStore)
+            {
+                shard1Store = (await storeProbe.ExpectMsgAsync<ShardStoreCreated>()).Store;
+            }
+
+            if (wayToFail is NoResponse or Delay or CrashStore)
+            {
+                shard1Store = (await storeProbe.ExpectMsgAsync<ShardStoreCreated>()).Store;
+            }
+
+            shard1Store.Tell(new FakeShardStoreActor.ClearFail(), probe.Ref);
+            await probe.ExpectMsgAsync<Done>();
+
+            // it takes a while - timeout hits and then backoff
+            await AwaitAssertAsync(async () =>
+            {
+                sharding.Tell(new EntityEnvelope(1, "hello-2"), probe.Ref);
+                await probe.ExpectMsgAsync("hello-2");
+            }, TimeSpan.FromSeconds(10));
+            Sys.Stop(sharding);
+        }
+
+        [Fact]
+        public Task Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails_NoResponse()
+        {
+            return Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails(new NoResponse());
+        }
+
+        [Fact]
+        public Task Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails_CrashStore()
+        {
+            return Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails(new CrashStore());
+        }
+
+        [Fact]
+        public Task Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails_StopStore()
+        {
+            return Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails(new StopStore());
+        }
+
+        [Fact]
+        public Task Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails_Delay_500()
+        {
+            return Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails(new Delay(TimeSpan.FromMilliseconds(500)));
+        }
+
+        [Fact]
+        public Task Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails_Delay_1000()
+        {
+            return Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails(new Delay(TimeSpan.FromSeconds(1)));
+        }
+
+        private async Task Remember_entities_handling_in_sharding_must_recover_when_coordinator_storing_shard_start_fails(IFail wayToFail)
+        {
+            var storeProbe = CreateTestProbe();
+            Sys.EventStream.Subscribe(storeProbe.Ref, typeof(CoordinatorStoreCreated));
+
+            var sharding = await ClusterSharding.Get(Sys).StartAsync(
+                $"coordinatorStoreStopGraceful-{wayToFail}",
+                Props.Create(() => new EntityActor()),
+                ClusterShardingSettings.Create(Sys).WithRememberEntities(true),
+                new MessageExtractor(),
+                ShardAllocationStrategy.LeastShardAllocationStrategy(absoluteLimit: 1, relativeLimit: 0.1),
+                "graceful-stop");
+
+            var probe = CreateTestProbe();
+
+            // coordinator store is triggered by coordinator starting up
+            var coordinatorStore = (await storeProbe.ExpectMsgAsync<CoordinatorStoreCreated>()).Store;
+            coordinatorStore.Tell(new FakeCoordinatorStoreActor.FailAddShard("1", wayToFail), probe.Ref);
+            await probe.ExpectMsgAsync<Done>();
+
+            sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+            
+            if (wayToFail is StopStore or CrashStore)
+            {
+                // For crash/stop cases, the coordinator will restart and create a new store
+                // Wait for the new store to be created (deterministic event, not time-based)
+                coordinatorStore = (await storeProbe.ExpectMsgAsync<CoordinatorStoreCreated>(TimeSpan.FromSeconds(3))).Store;
+                
+                // The new store is fresh, no failure configured yet
+                // Clear any potential failure state just to be safe
+                coordinatorStore.Tell(new FakeCoordinatorStoreActor.ClearFailShard("1"), storeProbe.Ref);
+                await storeProbe.ExpectMsgAsync<Done>();
+            }
+            else
+            {
+                // For non-restart failure modes (NoResponse, Delay), the store stays alive but unresponsive
+                // Verify the message is blocked while the store is failing
+                await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
+                
+                // Clear the failure for the existing store
+                coordinatorStore.Tell(new FakeCoordinatorStoreActor.ClearFailShard("1"), storeProbe.Ref);
+                await storeProbe.ExpectMsgAsync<Done>();
+            }
+
+            await probe.AwaitAssertAsync(async () =>
+            {
+                sharding.Tell(new EntityEnvelope(1, "hello-2"), probe.Ref);
+                await probe.ExpectMsgAsync("hello-2"); // should now work again
+            }, TimeSpan.FromSeconds(5));
+
+            Sys.Stop(sharding);
+        }
+
+        [Fact(DisplayName =
+            "Shard must not restart a remember-entities write that finishes within updating-state-timeout " +
+            "even though it is slower than waiting-for-state-timeout, and must deliver the buffered message")]
+        public async Task Remember_entities_handling_in_sharding_must_not_restart_for_a_write_slower_than_waiting_for_state_timeout_but_within_updating_state_timeout()
+        {
+            var storeProbe = CreateTestProbe();
+            Sys.EventStream.Subscribe(storeProbe.Ref, typeof(ShardStoreCreated));
+
+            // Class config shortens updating-state-timeout to 1s for the other facts; restore it here,
+            // for this shard type only, to its reference.conf default (5s), alongside the untouched
+            // waiting-for-state-timeout default (2s). A 3s write delay then sits strictly between: 2s < 3s < 5s.
+            var settings = ClusterShardingSettings.Create(Sys).WithRememberEntities(true);
+            settings = settings.WithTuningParameters(settings.TuningParameters.WithUpdatingStateTimeout(TimeSpan.FromSeconds(5)));
+
+            var sharding = ClusterSharding.Get(Sys).Start(
+                "shardStoreSlowWrite", Props.Create(() => new EntityActor()), settings, new MessageExtractor());
+            var probe = CreateTestProbe();
+
+            // trigger shard start and store creation
+            sharding.Tell(new EntityEnvelope(1, "hello-1"), probe.Ref);
+            var shardStore = (await storeProbe.ExpectMsgAsync<ShardStoreCreated>()).Store;
+            await probe.ExpectMsgAsync("hello-1");
+
+            // delay-but-still-acknowledge the *next* remember-entities write by 3s
+            shardStore.Tell(new FakeShardStoreActor.FailUpdateEntity(new DelayedSuccess(TimeSpan.FromSeconds(3))), storeProbe.Ref);
+            await storeProbe.ExpectMsgAsync<Done>();
+
+            // new entity in the same shard (11 % 10 == 1 == 1 % 10): its start-event write is delayed
+            sharding.Tell(new EntityEnvelope(11, "hello-11"), probe.Ref);
+
+            // 5s updating-state-timeout + 3s margin for CI jitter: fixed code lets the delayed-but-valid
+            // ack (at 3s) land and delivers the buffered message; pre-fix code arms the timer with the
+            // 2s waiting-for-state-timeout instead, restarts the shard at ~2s, and drops it (no redelivery).
+            await probe.ExpectMsgAsync("hello-11", TimeSpan.FromSeconds(8));
+
+            // no second store should have been created - the shard must not have restarted
+            await storeProbe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+
+            Sys.Stop(sharding);
+        }
+    }
+}

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="MiscMessageSerializerSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -76,6 +76,30 @@ namespace Akka.Remote.Tests.Serialization
             AssertEqual(identify);
         }
 
+        [Theory]
+        [InlineData(null)]
+        [InlineData(1)]
+        [InlineData("hi")]
+        public void Can_serialize_StatusSuccess(object payload)
+        {
+            var success = new Status.Success(payload);
+            AssertEqual(success);
+        }
+        
+        [Theory]
+        [InlineData(null)]
+        [InlineData(1)]
+        [InlineData("hi")]
+        public void Can_serialize_StatusFailure(object payload)
+        {
+            var success = new Status.Failure(new ApplicationException("foo"),payload);
+            // can't use AssertEqual here since the Exception data isn't 100% identical after round-trip serialization
+            var deserialized = AssertAndReturn(success);
+            deserialized.State.Should().BeEquivalentTo(success.State);
+            deserialized.Cause.Message.Should().BeEquivalentTo(success.Cause.Message);
+            deserialized.Cause.Should().BeOfType(success.Cause.GetType());
+        }
+
         [Fact]
         public void Can_serialize_ActorIdentity()
         {
@@ -133,6 +157,13 @@ namespace Akka.Remote.Tests.Serialization
         {
             var kill = Kill.Instance;
             AssertEqual(kill);
+        }
+
+        [Fact]
+        public void Can_serialize_IntentionalRestart()
+        {
+            var restart = IntentionalRestart.Instance;
+            AssertEqual(restart);
         }
 
         [Fact]
@@ -310,7 +341,7 @@ namespace Akka.Remote.Tests.Serialization
         {
             var message = new RemoteRouterConfig(
                 local: new RandomPool(25),
-                nodes: new List<Address> { new Address("akka.tcp", "TestSys", "localhost", 23423) });
+                nodes: new List<Address> { new("akka.tcp", "TestSys", "localhost", 23423) });
             AssertEqual(message);
         }
 
@@ -326,6 +357,19 @@ namespace Akka.Remote.Tests.Serialization
         {
             var heartbeatRsp = new RemoteWatcher.HeartbeatRsp(34);
             AssertAndReturn(heartbeatRsp).AddressUid.Should().Be(heartbeatRsp.AddressUid); //TODO: add Equals to RemoteWatcher.HeartbeatRsp
+        }
+
+        // RemoteWatcher.HeartbeatRsp.AddressUid is carried on the wire as ContainerFormats.proto's uint64
+        // (already 64-bit before the widen-system-uid-to-64bit change - only the C# narrowing casts were
+        // removed), so >32-bit uids must round-trip cleanly through MiscMessageSerializer.
+        [Theory(DisplayName = "Should_round_trip_a_greater_than_32_bit_addressUid_When_serializing_RemoteWatcher_HeartbeatRsp")]
+        [InlineData(long.MaxValue)]
+        [InlineData(unchecked((long)0x8000_0000_0000_0001))] // negative
+        [InlineData(1L << 40)]
+        public void Should_round_trip_a_greater_than_32_bit_addressUid_When_serializing_RemoteWatcher_HeartbeatRsp(long addressUid)
+        {
+            var heartbeatRsp = new RemoteWatcher.HeartbeatRsp(addressUid);
+            AssertAndReturn(heartbeatRsp).AddressUid.Should().Be(heartbeatRsp.AddressUid);
         }
 
         [Fact]
@@ -352,7 +396,7 @@ namespace Akka.Remote.Tests.Serialization
         public void Serializer_must_reject_deserialization_with_invalid_manifest()
         {
             var serializer = new MiscMessageSerializer(Sys.AsInstanceOf<ExtendedActorSystem>());
-            Action comparison = () => serializer.FromBinary(new byte[0], "INVALID");
+            Action comparison = () => serializer.FromBinary(Array.Empty<byte>(), "INVALID");
             comparison.Should().Throw<SerializationException>();
         }
 
@@ -361,18 +405,14 @@ namespace Akka.Remote.Tests.Serialization
             var serializer = Sys.Serialization.FindSerializerFor(message);
             serializer.Should().BeOfType<MiscMessageSerializer>();
             var serializedBytes = serializer.ToBinary(message);
-
-            if (serializer is SerializerWithStringManifest serializerManifest)
-            {
-                return (T)serializerManifest.FromBinary(serializedBytes, serializerManifest.Manifest(message));
-            }
-            return (T)serializer.FromBinary(serializedBytes, typeof(T));
+            var manifest = Akka.Serialization.Serialization.ManifestFor(serializer, message);
+            return (T)serializer.FromBinary(serializedBytes, manifest);
         }
 
         private void AssertEqual<T>(T message)
         {
             var deserialized = AssertAndReturn(message);
-            Assert.Equal(message, deserialized);
+            deserialized.Should().BeEquivalentTo(message);
         }
     }
 }

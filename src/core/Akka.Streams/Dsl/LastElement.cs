@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LastElement.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Akka.Streams.Stage;
 using Akka.Streams.Util;
 using Akka.Util;
+using Akka.Util.Internal;
 
 namespace Akka.Streams.Dsl
 {
@@ -30,13 +31,13 @@ namespace Akka.Streams.Dsl
                 SetHandler(lastElement.In, onPush: () =>
                 {
                     var element = Grab(lastElement.In);
-                    currentElement = new Option<T>(element);
+                    currentElement = Option<T>.Create(element);
                     Push(lastElement.Out, element);
                 }, onUpstreamFinish: () =>
                 {
                     completion.SetResult(currentElement);
                     CompleteStage();
-                }, onUpstreamFailure: ex =>
+                }, onUpstreamFailure: _ =>
                 {
                     completion.SetResult(currentElement);
                     CompleteStage();
@@ -60,7 +61,7 @@ namespace Akka.Streams.Dsl
 
         public override ILogicAndMaterializedValue<Task<Option<T>>> CreateLogicAndMaterializedValue(Attributes inheritedAttributes)
         {
-            var completion = new TaskCompletionSource<Option<T>>();
+            var completion = TaskEx.NonBlockingTaskCompletionSource<Option<T>>();
             var logic = new Logic(this, completion);
 
             return new LogicAndMaterializedValue<Task<Option<T>>>(logic, completion.Task);

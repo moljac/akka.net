@@ -1,17 +1,19 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterShardingConfigSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using Akka.Configuration;
+using Akka.TestKit;
 using Xunit;
+using FluentAssertions;
 
 namespace Akka.Cluster.Sharding.Tests
 {
-    public class ClusterShardingConfigSpec : Akka.TestKit.Xunit2.TestKit
+    public class ClusterShardingConfigSpec : AkkaSpec
     {
         public ClusterShardingConfigSpec() : base(GetConfig())
         {
@@ -26,8 +28,10 @@ namespace Akka.Cluster.Sharding.Tests
         [Fact]
         public void Should_cluster_sharding_settings_have_default_config()
         {
-            ClusterSharding.Get(Sys);
+            var clusterSharding = ClusterSharding.Get(Sys);
             var config = Sys.Settings.Config.GetConfig("akka.cluster.sharding");
+
+            var clusterShardingSettings = ClusterShardingSettings.Create(Sys);
 
             Assert.False(config.IsNullOrEmpty());
             Assert.Equal("sharding", config.GetString("guardian-name"));
@@ -42,14 +46,19 @@ namespace Akka.Cluster.Sharding.Tests
             Assert.Equal(TimeSpan.FromSeconds(10), config.GetTimeSpan("rebalance-interval"));
             Assert.Equal(string.Empty, config.GetString("journal-plugin-id"));
             Assert.Equal(string.Empty, config.GetString("snapshot-plugin-id"));
-            Assert.Equal("persistence", config.GetString("state-store-mode"));
-            Assert.Equal(TimeSpan.FromSeconds(5), config.GetTimeSpan("waiting-for-state-timeout"));
+            Assert.Equal("ddata", config.GetString("state-store-mode"));
+            Assert.Equal("ddata", config.GetString("remember-entities-store"));
+            Assert.Equal(TimeSpan.FromSeconds(2), config.GetTimeSpan("waiting-for-state-timeout"));
             Assert.Equal(TimeSpan.FromSeconds(5), config.GetTimeSpan("updating-state-timeout"));
             Assert.Equal("akka.cluster.singleton", config.GetString("coordinator-singleton"));
             Assert.Equal(string.Empty, config.GetString("use-dispatcher"));
 
             Assert.Equal(1, config.GetInt("least-shard-allocation-strategy.rebalance-threshold"));
             Assert.Equal(3, config.GetInt("least-shard-allocation-strategy.max-simultaneous-rebalance"));
+            Assert.Equal(20, config.GetInt("least-shard-allocation-strategy.rebalance-absolute-limit"));
+            Assert.Equal(0.1, config.GetDouble("least-shard-allocation-strategy.rebalance-relative-limit"));
+            clusterSharding.DefaultShardAllocationStrategy(clusterShardingSettings)
+                .Should().BeOfType<Sharding.Internal.LeastShardAllocationStrategy>();
 
             Assert.Equal("all", config.GetString("entity-recovery-strategy"));
             Assert.Equal(TimeSpan.FromMilliseconds(100), config.GetTimeSpan("entity-recovery-constant-rate-strategy.frequency"));
@@ -62,6 +71,28 @@ namespace Akka.Cluster.Sharding.Tests
             Assert.Equal(string.Empty, singletonConfig.GetString("role"));
             Assert.Equal(TimeSpan.FromSeconds(1), singletonConfig.GetTimeSpan("hand-over-retry-interval"));
             Assert.Equal(15, singletonConfig.GetInt("min-number-of-hand-over-retries"));
+            
+            // DData settings
+            var minCap = config.GetInt("distributed-data.majority-min-cap");
+            minCap.Should().Be(5);
+            clusterShardingSettings.TuningParameters.CoordinatorStateReadMajorityPlus.Should().Be(5);
+            clusterShardingSettings.TuningParameters.CoordinatorStateWriteMajorityPlus.Should().Be(3);
+        }
+
+        [Fact]
+        public void ClusterSharding_replicator_settings_should_have_default_values()
+        {
+            ClusterSharding.Get(Sys);
+            var clusterShardingSettings = ClusterShardingSettings.Create(Sys);
+            var replicatorSettings = ClusterShardingGuardian.GetReplicatorSettings(clusterShardingSettings);
+            
+            replicatorSettings.Should().NotBeNull();
+            replicatorSettings.Role.Should().BeNullOrEmpty();
+            
+            // only populated when remember-entities is enabled
+            replicatorSettings.DurableKeys.Should().BeEmpty();
+            replicatorSettings.MaxDeltaElements.Should().Be(5);
+            replicatorSettings.PreferOldest.Should().BeTrue();
         }
     }
 }

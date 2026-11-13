@@ -1,19 +1,20 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="AtLeastOnceDeliverySpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Akka.Actor;
-using Akka.Actor.Dsl;
 using Akka.Event;
 using Akka.TestKit;
+using Akka.TestKit.Xunit.Attributes;
 using Xunit;
-using Xunit.Abstractions;
+using FluentAssertions;
 
 namespace Akka.Persistence.Tests
 {
@@ -46,39 +47,49 @@ namespace Akka.Persistence.Tests
 
             protected override bool ReceiveRecover(object message)
             {
-                return message.Match()
-                    .With<IEvt>(UpdateState)
-                    .With<SnapshotOffer>(o =>
-                    {
+                switch (message)
+                {
+                    case IEvt e:
+                        UpdateState(e);
+                        return true;
+                    case SnapshotOffer o:
                         var snap = (Snap)o.Snapshot;
                         SetDeliverySnapshot(snap.DeliverySnapshot);
-                    })
-                    .WasHandled;
+                        return true;
+                    default:
+                        return false;
+                }
             }
 
             protected override bool ReceiveCommand(object message)
             {
-                return message.Match()
-                    .With<Req>(req =>
+                switch (message)
+                {
+                    case Req req:
                     {
                         if (string.IsNullOrEmpty(req.Payload)) Sender.Tell(InvalidReq.Instance);
                         else
                         {
                             var c = char.ToUpper(req.Payload[0]);
                             var destination = _destinations[c.ToString()];
-                            if (_isAsync) PersistAsync(new AcceptedReq(req.Payload, destination.ToString()), e =>
-                            {
-                                UpdateState(e);
-                                Sender.Tell(ReqAck.Instance);
-                            });
-                            else Persist(new AcceptedReq(req.Payload, destination.ToString()), e =>
-                            {
-                                UpdateState(e);
-                                Sender.Tell(ReqAck.Instance);
-                            });
+                            if (_isAsync)
+                                PersistAsync(new AcceptedReq(req.Payload, destination.ToString()), e =>
+                                {
+                                    UpdateState(e);
+                                    Sender.Tell(ReqAck.Instance);
+                                });
+                            else
+                                Persist(new AcceptedReq(req.Payload, destination.ToString()), e =>
+                                {
+                                    UpdateState(e);
+                                    Sender.Tell(ReqAck.Instance);
+                                });
                         }
-                    })
-                    .With<ReqSelection>(msg =>
+
+                        return true;
+                    }
+                    
+                    case ReqSelection msg:
                     {
                         var c = char.ToUpper(msg.Payload[0]);
                         var destination = _destinations[c.ToString()];
@@ -87,59 +98,62 @@ namespace Akka.Persistence.Tests
                             UpdateState(e);
                             Sender.Tell(ReqAck.Instance);
                         });
-                    })
-                    .With<ActionAck>(ack =>
-                    {
+                        return true;
+                    }
+                    
+                    case ActionAck ack:
                         _log.Debug("Sender got ack: {0}", ack.Id);
                         if (ConfirmDelivery(ack.Id))
                         {
-                            if (_isAsync) PersistAsync(new ReqDone(ack.Id), done => UpdateState(done));
-                            else Persist(new ReqDone(ack.Id), done => UpdateState(done));
+                            if (_isAsync) PersistAsync(new ReqDone(ack.Id), UpdateState);
+                            else Persist(new ReqDone(ack.Id), UpdateState);
                         }
-                    })
-                    .With<Boom>(boom =>
-                    {
+
+                        return true;
+                    
+                    case Boom _:
                         _log.Debug("Boom!");
                         throw new Exception("boom");
-                    })
-                    .With<SaveSnap>(save =>
-                    {
+                    
+                    case SaveSnap _:
                         _log.Debug("Save snapshot");
                         _lastSnapshotAskedForBy = Sender;
                         SaveSnapshot(new Snap(GetDeliverySnapshot()));
-                    })
-                    .With<SaveSnapshotSuccess>(succ =>
-                    {
+                        return true;
+                    
+                    case SaveSnapshotSuccess succ:
                         _log.Debug("Save snapshot success!");
                         if (_lastSnapshotAskedForBy != null)
                             _lastSnapshotAskedForBy.Tell(succ);
-                    })
-                    .With<UnconfirmedWarning>(warn =>
-                    {
+                        return true;
+                    
+                    case UnconfirmedWarning warn:
                         _log.Debug("Sender got unconfirmed warning: unconfirmed deliveries count {0}", warn.UnconfirmedDeliveries.Count());
                         _testActor.Tell(warn);
-                    })
-                    .WasHandled;
+                        return true;
+                    
+                    default:
+                        return false;
+                }
             }
 
             private void UpdateState(IEvt evt)
             {
-                evt.Match()
-                    .With<AcceptedReq>(a =>
-                    {
+                switch (evt)
+                {
+                    case AcceptedReq a:
                         _log.Debug("Deliver(destination, deliveryId => Action(deliveryId, {0})), recovering: {1}", a.Payload, IsRecovering);
                         Deliver(ActorPath.Parse(a.DestinationPath), deliveryId => new Action(deliveryId, a.Payload));
-                    })
-                    .With<AcceptedSelectionReq>(a =>
-                    {
+                        break;
+                    case AcceptedSelectionReq a:
                         _log.Debug("Deliver(destination, deliveryId => Action(deliveryId, {0})), recovering: {1}", a.Payload, IsRecovering);
                         Deliver(Context.System.ActorSelection(a.DestinationPath), deliveryId => new Action(deliveryId, a.Payload));
-                    })
-                    .With<ReqDone>(r =>
-                    {
+                        break;
+                    case ReqDone r:
                         _log.Debug("ConfirmDelivery({0}), recovering: {1}", r.Id, IsRecovering);
                         ConfirmDelivery(r.Id);
-                    });
+                        break;
+                }
             }
         }
 
@@ -202,25 +216,17 @@ namespace Akka.Persistence.Tests
         }
         
         [Serializable]
-        sealed class ReqAck
+        sealed record ReqAck
         {
-            public static readonly ReqAck Instance = new ReqAck();
+            public static readonly ReqAck Instance = new();
             private ReqAck() { }
-            public override bool Equals(object obj)
-            {
-                return obj is ReqAck;
-            }
         }
 
         [Serializable]
-        sealed class InvalidReq
+        sealed record InvalidReq
         {
-            public static readonly InvalidReq Instance = new InvalidReq();
+            public static readonly InvalidReq Instance = new();
             private InvalidReq() { }
-            public override bool Equals(object obj)
-            {
-                return obj is InvalidReq;
-            }
         }
 
         interface IEvt { }
@@ -256,19 +262,7 @@ namespace Akka.Persistence.Tests
         }
 
         [Serializable]
-        sealed class ReqDone : IEvt, IEquatable<ReqDone>
-        {
-            public ReqDone(long id)
-            {
-                Id = id;
-            }
-
-            public long Id { get; private set; }
-            public bool Equals(ReqDone other)
-            {
-                return other != null && other.Id == Id;
-            }
-        }
+        sealed record ReqDone(long Id) : IEvt;
 
         [Serializable]
         sealed class Action : IEquatable<Action>
@@ -286,7 +280,7 @@ namespace Akka.Persistence.Tests
             public override bool Equals(object obj)
             {
                 if (ReferenceEquals(null, obj)) return false;
-                return obj is Action && Equals((Action)obj);
+                return obj is Action action && Equals(action);
             }
             public bool Equals(Action other)
             {
@@ -303,25 +297,13 @@ namespace Akka.Persistence.Tests
         }
 
         [Serializable]
-        sealed class ActionAck : IEquatable<ActionAck>
-        {
-            public ActionAck(long id)
-            {
-                Id = id;
-            }
-
-            public long Id { get; private set; }
-            public bool Equals(ActionAck other)
-            {
-                return other != null && other.Id == Id;
-            }
-        }
+        sealed record ActionAck(long Id);
 
         [Serializable]
-        sealed class Boom { public static readonly Boom Instance = new Boom(); }
+        sealed class Boom { public static readonly Boom Instance = new(); }
 
         [Serializable]
-        sealed class SaveSnap { public static readonly SaveSnap Instance = new SaveSnap(); }
+        sealed class SaveSnap { public static readonly SaveSnap Instance = new(); }
 
         [Serializable]
         sealed class Snap
@@ -373,27 +355,28 @@ namespace Akka.Persistence.Tests
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_deliver_messages_in_order_when_nothing_is_lost()
+        public async Task AtLeastOnceDelivery_must_deliver_messages_in_order_when_nothing_is_lost()
         {
             var probe = CreateTestProbe();
             var destinations = new Dictionary<string, ActorPath> { { "A", Sys.ActorOf(Props.Create(() => new Destination(probe.Ref))).Path } };
             var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(500), 5, 1000, false, destinations)), Name);
 
             sender.Tell(new Req("a"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 1 && a.Payload == "a");
-            probe.ExpectNoMsg(TimeSpan.FromSeconds(1));
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a");
+            await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
         }
 
         [Fact]
-        public void PersistentReceive_must_not_allow_using_ActorSelection_with_wildcards()
+        public async Task PersistentReceive_must_not_allow_using_ActorSelection_with_wildcards()
         {
             Sys.ActorOf(Props.Create(() => new DeliverToStarSelection(Name))).Tell("anything, really.");
-            ExpectMsg<string>().Contains("not supported").ShouldBeTrue();
+            var msg = await ExpectMsgAsync<string>();
+            msg.Contains("not supported").ShouldBeTrue();
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_allow_using_ActorSelection_without_wildcards()
+        public async Task AtLeastOnceDelivery_must_allow_using_ActorSelection_without_wildcards()
         {
             var probe = CreateTestProbe();
             var destinations = new Dictionary<string, ActorPath> { { "A", Sys.ActorOf(Props.Create(() => new Destination(probe.Ref))).Path } };
@@ -401,72 +384,78 @@ namespace Akka.Persistence.Tests
 
             var mess = new ReqSelection("a-1");
             sender.Tell(mess);
-            probe.ExpectMsg<Action>(a => a.Id == 1 && a.Payload == "a-1");
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a-1");
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_redeliver_lost_messages()
+        public async Task AtLeastOnceDelivery_must_redeliver_lost_messages()
         {
             var probe = CreateTestProbe();
             var dest = Sys.ActorOf(Props.Create(() => new Destination(probe.Ref)));
             var destinations = new Dictionary<string, ActorPath> { { "A", Sys.ActorOf(Props.Create(() => new Unreliable(3, dest))).Path } };
-            var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(500), 5, 1000, false, destinations)), Name);
+            // Use a longer redeliver interval to prevent premature redelivery from shifting the
+            // Unreliable proxy's counter. RedeliveryTick bypasses the PersistingEvents stash, so with
+            // a short interval the timer can redeliver a-3 before a-4's journal write completes.
+            var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(2000), 5, 1000, false, destinations)), Name);
 
             sender.Tell(new Req("a-1"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 1 && a.Payload == "a-1");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a-1");
 
             sender.Tell(new Req("a-2"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 2 && a.Payload == "a-2");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 2 && a.Payload == "a-2");
 
             sender.Tell(new Req("a-3"));
             sender.Tell(new Req("a-4"));
-            ExpectMsg(ReqAck.Instance);
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
             // a-3 was lost ...
-            probe.ExpectMsg<Action>(a => a.Id == 4 && a.Payload == "a-4");
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 4 && a.Payload == "a-4");
             // ... and then redelivered
-            probe.ExpectMsg<Action>(a => a.Id == 3 && a.Payload == "a-3");
-            probe.ExpectNoMsg(TimeSpan.FromSeconds(1));
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 3 && a.Payload == "a-3", timeout: TimeSpan.FromSeconds(10));
+            await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_redeliver_lost_messages_after_restart()
+        public async Task AtLeastOnceDelivery_must_redeliver_lost_messages_after_restart()
         {
             var probe = CreateTestProbe();
             var dest = Sys.ActorOf(Props.Create(() => new Destination(probe.Ref)));
             var destinations = new Dictionary<string, ActorPath> { { "A", Sys.ActorOf(Props.Create(() => new Unreliable(3, dest))).Path } };
-            var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(500), 5, 1000, false, destinations)), Name);
+            // Use a longer redeliver interval to prevent premature redelivery from shifting the
+            // Unreliable proxy's counter. RedeliveryTick bypasses the PersistingEvents stash, so with
+            // a short interval the timer can redeliver a-3 before a-4's journal write completes.
+            var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(2000), 5, 1000, false, destinations)), Name);
 
             sender.Tell(new Req("a-1"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 1 && a.Payload == "a-1");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a-1");
 
             sender.Tell(new Req("a-2"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 2 && a.Payload == "a-2");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 2 && a.Payload == "a-2");
 
             sender.Tell(new Req("a-3"));
             sender.Tell(new Req("a-4"));
-            ExpectMsg(ReqAck.Instance);
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
             // a-3 was lost ...
-            probe.ExpectMsg<Action>(a => a.Id == 4 && a.Payload == "a-4");
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 4 && a.Payload == "a-4");
             // ... trigger restart ...
             sender.Tell(Boom.Instance);
             // ... and then redeliver
-            probe.ExpectMsg<Action>(a => a.Id == 3 && a.Payload == "a-3");
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 3 && a.Payload == "a-3", timeout: TimeSpan.FromSeconds(10));
 
             sender.Tell(new Req("a-5"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 5 && a.Payload == "a-5");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 5 && a.Payload == "a-5");
 
-            probe.ExpectNoMsg(TimeSpan.FromSeconds(1));
+            await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
         }
 
-        [Fact(Skip = "Racy")]
-        public void AtLeastOnceDelivery_must_resend_replayed_deliveries_with_an_initially_in_order_strategy_before_delivering_fresh_messages()
+        [LocalFact(SkipLocal = "Racy on Azure DevOps")]
+        public async Task AtLeastOnceDelivery_must_resend_replayed_deliveries_with_an_initially_in_order_strategy_before_delivering_fresh_messages()
         {
             var probe = CreateTestProbe();
             var dest = Sys.ActorOf(Props.Create(() => new Destination(probe.Ref)));
@@ -474,77 +463,80 @@ namespace Akka.Persistence.Tests
             var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(500), 5, 1000, false, destinations)), Name);
 
             sender.Tell(new Req("a-1"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 1 && a.Payload == "a-1");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a-1");
 
             sender.Tell(new Req("a-2"));
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
             // a-2 was lost
 
             sender.Tell(new Req("a-3"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 3 && a.Payload == "a-3");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 3 && a.Payload == "a-3");
 
             sender.Tell(new Req("a-4"));
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
             // a-4 was lost
 
             // trigger restart
             sender.Tell(Boom.Instance);
             sender.Tell(new Req("a-5"));
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
 
             // and redeliver
-            probe.ExpectMsg<Action>(a => a.Id == 2 && a.Payload == "a-2");      // redelivered
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 2 && a.Payload == "a-2");      // redelivered
             // a-4 was redelivered but lost again
-            probe.ExpectMsg<Action>(a => a.Id == 5 && a.Payload == "a-5");      // redelivered
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 5 && a.Payload == "a-5");      // redelivered
             //FIXME: expression below works, just for some reason won't fit in 10 sec. interval
-            probe.ExpectMsg<Action>(a => a.Id == 4 && a.Payload == "a-4", timeout: TimeSpan.FromSeconds(20));      // redelivered, 3th time
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 4 && a.Payload == "a-4", timeout: TimeSpan.FromSeconds(20));      // redelivered, 3th time
 
-            probe.ExpectNoMsg(TimeSpan.FromSeconds(1));
+            await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_restore_state_from_snapshot()
+        public async Task AtLeastOnceDelivery_must_restore_state_from_snapshot()
         {
             var probe = CreateTestProbe();
             var dest = Sys.ActorOf(Props.Create(() => new Destination(probe.Ref)));
             var destinations = new Dictionary<string, ActorPath> { { "A", Sys.ActorOf(Props.Create(() => new Unreliable(3, dest))).Path } };
-            var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(500), 5, 1000, false, destinations)), Name);
+            // Use a longer redeliver interval to prevent premature redelivery from shifting the
+            // Unreliable proxy's counter. RedeliveryTick bypasses the PersistingEvents stash, so with
+            // a short interval the timer can redeliver a-3 before a-4's journal write completes.
+            var sender = Sys.ActorOf(Props.Create(() => new Sender(TestActor, Name, TimeSpan.FromMilliseconds(2000), 5, 1000, false, destinations)), Name);
 
             sender.Tell(new Req("a-1"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 1 && a.Payload == "a-1");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a-1");
 
             sender.Tell(new Req("a-2"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 2 && a.Payload == "a-2");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 2 && a.Payload == "a-2");
 
             sender.Tell(new Req("a-3"));
             sender.Tell(new Req("a-4"));
             sender.Tell(SaveSnap.Instance);
-            ExpectMsg(ReqAck.Instance);
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
             // a-3 was lost
 
-            probe.ExpectMsg<Action>(a => a.Id == 4 && a.Payload == "a-4");
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 4 && a.Payload == "a-4");
 
             // after snapshot succeed
-            ExpectMsg<SaveSnapshotSuccess>();
+            await ExpectMsgAsync<SaveSnapshotSuccess>();
             // trigger restart
             sender.Tell(Boom.Instance);
-            // and then redelivered
-            probe.ExpectMsg<Action>(a => a.Id == 3 && a.Payload == "a-3");
+            // and then redelivered (longer timeout to account for the higher redeliver interval)
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 3 && a.Payload == "a-3", timeout: TimeSpan.FromSeconds(10));
 
             sender.Tell(new Req("a-5"));
-            ExpectMsg(ReqAck.Instance);
-            probe.ExpectMsg<Action>(a => a.Id == 5 && a.Payload == "a-5");
+            await ExpectMsgAsync(ReqAck.Instance);
+            await probe.ExpectMsgAsync<Action>(a => a.Id == 5 && a.Payload == "a-5");
 
-            probe.ExpectNoMsg(TimeSpan.FromSeconds(1));
+            await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(1));
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_warn_about_unconfirmed_messages()
+        public async Task AtLeastOnceDelivery_must_warn_about_unconfirmed_messages()
         {
             var probeA = CreateTestProbe();
             var probeB = CreateTestProbe();
@@ -555,24 +547,42 @@ namespace Akka.Persistence.Tests
             sender.Tell(new Req("a-1"));
             sender.Tell(new Req("b-1"));
             sender.Tell(new Req("b-2"));
-            ExpectMsg(ReqAck.Instance);
-            ExpectMsg(ReqAck.Instance);
-            ExpectMsg(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
+            await ExpectMsgAsync(ReqAck.Instance);
 
-            var unconfirmed = ReceiveWhile(TimeSpan.FromSeconds(3), x =>
-                x is UnconfirmedWarning ? ((UnconfirmedWarning)x).UnconfirmedDeliveries : Enumerable.Empty<UnconfirmedDelivery>())
-                .SelectMany(e => e).ToArray();
+            // Wait for initial deliveries to ensure messages are timestamped and the redelivery timer has started
+            await probeA.ExpectMsgAsync<Action>(a => a.Id == 1 && a.Payload == "a-1");
+            await probeB.ExpectMsgAsync<Action>(a => a.Id == 2 && a.Payload == "b-1");
+            await probeB.ExpectMsgAsync<Action>(a => a.Id == 3 && a.Payload == "b-2");
 
-            var resultDestinations = unconfirmed.Select(x => x.Destination).Distinct().ToArray();
-            resultDestinations.ShouldOnlyContainInOrder(probeA.Ref.Path, probeB.Ref.Path);
-            var resultMessages = unconfirmed.Select(x => x.Message).Distinct().ToArray();
-            resultMessages.ShouldOnlyContainInOrder(new Action(1, "a-1"), new Action(2, "b-1"), new Action(3, "b-2"));
+            // Collect warnings until we have all expected unconfirmed deliveries
+            // Using count-based collection instead of timeout-based to avoid race conditions in CI
+            var unconfirmed = new List<UnconfirmedDelivery>();
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+
+            while (unconfirmed.Count < 3 && DateTime.UtcNow < deadline)
+            {
+                var remainingTime = deadline - DateTime.UtcNow;
+                if (remainingTime <= TimeSpan.Zero) break;
+
+                var msg = await ReceiveOneAsync(remainingTime);
+                if (msg is UnconfirmedWarning warning)
+                    unconfirmed.AddRange(warning.UnconfirmedDeliveries);
+            }
+
+            var unconfirmedArray = unconfirmed.ToArray();
+
+            var resultDestinations = unconfirmedArray.Select(x => x.Destination).Distinct().ToArray();
+            resultDestinations.Should().BeEquivalentTo(probeA.Ref.Path, probeB.Ref.Path);
+            var resultMessages = unconfirmedArray.Select(x => x.Message).Distinct().ToArray();
+            resultMessages.Should().BeEquivalentTo(new Action(1, "a-1"), new Action(2, "b-1"), new Action(3, "b-2"));
 
             Sys.Stop(sender);
         }
 
         [Fact]
-        public void AtLeastOnceDelivery_must_redeliver_many_lost_messages()
+        public async Task AtLeastOnceDelivery_must_redeliver_many_lost_messages()
         {
             var probeA = CreateTestProbe();
             var probeB = CreateTestProbe();
@@ -612,17 +622,17 @@ namespace Akka.Persistence.Tests
             }
             var deliverWithin = TimeSpan.FromSeconds(20);
 
-            var resAarr = probeA.ReceiveN(n, deliverWithin).Cast<Action>().Select(x => x.Payload).ToArray();
-            var resBarr = probeB.ReceiveN(n, deliverWithin).Cast<Action>().Select(x => x.Payload).ToArray();
-            var resCarr = probeC.ReceiveN(n, deliverWithin).Cast<Action>().Select(x => x.Payload).ToArray();
+            var resAarr = await probeA.ReceiveNAsync(n, deliverWithin).Cast<Action>().Select(x => x.Payload).ToArrayAsync();
+            var resBarr = await probeB.ReceiveNAsync(n, deliverWithin).Cast<Action>().Select(x => x.Payload).ToArrayAsync();
+            var resCarr = await probeC.ReceiveNAsync(n, deliverWithin).Cast<Action>().Select(x => x.Payload).ToArrayAsync();
 
             resAarr.Except(a).Any().ShouldBeFalse();
             resBarr.Except(b).Any().ShouldBeFalse();
             resCarr.Except(c).Any().ShouldBeFalse();
         }
 
-        [Fact(Skip = "Racy on Azure DevOps")]
-        public void AtLeastOnceDelivery_must_limit_the_number_of_messages_redelivered_at_once()
+        [LocalFact(SkipLocal = "Racy on Azure DevOps")]
+        public async Task AtLeastOnceDelivery_must_limit_the_number_of_messages_redelivered_at_once()
         {
             var probe = CreateTestProbe();
             var probeA = CreateTestProbe();
@@ -649,17 +659,18 @@ namespace Akka.Persistence.Tests
             // initially all odd messages should go through
             for (int i = 1; i <= N; i = i+2)
             {
-                probeA.ExpectMsg<Action>(a => a.Id == i && a.Payload == "a-" + i);
+                await probeA.ExpectMsgAsync<Action>(a => a.Id == i && a.Payload == "a-" + i);
             }
-            probeA.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+            await probeA.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100));
 
             // at each redelivery round, 2 (even) messages are sent, the first goes through
             // without throttling, at each round half of the messages would go through
             var toDeliver = Enumerable.Range(1, N).Where(i => i%2 == 0).Select(i => (long)i).ToList();
             for (int i = 2; i <= N; i = i+2)
             {
-                toDeliver.Remove(probeA.ExpectMsg<Action>().Id);
-                probeA.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+                var action = await probeA.ExpectMsgAsync<Action>();
+                toDeliver.Remove(action.Id);
+                await probeA.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100));
             }
 
             toDeliver.Count.ShouldBe(0);

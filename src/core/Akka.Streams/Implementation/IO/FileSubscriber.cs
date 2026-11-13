@@ -1,16 +1,16 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="FileSubscriber.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Event;
-using Akka.IO;
 using Akka.Streams.Actors;
 using Akka.Streams.IO;
 using Akka.Util;
@@ -20,20 +20,20 @@ namespace Akka.Streams.Implementation.IO
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    internal class FileSubscriber : ActorSubscriber
+    internal sealed class FileSubscriber : ActorSubscriber
     {
         /// <summary>
-        /// TBD
+        /// Creates actor properties for a subscriber that writes incoming byte sequences to a file.
         /// </summary>
-        /// <param name="f">TBD</param>
-        /// <param name="completionPromise">TBD</param>
-        /// <param name="bufferSize">TBD</param>
-        /// <param name="startPosition">TBD</param>
-        /// <param name="fileMode">TBD</param>
-        /// <param name="autoFlush"></param>
-        /// <param name="flushCommand"></param>
-        /// <exception cref="ArgumentException">TBD</exception>
-        /// <returns>TBD</returns>
+        /// <param name="f">The file to write.</param>
+        /// <param name="completionPromise">The promise completed with the write result.</param>
+        /// <param name="bufferSize">The request-strategy high watermark.</param>
+        /// <param name="startPosition">The byte position at which writing starts.</param>
+        /// <param name="fileMode">The mode used to open or create the file.</param>
+        /// <param name="autoFlush">Whether to flush the file after each element.</param>
+        /// <param name="flushCommand">Optional signaler that can request a file flush.</param>
+        /// <exception cref="ArgumentException">Thrown when <paramref name="bufferSize"/> is not positive or <paramref name="startPosition"/> is negative.</exception>
+        /// <returns>Local actor properties for the file subscriber.</returns>
         public static Props Props(
             FileInfo f,
             TaskCompletionSource<IOResult> completionPromise,
@@ -48,7 +48,7 @@ namespace Akka.Streams.Implementation.IO
             if (startPosition < 0)
                 throw new ArgumentException($"startPosition must be >= 0 (was {startPosition})", nameof(startPosition));
 
-            return Actor.Props.Create(() => new FileSubscriber(f, completionPromise, bufferSize, startPosition, fileMode, autoFlush, flushCommand))
+            return Actor.Props.Create<FileSubscriber>(f, completionPromise, bufferSize, startPosition, fileMode, autoFlush, flushCommand)
                 .WithDeploy(Deploy.Local);
         }
 
@@ -63,15 +63,16 @@ namespace Akka.Streams.Implementation.IO
         private long _bytesWritten;
 
         /// <summary>
-        /// TBD
+        /// Creates a subscriber actor that writes incoming byte sequences to a file.
         /// </summary>
-        /// <param name="f">TBD</param>
-        /// <param name="completionPromise">TBD</param>
-        /// <param name="bufferSize">TBD</param>
-        /// <param name="startPosition">TBD</param>
-        /// <param name="fileMode">TBD</param>
-        /// <param name="autoFlush"></param>
-        /// <param name="flushSignaler"></param>
+        /// <param name="f">The file to write.</param>
+        /// <param name="completionPromise">The promise completed with the write result.</param>
+        /// <param name="bufferSize">The request-strategy high watermark.</param>
+        /// <param name="startPosition">The byte position at which writing starts.</param>
+        /// <param name="fileMode">The mode used to open or create the file.</param>
+        /// <param name="autoFlush">Whether to flush the file after each element.</param>
+        /// <param name="flushSignaler">Optional signaler that can request a file flush.</param>
+        /// If this changes you must change <see cref="FileSubscriber.Props"/> as well!
         public FileSubscriber(
             FileInfo f,
             TaskCompletionSource<IOResult> completionPromise,
@@ -94,12 +95,12 @@ namespace Akka.Streams.Implementation.IO
         }
 
         /// <summary>
-        /// TBD
+        /// Requests elements according to the configured buffer-size high watermark.
         /// </summary>
         public override IRequestStrategy RequestStrategy => _requestStrategy;
 
         /// <summary>
-        /// TBD
+        /// Opens the file for writing at the configured position before starting the subscriber.
         /// </summary>
         protected override void PreStart()
         {
@@ -118,10 +119,10 @@ namespace Akka.Streams.Implementation.IO
         }
 
         /// <summary>
-        /// TBD
+        /// Writes elements, handles upstream termination, and processes explicit flush signals.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="message">The actor message to handle.</param>
+        /// <returns><see langword="true"/> when the message is handled; otherwise, <see langword="false"/>.</returns>
         protected override bool Receive(object message)
         {
             switch (message)
@@ -129,10 +130,10 @@ namespace Akka.Streams.Implementation.IO
                 case OnNext next:
                     try
                     {
-                        var byteString = (ByteString)next.Element;
-                        var bytes = byteString.ToArray();
-                        _chan.Write(bytes, 0, bytes.Length);
-                        _bytesWritten += bytes.Length;
+                        var sequence = (ReadOnlySequence<byte>)next.Element;
+                        foreach (var segment in sequence)
+                            _chan.Write(segment.Span);
+                        _bytesWritten += sequence.Length;
                         if (_autoFlush)
                             _chan.Flush(true);
                     }
@@ -179,7 +180,7 @@ namespace Akka.Streams.Implementation.IO
         }
 
         /// <summary>
-        /// TBD
+        /// Closes the file and completes the write-result promise if it has not already completed.
         /// </summary>
         protected override void PostStop()
         {
@@ -207,9 +208,9 @@ namespace Akka.Streams.Implementation.IO
             }
         }
 
-        internal class FlushSignal
+        internal sealed class FlushSignal
         {
-            public static readonly FlushSignal Instance = new FlushSignal();
+            public static readonly FlushSignal Instance = new();
             private FlushSignal() { }
         }
     }

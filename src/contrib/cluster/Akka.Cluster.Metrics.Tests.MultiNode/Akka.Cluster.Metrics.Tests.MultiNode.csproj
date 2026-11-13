@@ -1,28 +1,29 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-    <Import Project="..\..\..\common.props" />
-
+    <Import Project="..\..\..\multiNodeRunnerSettings.props" />
     <PropertyGroup>
-        <AssemblyTitle>Akka.Cluster.Metrics.Tests.MultiNode</AssemblyTitle>
-        <TargetFrameworks>$(NetTestVersion);$(NetCoreTestVersion)</TargetFrameworks>
+        <TargetFramework>$(NetTestVersion)</TargetFramework>
     </PropertyGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\Akka.Cluster.Metrics.Tests\Akka.Cluster.Metrics.Tests.csproj" />
+        <ProjectReference Include="..\..\..\core\Akka.MultiNode.TestAdapter\Akka.MultiNode.TestAdapter.csproj" />
         <ProjectReference Include="..\Akka.Cluster.Metrics\Akka.Cluster.Metrics.csproj" />
         <ProjectReference Include="..\..\..\core\Akka.Cluster.TestKit\Akka.Cluster.TestKit.csproj" />
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Akka.MultiNode.TestAdapter" Version="$(MultiNodeAdapterVersion)" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="$(TestSdkVersion)" />
         <PackageReference Include="FluentAssertions" Version="$(FluentAssertionsVersion)" />
+        <PackageReference Include="xunit.v3" Version="$(Xunit3Version)"/>
+        <PackageReference Include="xunit.runner.visualstudio" Version="$(Xunit3RunnerVersion)">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
     </ItemGroup>
 
     <ItemGroup>
-        <Service Include="{82a7f48d-3b50-4b1e-b82e-3ada8210c358}" />
+      <Compile Include="..\Akka.Cluster.Metrics.Tests\Helpers\ClusterMetricsView.cs">
+        <Link>ClusterMetricsView.cs</Link>
+      </Compile>
     </ItemGroup>
 
-    <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-        <DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
-    </PropertyGroup>
 </Project>

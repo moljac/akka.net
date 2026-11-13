@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ExecutorService.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -18,9 +18,9 @@ namespace Akka.Dispatch
     public abstract class ExecutorService
     {
         /// <summary>
-        /// TBD
+        /// Initializes the executor service with the identifier of its dispatcher.
         /// </summary>
-        /// <param name="id">TBD</param>
+        /// <param name="id">The identifier of the dispatcher that uses this executor.</param>
         protected ExecutorService(string id)
         {
             Id = id;
@@ -53,10 +53,10 @@ namespace Akka.Dispatch
     public abstract class ExecutorServiceFactory
     {
         /// <summary>
-        /// TBD
+        /// Creates an executor service for a dispatcher.
         /// </summary>
-        /// <param name="id">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="id">The identifier of the dispatcher that will use the executor.</param>
+        /// <returns>The executor service instance for that dispatcher.</returns>
         public abstract ExecutorService Produce(string id);
     }
 
@@ -66,10 +66,10 @@ namespace Akka.Dispatch
     public class RejectedExecutionException : AkkaException
     {
         /// <summary>
-        /// TBD
+        /// Creates an exception indicating that an executor service rejected work.
         /// </summary>
-        /// <param name="message">TBD</param>
-        /// <param name="inner">TBD</param>
+        /// <param name="message">The message describing why execution was rejected.</param>
+        /// <param name="inner">The exception that caused the rejection, if any.</param>
         public RejectedExecutionException(string message = null, Exception inner = null) : base(message, inner) { }
 
         /// <summary>
@@ -80,4 +80,3 @@ namespace Akka.Dispatch
         protected RejectedExecutionException(SerializationInfo info, StreamingContext context) : base(info, context) { }
     }
 }
-

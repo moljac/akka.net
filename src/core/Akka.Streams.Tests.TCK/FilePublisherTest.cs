@@ -1,28 +1,29 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="FilePublisherTest.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Akka.IO;
 using Akka.Streams.Dsl;
-using Akka.Streams.TestKit.Tests;
+using Akka.Streams.TestKit;
 using Akka.TestKit;
 using Reactive.Streams;
 
 namespace Akka.Streams.Tests.TCK
 {
-    class FilePublisherTest : AkkaPublisherVerification<ByteString>
+    class FilePublisherTest : AkkaPublisherVerification<ReadOnlySequence<byte>>
     {
         private const int ChunkSize = 256;
         private const int Elements = 1000;
 
         private static int _counter;
-        private readonly List<FileInfo> _files = new List<FileInfo>();
+        private readonly List<FileInfo> _files = new();
 
         public FilePublisherTest() : base(Utils.UnboundedMailboxConfig.WithFallback(AkkaSpec.AkkaSpecConfig))
         {
@@ -30,7 +31,7 @@ namespace Akka.Streams.Tests.TCK
 
         protected override void AfterShutdown() => _files.ForEach(f => f.Delete());
 
-        public override IPublisher<ByteString> CreatePublisher(long elements)
+        public override IPublisher<ReadOnlySequence<byte>> CreatePublisher(long elements)
         {
             var file = new FileInfo(Path.Combine(Path.GetTempPath(), $"file-source-tck-{_counter++}.tmp"));
             _files.Add(file);
@@ -42,7 +43,7 @@ namespace Akka.Streams.Tests.TCK
 
             return FileIO.FromFile(file, 512)
                 .Take(elements)
-                .RunWith(Sink.AsPublisher<ByteString>(false), Materializer);
+                .RunWith(Sink.AsPublisher<ReadOnlySequence<byte>>(false), Materializer);
         }
 
         public override long MaxElementsFromPublisher { get; } = Elements;

@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="VectorClockSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
@@ -27,6 +27,28 @@ namespace Akka.Cluster.Tests
             var clock2 = VectorClock.Create();
 
             (clock1 != clock2).Should().BeFalse();
+        }
+
+        [Fact]
+        public void A_VectorClock_must_handle_null_equality_correctly()
+        {
+            VectorClock nullClock = null;
+            var clock = VectorClock.Create();
+
+            // null == null should be true
+            (nullClock == null).Should().BeTrue();
+            (null == nullClock).Should().BeTrue();
+
+            // null != null should be false
+            (nullClock != null).Should().BeFalse();
+
+            // clock == null and null == clock should be false
+            (clock == null).Should().BeFalse();
+            (null == clock).Should().BeFalse();
+
+            // clock != null and null != clock should be true
+            (clock != null).Should().BeTrue();
+            (null != clock).Should().BeTrue();
         }
 
         [Fact]
@@ -60,6 +82,7 @@ namespace Akka.Cluster.Tests
             var clock5_2 = clock4_2.Increment(VectorClock.Node.Create("3"));
 
             (clock4_1 < clock5_2).Should().BeTrue();
+            (clock4_1 != clock5_2).Should().BeTrue("before relationship means not equal");
         }
 
         [Fact]
@@ -106,6 +129,8 @@ namespace Akka.Cluster.Tests
             
             (clock3_1 < clock5_2).Should().BeTrue();
             (clock5_2 > clock3_1).Should().BeTrue();
+            (clock3_1 != clock5_2).Should().BeTrue("before relationship means not equal");
+            (clock5_2 != clock3_1).Should().BeTrue("after relationship means not equal");
         }
 
         [Fact]

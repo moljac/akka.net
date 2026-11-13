@@ -1,19 +1,20 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="FlowWatchTerminationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2021 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2021 .NET Foundation <https://github.com/akkadotnet/akka.net>
+//     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
+//     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
 using System;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Akka.Streams.Dsl;
 using Akka.Streams.TestKit;
-using Akka.Streams.TestKit.Tests;
 using Akka.TestKit;
 using FluentAssertions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Akka.Streams.Tests.Dsl
 {
@@ -27,49 +28,69 @@ namespace Akka.Streams.Tests.Dsl
             Materializer = ActorMaterializer.Create(Sys, settings);
         }
 
-        [Fact]
-        public void A_WatchTermination_must_complete_the_future_when_stream_is_completed()
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private async Task RunIssue8209ReproAsync(string boomMessage)
         {
-            this.AssertAllStagesStopped(() =>
-            {
-                var t =
-                    Source.From(Enumerable.Range(1, 4))
-                        .WatchTermination(Keep.Right)
-                        .ToMaterialized(this.SinkProbe<int>(), Keep.Both)
-                        .Run(Materializer);
+            var killSwitch = KillSwitches.Shared("issue-8209");
+            var watchTask = Source.Repeat(1)
+                .Via(killSwitch.Flow<int>())
+                .WatchTermination((_, done) => done)
+                .ToMaterialized(Sink.ForEach<int>(_ => { }), Keep.Left)
+                .Run(Materializer);
+
+            killSwitch.Abort(new InvalidOperationException(boomMessage));
+
+            var completedTask = await Task.WhenAny(watchTask, Task.Delay(TimeSpan.FromSeconds(3)));
+            completedTask.Should().BeSameAs(watchTask, "the watched termination task should complete promptly after abort");
+
+            watchTask.IsFaulted.Should().BeTrue();
+            watchTask.Exception.Should().NotBeNull();
+            watchTask.Exception!.Flatten().InnerExceptions
+                .OfType<InvalidOperationException>()
+                .Should().ContainSingle(e => e.Message == boomMessage);
+        }
+
+        [Fact]
+        public async Task A_WatchTermination_must_complete_the_future_when_stream_is_completed()
+        {
+            await this.AssertAllStagesStoppedAsync(async() => {
+                var t =                                                                             
+                Source.From(Enumerable.Range(1, 4))                                                                                 
+                .WatchTermination(Keep.Right)                                                                                 
+                .ToMaterialized(this.SinkProbe<int>(), Keep.Both)                                                                                 
+                .Run(Materializer);
                 var future = t.Item1;
                 var p = t.Item2;
 
                 p.Request(4).ExpectNext(1, 2, 3, 4);
                 future.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
-                p.ExpectComplete();
+                await p.ExpectCompleteAsync();
             }, Materializer);
         }
 
         [Fact]
-        public void A_WatchTermination_must_complete_the_future_when_stream_is_cancelled_from_downstream()
+        public async Task A_WatchTermination_must_complete_the_future_when_stream_is_cancelled_from_downstream()
         {
-            this.AssertAllStagesStopped(() =>
-            {
-                var t =
-                    Source.From(Enumerable.Range(1, 4))
-                        .WatchTermination(Keep.Right)
-                        .ToMaterialized(this.SinkProbe<int>(), Keep.Both)
-                        .Run(Materializer);
+            await this.AssertAllStagesStoppedAsync(() => {
+                var t =                                                                            
+                Source.From(Enumerable.Range(1, 4))                                                                                 
+                .WatchTermination(Keep.Right)                                                                                 
+                .ToMaterialized(this.SinkProbe<int>(), Keep.Both)                                                                                 
+                .Run(Materializer);
                 var future = t.Item1;
                 var p = t.Item2;
 
                 p.Request(3).ExpectNext(1, 2, 3);
                 p.Cancel();
                 future.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
+                return Task.CompletedTask;
             }, Materializer);
         }
 
         [Fact]
-        public void A_WatchTermination_must_fail_the_future_when_stream_is_failed()
+        public async Task A_WatchTermination_must_fail_the_future_when_stream_is_failed()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 var ex = new Exception("Stream failed.");
                 var t = this.SourceProbe<int>().WatchTermination(Keep.Both).To(Sink.Ignore<int>()).Run(Materializer);
                 var p = t.Item1;
@@ -77,34 +98,34 @@ namespace Akka.Streams.Tests.Dsl
                 p.SendNext(1);
                 p.SendError(ex);
                 future.Invoking(f => f.Wait()).Should().Throw<Exception>().WithMessage("Stream failed.");
+                return Task.CompletedTask;
             }, Materializer);
         }
 
         [Fact]
-        public void A_WatchTermination_must_complete_the_future_for_an_empty_stream()
+        public async Task A_WatchTermination_must_complete_the_future_for_an_empty_stream()
         {
-            this.AssertAllStagesStopped(() =>
-            {
-                var t =
-                    Source.Empty<int>()
-                        .WatchTermination(Keep.Right)
-                        .ToMaterialized(this.SinkProbe<int>(), Keep.Both)
-                        .Run(Materializer);
+            await this.AssertAllStagesStoppedAsync(() => {
+                var t =                                                                             
+                Source.Empty<int>()                                                                                 
+                .WatchTermination(Keep.Right)                                                                                 
+                .ToMaterialized(this.SinkProbe<int>(), Keep.Both)                                                                                 
+                .Run(Materializer);
                 var future = t.Item1;
                 var p = t.Item2;
                 p.Request(1);
                 future.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
+                return Task.CompletedTask;
             }, Materializer);
         }
 
         [Fact(Skip = "We need a way to combine multiple sources with different materializer types")]
-        public void A_WatchTermination_must_complete_the_future_for_graph()
+        public async Task A_WatchTermination_must_complete_the_future_for_graph()
         {
-            this.AssertAllStagesStopped(() =>
-            {
+            await this.AssertAllStagesStoppedAsync(() => {
                 //var first = this.SourceProbe<int>().WatchTermination(Keep.Both);
                 //var second = Source.From(Enumerable.Range(2, 4)).MapMaterializedValue(new Func<NotUsed, (TestPublisher.Probe<int>, Task)>(_ => null));
-                
+
                 //var t = Source.FromGraph(
                 //    GraphDsl.Create<SourceShape<int>, (TestPublisher.Probe<int>, Task)>(b =>
                 //    {
@@ -128,6 +149,7 @@ namespace Akka.Streams.Tests.Dsl
 
                 //sourceProbe.SendComplete();
                 //sinkProbe.ExpectNextN(new[] {2, 3, 4, 5}).ExpectComplete();
+                return Task.CompletedTask;
             }, Materializer);
         }
 
@@ -143,6 +165,54 @@ namespace Akka.Streams.Tests.Dsl
 
             Action a = () => task.Wait(TimeSpan.FromSeconds(3));
             a.Should().Throw<AbruptTerminationException>();
+        }
+
+        [Fact]
+        public async Task A_WatchTermination_with_discarded_Sink_ForEach_must_not_trigger_UnobservedTaskException()
+        {
+            await this.AssertAllStagesStoppedAsync(async () =>
+            {
+                const string boomMessage = "issue-8209-boom";
+                var unobserved = new TaskCompletionSource<AggregateException>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, args) =>
+                {
+                    try
+                    {
+                        if (args.Exception.Flatten().InnerExceptions
+                            .OfType<InvalidOperationException>()
+                            .Any(ex => ex.Message == boomMessage))
+                        {
+                            unobserved.TrySetResult(args.Exception);
+                        }
+                    }
+                    finally
+                    {
+                        args.SetObserved();
+                    }
+                };
+
+                TaskScheduler.UnobservedTaskException += handler;
+                try
+                {
+                    await RunIssue8209ReproAsync(boomMessage);
+
+                    for (var i = 0; i < 20 && !unobserved.Task.IsCompleted; i++)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                        await Task.Delay(100);
+                    }
+
+                    unobserved.Task.IsCompleted.Should().BeFalse(
+                        "observing WatchTermination should not leave Sink.ForEach's discarded completion task unobserved");
+                }
+                finally
+                {
+                    TaskScheduler.UnobservedTaskException -= handler;
+                }
+            }, Materializer);
         }
     }
 }
